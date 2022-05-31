@@ -7,6 +7,8 @@ from specutils.fitting import fit_continuum
 from utils import *
 
 curr_pos = 0
+rcParams['keymap.back'].remove('left')
+rcParams['keymap.forward'].remove('right')
 
 
 class Xcorr(Quantiser):
@@ -26,8 +28,9 @@ class Xcorr(Quantiser):
         self.sub_speccorr = self.sub_spec
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
-        self.rv = self.__assertrv__(np.nan)
-        self.rverr = self.__assertrv__(np.nan)
+        self.rv = self.__assertrv__(0)
+        self.rverr = self.__assertrv__(10)
+        self.rvstep = self.__assertrv__(10)
         self.teffunit = self.__assertquantity__(u.K, False)
         self.gravunit = self.__assertquantity__(u.dex, False)
         self.metunit = self.__assertquantity__(u.dex, False)
@@ -49,6 +52,27 @@ class Xcorr(Quantiser):
         self.linewindow = self.getlinewindow()
         self.contwindow = self.getcontwindow()
         return
+
+    def __assertteff__(self, value: Optional[Union[float, u.Quantity]]) -> Optional[u.Quantity]:
+        if isinstance(value, float) or isinstance(value, int):
+            value *= self.teffunit
+        elif not self.__assertquantity__(value, True):
+            pass
+        return value
+
+    def __assertgrav__(self, value: Optional[Union[float, u.Quantity]]) -> Optional[u.Quantity]:
+        if isinstance(value, float) or isinstance(value, int):
+            value *= self.gravunit
+        elif not self.__assertquantity__(value, True):
+            pass
+        return value
+
+    def __assertmet__(self, value: Optional[Union[float, u.Quantity]]) -> Optional[u.Quantity]:
+        if isinstance(value, float) or isinstance(value, int):
+            value *= self.metunit
+        elif not self.__assertquantity__(value, True):
+            pass
+        return value
 
     def reset(self):
         self.__init__(self.spec, self.labline, self.spec_index, self.ax, **self.kwargs)
@@ -74,9 +98,13 @@ class Xcorr(Quantiser):
             self.gottemplate = False
             return
         self.templatefname = fname
-        self.temp_spec = convolve(temp_spec, Gaussian1DKernel(self.smoothlevel))
+        self.shiftsmooth(temp_spec)
         self.gottemplate = True
         return
+
+    def shiftsmooth(self, temp_spec: Spectrum1D):
+        temp_spec.spectral_axis.value -= inv_rv_calc(self.rv.value, self.labline)
+        self.temp_spec = convolve(temp_spec, Gaussian1DKernel(self.smoothlevel))
 
     @property
     def teffunit(self):
@@ -107,6 +135,38 @@ class Xcorr(Quantiser):
         if not self.__assertquantity__(value, False):
             raise AttributeError('metunit must be an astropy unit')
         self._metunit = value
+
+    @property
+    def rvstep(self) -> u.Quantity:
+        return self._rvstep
+
+    @rvstep.setter
+    def rvstep(self, value):
+        self._rvstep = self.__assertrv__(value)
+
+    @property
+    def teff(self) -> u.Quantity:
+        return self._teff
+
+    @teff.setter
+    def teff(self, value):
+        self._teff = self.__assertteff__(value)
+
+    @property
+    def grav(self) -> u.Quantity:
+        return self._grav
+
+    @grav.setter
+    def grav(self, value):
+        self._grav = self.__assertgrav__(value)
+
+    @property
+    def met(self) -> u.Quantity:
+        return self._met
+
+    @met.setter
+    def met(self, value):
+        self._met = self.__assertmet__(value)
 
     def __str__(self):
         s = """
@@ -261,15 +321,27 @@ def interactive_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) 
         elif e.key == '6':
             obj.c4 = e.xdata
         elif e.key == '7':
-            obj.line_profile = 'gaussian'
+            obj.rvstep = 1
         elif e.key == '8':
-            obj.line_profile = 'lorentzian'
+            obj.rvstep = 10
         elif e.key == '9':
-            obj.line_profile = 'voigt'
-        elif e.key == 'a':
-            obj.amplitude = e.ydata
-        elif e.key == 'x':
-            obj.x_0 = obj.mu = e.xdata
+            obj.rvstep = 100
+        elif e.key == '[':
+            obj.met -= 0.5
+        elif e.key == ']':
+            obj.met += 0.5
+        elif e.key == 'o':
+            obj.grav -= 0.5
+        elif e.key == 'p':
+            obj.grav += 0.5
+        elif e.key == 'up':
+            obj.teff += 100
+        elif e.key == 'down':
+            obj.teff -= 100
+        elif e.key == 'right':
+            obj.rv += obj.rvstep
+        elif e.key == 'left':
+            obj.rv -= obj.rvstep
         elif e.key == '?':
             print(obj)
         elif e.key == 'q':

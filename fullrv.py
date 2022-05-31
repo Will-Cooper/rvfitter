@@ -164,24 +164,6 @@ def main(fname, spec_indices, df, dflines, repeat):
 
 
 if __name__ == '__main__':
-    dpi = 200  # 200-300 as per guidelines
-    maxpix = 670  # max pixels of plot
-    width = maxpix / dpi  # max allowed with
-    rcParams.update({'axes.labelsize': 'large', 'axes.titlesize': 'large',  # the size of labels and title
-                     'xtick.labelsize': 'large', 'ytick.labelsize': 'large',  # the size of the axes ticks
-                     'legend.fontsize': 'large', 'legend.frameon': False,  # legend font size, no frame
-                     'legend.facecolor': 'none', 'legend.handletextpad': 0.25,
-                     # legend no background colour, separation from label to point
-                     'font.serif': ['Computer Modern', 'Helvetica', 'Arial',  # default fonts to try and use
-                                    'Tahoma', 'Lucida Grande', 'DejaVu Sans'],
-                     'font.family': 'serif',  # use serif fonts
-                     'mathtext.fontset': 'cm', 'mathtext.default': 'regular',  # if in math mode, use these
-                     'figure.figsize': [width, 0.7 * width], 'figure.dpi': dpi,
-                     # the figure size in inches and dots per inch
-                     'lines.linewidth': .75,  # width of plotted lines
-                     'xtick.top': True, 'ytick.right': True,  # ticks on right and top of plot
-                     'xtick.minor.visible': True, 'ytick.minor.visible': True,  # show minor ticks
-                     'text.usetex': True})  # process text with LaTeX instead of matplotlib math mode
     _spec_indices = {'kI-a': 7664.8991, 'kI-b': 7698.9645,
                      'rbI-a': 7800.27, 'rbI-b': 7947.60,
                      'naI-a': 8183.256, 'naI-b': 8194.824,
