@@ -1,5 +1,4 @@
 import pandas as pd
-from matplotlib import rcParams
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import scipy.stats as ss
@@ -31,23 +30,16 @@ def tabquery(fname: str, df: pd.DataFrame) -> Optional[pd.Series]:
     return row
 
 
-def get_ew(wave: np.ndarray, flux: np.ndarray, wavebounds: list, cont: Fittable1DModel):
-    regbool = (wave > wavebounds[0]) & (wave < wavebounds[1])
-    regwave = wave[regbool]
-    regflux = flux[regbool]
-    continuum = cont(regwave * u.AA).value
-    contcorr = np.divide(regflux, continuum)
-    ew = np.trapz(np.ones(len(regwave)) - contcorr, regwave)
-    return ew
-
-
-def get_indices(ind: int, sp: Spectrum, dflines: pd.DataFrame) -> pd.DataFrame:
+def get_indices(tname: str, colname: str, fname: str, dflines: pd.DataFrame) -> pd.DataFrame:
+    spec = Spectrum1D(fname)
+    wave, flux, fluxerr = spec_unpack(spec)
+    sp = Spectrum(wave=wave, flux=flux, wave_unit=spec.spectral_axis.unit, flux_unit=spec.flux.unit)
     for ref in ('kirkpatrick', 'martin'):
         measured: dict = measureIndexSet(sp, ref=ref)
         for key in measured:
             val = measured[key][0]
             if not np.isnan(val):
-                dflines.loc[dflines['index'] == ind, key] = round(val, 1)
+                dflines.loc[dflines[colname] == tname, key] = round(val, 1)
     return dflines
 
 
@@ -59,25 +51,19 @@ def chekres(fname: str) -> bool:
     return hires
 
 
-def adoptedrv(df: pd.DataFrame, ind: int, hires: bool, lcvals: np.ndarray, lcerr: np.ndarray,
-              xcorr: np.ndarray, xerr: np.ndarray, spec_indices: dict, useset: list) -> pd.DataFrame:
+def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: np.ndarray, lcerr: np.ndarray,
+              xcorr: np.ndarray, xerr: np.ndarray, spec_indices: dict) -> pd.DataFrame:
     fig: plt.Figure = plt.figure(figsize=(4, 3))
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
     indicesplot = [specindex.capitalize() + r' $\lambda$'
                    + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()]
-    useset = np.array(useset)
     ypos = np.arange(len(allindices)) + 1
-    indicesbool = np.isin(allindices, useset)
     lcplot = np.full_like(ypos, np.nan, dtype=float)
     lcploterr = np.full_like(ypos, np.nan, dtype=float)
     xplot = np.full_like(ypos, np.nan, dtype=float)
     xploterr = np.full_like(ypos, np.nan, dtype=float)
-    lcplot[indicesbool] = lcvals
-    lcploterr[indicesbool] = lcerr
-    xplot[indicesbool] = xcorr
-    xploterr[indicesbool] = xerr
     xcorr = xcorr[~np.isnan(xcorr)]
     xerr = xerr[~np.isnan(xerr)]
     lcvals = lcvals[~np.isnan(lcvals)]
@@ -127,20 +113,18 @@ def adoptedrv(df: pd.DataFrame, ind: int, hires: bool, lcvals: np.ndarray, lcerr
     axpdf.set_xlabel('RV [km/s]', fontsize='medium')
     axpdf.set_ylabel('Normalised PDF', fontsize='medium')
 
-    tname = df.loc[df['index'] == ind].shortname.iloc[0]
     if hires:
         fig.savefig(f'adoptedrvplots/{tname}_R2500I_adoptedrv.pdf', bbox_inches='tight')
     else:
         fig.savefig(f'adoptedrvplots/{tname}_R300R_adoptedrv.pdf', bbox_inches='tight')
 
-    df.loc[df['shortname'] == tname, 'thisrv'] = locpost
-    df.loc[df['shortname'] == tname, 'thisrverr'] = errpost
+    df.loc[df[colname] == tname, 'thisrv'] = locpost
+    df.loc[df[colname] == tname, 'thisrverr'] = errpost
     logging_rvcalc(f'Adopted RV {locpost:.1f} +/- {errpost:.1f} km/s')
     return df
 
 
 def main(fname, spec_indices, df, dflines, repeat):
-    spec = freader(fname)
     hires = chekres(fname)
     if hires:
         fappend = 'R2500I'
@@ -152,14 +136,12 @@ def main(fname, spec_indices, df, dflines, repeat):
     else:
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
-    logging_rvcalc('\n' + fname.split('/')[-1].strip('_tellcorr.fits'))
-    useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat)
-    if not len(useset):
-        return df, dflines
-    dfout = linecentering(fname, spec_indices, df, repeat, tname, 'shortname', fappend)
-    dfout = crosscorrelate(dfout)
+    logging_rvcalc(f'\n{tname}')
+    dfout, lcvals, lcerr = linecentering(fname, spec_indices, df, repeat, tname, 'shortname', fappend)
+    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
     if len(lcvals) and len(xcorr) and len(lcvals) == len(xcorr):
-        dfout = adoptedrv(dfout, ind, hires, lcvals, lcerr, xcorr, xerr, spec_indices, useset)
+        dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    dflines = get_indices(tname, 'shortname', fname, dflines)
     return dfout, dflines
 
 

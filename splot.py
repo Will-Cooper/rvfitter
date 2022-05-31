@@ -350,10 +350,3 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
     plt.show()
     outset: list = useset[goodinds].tolist()
     return outset, objlist
-
-
-def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    wave = spec.spectral_axis.value
-    flux = spec.flux.value
-    fluxerr = spec.uncertainty.quantity.value
-    return wave, flux, fluxerr

@@ -28,20 +28,20 @@ class Xcorr(Quantiser):
         self.sub_speccorr = self.sub_spec
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
-        self.rv = self.__assertrv__(0)
+        self.rv = self.__assertrv__(kwargs.get('rv', 0))
         self.rverr = self.__assertrv__(10)
         self.rvstep = self.__assertrv__(10)
         self.teffunit = self.__assertquantity__(u.K, False)
         self.gravunit = self.__assertquantity__(u.dex, False)
         self.metunit = self.__assertquantity__(u.dex, False)
-        self.teff: u.Quantity = kwargs.get('teff', 2000) * self.teffunit
-        self.grav: u.Quantity = kwargs.get('grav', 5.) * self.gravunit
-        self.met: u.Quantity = kwargs.get('met', 0.) * self.metunit
+        self.teff = kwargs.get('teff', 2000) * self.teffunit
+        self.grav = kwargs.get('grav', 5.) * self.gravunit
+        self.met = kwargs.get('met', 0.) * self.metunit
         self.templatefname = ''
         self.temp_spec = Spectrum1D()
         self.sub_temp_spec = self.temp_spec
         self.sub_temp_speccorr = self.sub_temp_spec
-        self.smoothlevel = 0
+        self.smoothlevel = kwargs.get('smoothlevel', 0)
         self.gottemplate = True
         self.templates_query()
         if not self.gottemplate:
@@ -105,6 +105,7 @@ class Xcorr(Quantiser):
     def shiftsmooth(self, temp_spec: Spectrum1D):
         temp_spec.spectral_axis.value -= inv_rv_calc(self.rv.value, self.labline)
         self.temp_spec = convolve(temp_spec, Gaussian1DKernel(self.smoothlevel))
+        self.rverr = self.rvstep / 2
 
     @property
     def teffunit(self):
@@ -294,16 +295,28 @@ b - Go back to previous line
             self.ax.set_xlim(self.c2.value, self.c3.value)
 
 
-def interactive_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], np.ndarray[Xcorr]]:
+def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], np.ndarray[Xcorr]]:
     def keypress(e):
         global curr_pos
         obj = objlist[curr_pos]
         if e.key == 'y':
             goodinds[curr_pos] = True
             curr_pos += 1
+            if curr_pos < len(useset):
+                objlist[curr_pos].teff = obj.teff
+                objlist[curr_pos].grav = obj.grav
+                objlist[curr_pos].met = obj.met
+                objlist[curr_pos].rv = obj.rv
+                objlist[curr_pos].rvstep = obj.rvstep
         elif e.key == 'n':
             goodinds[curr_pos] = False
             curr_pos += 1
+            if curr_pos < len(useset):
+                objlist[curr_pos].teff = obj.teff
+                objlist[curr_pos].grav = obj.grav
+                objlist[curr_pos].met = obj.met
+                objlist[curr_pos].rv = obj.rv
+                objlist[curr_pos].rvstep = obj.rvstep
         elif e.key == 'b':
             curr_pos -= 1 if curr_pos - 1 >= 0 else curr_pos
         elif e.key == 'r':
@@ -376,10 +389,3 @@ def interactive_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) 
     plt.show()
     outset: list = useset[goodinds].tolist()
     return outset, objlist
-
-
-def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    wave = spec.spectral_axis.value
-    flux = spec.flux.value
-    fluxerr = spec.uncertainty.quantity.value
-    return wave, flux, fluxerr

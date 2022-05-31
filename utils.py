@@ -269,6 +269,13 @@ def logging_rvcalc(s: str = '', perm: str = 'a'):
     return
 
 
+def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    wave = spec.spectral_axis.value
+    flux = spec.flux.value
+    fluxerr = spec.uncertainty.quantity.value
+    return wave, flux, fluxerr
+
+
 logging.getLogger().setLevel(logging.ERROR)
 dpi = 200  # 200-300 as per guidelines
 maxpix = 670  # max pixels of plot

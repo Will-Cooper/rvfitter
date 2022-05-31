@@ -2,9 +2,42 @@ import pandas as pd
 import scipy.stats as ss
 from tqdm import tqdm
 
-from collections import defaultdict
-
 from splot import *
+
+
+jsonname = 'lines_used.json'
+
+
+def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
+                 fname: str, repeat: bool, **kwargs) -> Tuple[List[str], List[Splot]]:
+    d = json_handle(jsonname)
+    if repeat or fname not in d.keys():
+        useset, objlist = interactive_loop(spec, spec_indices, fname, **kwargs)
+    else:
+        dobj = d[fname]
+        useset, objlist = [], []
+        paramlist = ('c1', 'c2', 'r1', 'r2', 'c3', 'c4', 'mu', 'std', 'amplitude',
+                     'x_0', 'fwhm_G', 'fwhm_L', 'fwhm_V', 'line_profile', 'use')
+        for spec_index, objinfo in tqdm(dobj.items(), total=len(dobj.keys()),
+                                        desc='Loading Fits', leave=False):
+            if objinfo[-1]:
+                useset.append(spec_index)
+            labline = spec_indices[spec_index]
+            kwargs = {param: objinfo[i] for i, param in enumerate(paramlist)}
+            obj = Splot(spec, labline, spec_index, **kwargs)
+            objlist.append(obj)
+    return useset, objlist
+
+
+def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
+                     fname: str, **kwargs) -> Tuple[List[str], List[Splot]]:
+    dout = json_handle(jsonname)
+    args = (spec, spec_indices)
+    outset, objlist = manual_lc_fit(*args, **kwargs)
+    dobj = fitparams(outset, objlist)
+    dout[fname] = dobj
+    json_handle(jsonname, dout)
+    return outset, objlist
 
 
 def fitparams(useset: List[str], objlist: List[Splot]) -> Dict[str, List[Union[float, str, bool]]]:
@@ -22,26 +55,17 @@ def fitparams(useset: List[str], objlist: List[Splot]) -> Dict[str, List[Union[f
     return dobj
 
 
-def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
-                     fname: str, **kwargs) -> Tuple[List[str], List[Splot]]:
-    dout = json_handle('lines_used.json')
-    args = (spec, spec_indices)
-    outset, objlist = manual_lc_fit(*args, **kwargs)
-    dobj = fitparams(outset, objlist)
-    dout[fname] = dobj
-    json_handle('lines_used.json', dout)
-    return outset, objlist
-
-
 def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splot], df: pd.DataFrame,
-                tname: str, colname: str, fappend: str = '', **kwargs) -> pd.DataFrame:
-    fig, axs = plt.subplots(4, 2, figsize=(8, 4))
+                tname: str, colname: str,
+                fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    nrows = kwargs.get('nrows', 4)
+    ncols = kwargs.get('ncols', 2)
+    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4))
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
     rv_list, err_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan)
     rv, err = np.nan, np.nan
-    goodfits = defaultdict(list)
     j = -1
     for i, spec_index in tqdm(enumerate(spec_indices), total=len(spec_indices.keys()),
                               desc='Fitting Line Centers', leave=False):
@@ -52,9 +76,8 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         if spec_index not in useset:
             continue
         j += 1
-        goodfits[spec_index] = [obj.fitted_profile, obj.sub_spec, obj.cont]
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
-                       f' with {obj.std.value:.1f}A sigma.')
+                       f' with {obj.std.value:.1f}A sigma; {obj.rv.value} km/s.')
         rv_list[j] = obj.rv.value
         err_list[j] = obj.rverr.value
 
@@ -79,36 +102,15 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         os.mkdir('lcplots')
     fname = f'lcplots/{tname}{"_" + fappend}.pdf'
     plt.savefig(fname, bbox_inches='tight')
-    return df
-
-
-def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
-                 fname: str, repeat: bool, **kwargs) -> Tuple[List[str], List[Splot]]:
-    d = json_handle('lines_used.json')
-    if repeat or fname not in d.keys():
-        useset, objlist = interactive_loop(spec, spec_indices, fname, **kwargs)
-    else:
-        dobj = d[fname]
-        useset, objlist = [], []
-        paramlist = ('c1', 'c2', 'r1', 'r2', 'c3', 'c4', 'mu', 'std', 'amplitude',
-                     'x_0', 'fwhm_G', 'fwhm_L', 'fwhm_V', 'line_profile', 'use')
-        for spec_index, objinfo in tqdm(dobj.items(), total=len(dobj.keys()),
-                                        desc='Loading Fits', leave=False):
-            if objinfo[-1]:
-                useset.append(spec_index)
-            labline = spec_indices[spec_index]
-            kwargs = {param: objinfo[i] for i, param in enumerate(paramlist)}
-            obj = Splot(spec, labline, spec_index, **kwargs)
-            objlist.append(obj)
-    return useset, objlist
+    return df, rv_list, err_list
 
 
 def linecentering(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
                   repeat: bool, tname: str, colname: str, fappend: str = '', **kwargs) -> pd.DataFrame:
     spec = freader(fname, **kwargs)
-    logging_rvcalc(f'\n{tname}')
+    logging_rvcalc(f'{tname}: Line Center')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
     if not len(useset):
         return df
-    dfout = auto_lc_fit(useset, spec_indices, objlist, df, tname, colname, fappend, **kwargs)
+    dfout, lcvals, lcerr = auto_lc_fit(useset, spec_indices, objlist, df, tname, colname, fappend, **kwargs)
     return dfout
