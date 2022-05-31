@@ -176,13 +176,15 @@ class Quantiser:
         else:
             return SpectralRegion(self.r1, self.r2)
 
-    def cutspec(self):
+    def cutspec(self, spec: Spectrum1D):
         x1, x2 = self.c1, self.c4
         if not any([xpoint is None for xpoint in (x1, x2)]):
             xreg = SpectralRegion(x1, x2)
-            self.sub_spec = extract_region(self.spec, xreg)
+            sub_spec = extract_region(spec, xreg)
             self.iscut = True
             self.rescale = True
+            return sub_spec
+        return spec
 
     @staticmethod
     def poly_cutter(wave: np.ndarray, flux: np.ndarray, fluxerr: np.ndarray = None,
@@ -200,7 +202,7 @@ class Quantiser:
         return x, y, yerr
 
     def __updatewindows__(self):
-        self.cutspec()
+        self.sub_spec = self.cutspec(self.spec)
         self.contwindow = self.getcontwindow()
         self.linewindow = self.getlinewindow()
 

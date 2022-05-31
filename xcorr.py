@@ -1,3 +1,4 @@
+from astropy.convolution import convolve, Gaussian1DKernel
 from astropy.modeling import models
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -23,9 +24,6 @@ class Xcorr(Quantiser):
         self.spec = spec
         self.sub_spec = self.spec
         self.sub_speccorr = self.sub_spec
-        self.temp_spec = None
-        self.sub_temp_spec = self.temp_spec
-        self.sub_temp_speccorr = self.sub_temp_spec
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
         self.rv = self.__assertrv__(np.nan)
@@ -37,7 +35,12 @@ class Xcorr(Quantiser):
         self.grav: u.Quantity = kwargs.get('grav', 5.) * self.gravunit
         self.met: u.Quantity = kwargs.get('met', 0.) * self.metunit
         self.templatefname = ''
-        self.gottemplate = self.templates_query()
+        self.temp_spec = Spectrum1D()
+        self.sub_temp_spec = self.temp_spec
+        self.sub_temp_speccorr = self.sub_temp_spec
+        self.smoothlevel = 0
+        self.gottemplate = True
+        self.templates_query()
         if not self.gottemplate:
             raise IndexError('Failed to initialise with default teff/ grav/ met')
         self.contfound = False
@@ -68,10 +71,12 @@ class Xcorr(Quantiser):
             fname = self.templatedir + fname
             temp_spec = freader(fname, **self.kwargs)
         except (IndexError, FileNotFoundError, OSError):
-            return False
+            self.gottemplate = False
+            return
         self.templatefname = fname
-        self.temp_spec = temp_spec
-        return True
+        self.temp_spec = convolve(temp_spec, Gaussian1DKernel(self.smoothlevel))
+        self.gottemplate = True
+        return
 
     @property
     def teffunit(self):
@@ -126,6 +131,10 @@ b - Go back to previous line
         """
         return s
 
+    def __updatewindows__(self):
+        super().__updatewindows__()
+        self.sub_temp_spec = self.cutspec(self.temp_spec)
+
     def getcont(self):
         self.__updatewindows__()
         if self.contwindow is None:
@@ -134,12 +143,45 @@ b - Go back to previous line
             self.cont = models.Linear1D(0.01)
         self.cont = fit_continuum(self.spec, self.cont, window=self.contwindow, exclude_regions=self.linewindow)
         sub_fluxcorr = self.sub_spec.flux - self.cont(self.sub_spec.spectral_axis)
+        temp_sub_fluxcorr = self.sub_temp_spec.flux - self.cont(self.sub_temp_spec.spectral_axis)
         self.sub_speccorr = Spectrum1D(flux=sub_fluxcorr, spectral_axis=self.sub_spec.spectral_axis,
                                        uncertainty=self.sub_spec.uncertainty)
+        self.sub_temp_speccorr = Spectrum1D(flux=temp_sub_fluxcorr, spectral_axis=self.sub_temp_spec.spectral_axis,
+                                            uncertainty=self.sub_temp_spec.uncertainty)
         self.contfound = True
         self.rescale = True
 
+    def normalise(self):
+        wave, flux, fluxerr = spec_unpack(self.sub_speccorr)
+        wavetemp, fluxtemp, fluxtemperr = spec_unpack(self.sub_temp_speccorr)
+        wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=self.r1.value, xmax=self.r2.value)
+        wavetemp, fluxtemp = normaliser(wavetemp, fluxtemp, xmin=self.r1.value, xmax=self.r2.value)
+        self.sub_speccorr = Spectrum1D(flux * self.funit, wave * self.wunit,
+                                       uncertainty=StdDevUncertainty(fluxerr, unit=self.funit))
+        self.sub_temp_speccorr = Spectrum1D(fluxtemp * self.funit, wavetemp * self.wunit,
+                                            uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
+
+    def __fitready__(self):
+        try:
+            self.templates_query()
+            if not self.gottemplate:
+                raise ValueError('Out of template range')
+            self.getcont()
+            if self.linewindow is not None:
+                self.normalise()
+        except Exception as e:
+            print(f'Fit failed: {repr(e)}')
+            if self.ax is not None:
+                self.ax.text(0.5, 0.5, f'Fit failed: {repr(e)}', transform=self.ax.transAxes,
+                             horizontalalignment='center')
+            self.rescale = False
+            self.gottemplate = False
+            return
+        self.gottemplate = True
+        self.rescale = True
+
     def plotter(self):
+        self.__fitready__()
         if self.iscut:
             spec = self.sub_spec
             tempspec = self.sub_temp_spec
@@ -159,15 +201,16 @@ b - Go back to previous line
         else:
             self.ax.plot(wave, flux, 'k', label='Data')
         self.ax.axvline(self.labline.value, color='grey', ls='--', label='Lab')
-        if self.profilefound:
-            self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.rv.value:.1f} km/s')
+        if self.gottemplate:
+            self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.teff.value}K, '
+                                         f'{self.grav.value} log g, {self.met.value} Fe/H, {self.rv.value:.1f} km/s')
         else:
             self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}')
         if not self.iscut:
             return
         fitx, fity, fityerr = self.poly_cutter(wave, flux, fluxerr, 5)
         self.ax.plot(fitx, fity, 'b-')
-        if self.rescale and not self.profilefound:
+        if self.rescale and not self.gottemplate:
             self.ax.set_xlim(np.min(wave), np.max(wave))
             self.ax.set_ylim(*np.array([np.floor(np.min(fity)),
                                         np.ceil(np.max(fity))]), )
@@ -181,7 +224,7 @@ b - Go back to previous line
         self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c3.value, self.c4.value,
                               color='grey', alpha=0.25)
         fityval = np.interp(fitx, wavetemp, fluxtemp)
-        if not self.profilefound:
+        if not self.gottemplate:
             return
         self.ax.plot(fitx, fityval, c='orange', ls=ls)
         if self.rescale:

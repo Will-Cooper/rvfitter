@@ -1,16 +1,11 @@
-from astropy.convolution import convolve, Gaussian1DKernel
 import pandas as pd
-from PyAstronomy.pyasl import crosscorrRV
 from matplotlib import rcParams
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import scipy.stats as ss
 from splat import Spectrum, measureIndexSet
-from tqdm import tqdm
 
 import argparse
-from collections import defaultdict
-import glob
 from warnings import simplefilter
 
 from utils import *

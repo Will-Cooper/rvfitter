@@ -8,7 +8,7 @@ def fitparams(useset: List[str], objlist: List[Xcorr]) -> Dict[str, List[Union[f
     for obj in objlist:
         key = obj.spec_index
         paramlist = []
-        for val in (obj.teff, obj.grav, obj.met):
+        for val in (obj.teff, obj.grav, obj.met, obj.rv):
             if not isinstance(val, str) and val is not None:
                 val = float(val.value)
             paramlist.append(val)
