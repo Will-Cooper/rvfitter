@@ -1,14 +1,14 @@
 from astropy.modeling import models
-from astropy.modeling.fitting import LevMarLSQFitter
 import matplotlib.pyplot as plt
-from specutils.fitting import fit_lines, fit_continuum
+import pandas as pd
+from specutils.fitting import fit_continuum
 
 from utils import *
 
 curr_pos = 0
 
 
-class Splot(Quantiser):
+class Xcorr(Quantiser):
 
     def __init__(self, spec: Spectrum1D, labline: Union[float, u.Quantity],
                  spec_index: str, ax: plt.Axes = None, **kwargs):
@@ -18,67 +18,90 @@ class Splot(Quantiser):
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
         self.kwargs = kwargs
-        self.c1 = kwargs.get('c1', self.c1)
-        self.c2 = kwargs.get('c2', self.c2)
-        self.r1 = kwargs.get('r1', self.r1)
-        self.r2 = kwargs.get('r2', self.r2)
-        self.c3 = kwargs.get('c3', self.c3)
-        self.c4 = kwargs.get('c4', self.c4)
+        self.templatedir = kwargs.get('templatedir', 'bt_spectra/useful/')
+        self.templatedf = self.get_template_converter()
         self.spec = spec
         self.sub_spec = self.spec
         self.sub_speccorr = self.sub_spec
+        self.temp_spec = None
+        self.sub_temp_spec = self.temp_spec
+        self.sub_temp_speccorr = self.sub_temp_spec
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
-        self.mu = self.__assertwavelength__(kwargs.get('mu', self.labline))
-        self.std = self.__assertwavelength__(kwargs.get('std', 2))
-        self.fwhm_G = self.__assertwavelength__(kwargs.get('fwhm_G', self.__stdtofwhm__()))
-        self.fwhm_L = self.__assertwavelength__(kwargs.get('fwhm_L', self.__stdtofwhm__()))
-        self.fwhm_V = self.__assertwavelength__(kwargs.get('fwhm_V', self.__stdtofwhm__()))
-        self.x_0 = self.__assertwavelength__(kwargs.get('x_0', self.labline))
-        self.amplitude = self.__assertflux__(kwargs.get('amplitude', 0))
-        self.line_profile = kwargs.get('line_profile', 'gaussian')
-        self.working_profile = self.line_profile
-        self.cont = kwargs.get('cont', None)
-        self.fitted_profile = kwargs.get('fitted_profile', None)
-        self.linewindow = self.getlinewindow()
-        self.contwindow = self.getcontwindow()
-        self.fitter = LevMarLSQFitter(calc_uncertainties=True)
-        self.shift = self.__assertwavelength__(np.nan)
-        self.shifterr = self.__assertwavelength__(np.nan)
         self.rv = self.__assertrv__(np.nan)
         self.rverr = self.__assertrv__(np.nan)
-        self.cov: np.ndarray = np.eye(3)
-        self.iscut = False
+        self.teffunit = self.__assertquantity__(u.K, False)
+        self.gravunit = self.__assertquantity__(u.dex, False)
+        self.metunit = self.__assertquantity__(u.dex, False)
+        self.teff: u.Quantity = kwargs.get('teff', 2000) * self.teffunit
+        self.grav: u.Quantity = kwargs.get('grav', 5.) * self.gravunit
+        self.met: u.Quantity = kwargs.get('met', 0.) * self.metunit
+        self.templatefname = ''
+        self.gottemplate = self.templates_query()
+        if not self.gottemplate:
+            raise IndexError('Failed to initialise with default teff/ grav/ met')
         self.contfound = False
         self.profilefound = False
-        self.linewidth = None
-        self.lineedges = None
-        self.rescale = True
         self.use = kwargs.get('use', True)
+        self.linewindow = self.getlinewindow()
+        self.contwindow = self.getcontwindow()
         return
 
     def reset(self):
         self.__init__(self.spec, self.labline, self.spec_index, self.ax, **self.kwargs)
 
+    @staticmethod
+    def get_template_converter() -> pd.DataFrame:
+        jdname = 'template_lookup.json'
+        if not os.path.exists(jdname):
+            raise FileNotFoundError(f'Need lookup file: {jdname}')
+        with open(jdname, 'r') as jd:
+            d = json.load(jd)
+        df = pd.DataFrame.from_dict(d, 'index', columns=('teff', 'logg', 'met'))
+        return df
+
+    def templates_query(self):
+        try:
+            fname = self.templatedf.loc[(self.templatedf.teff == self.teff.value) &
+                                        (self.templatedf.logg == self.grav.value) &
+                                        (self.templatedf.met == self.met.value)].iloc[0].name
+            fname = self.templatedir + fname
+            temp_spec = freader(fname, **self.kwargs)
+        except (IndexError, FileNotFoundError, OSError):
+            return False
+        self.templatefname = fname
+        self.temp_spec = temp_spec
+        return True
+
     @property
-    def line_profile(self):
-        return self._line_profile
+    def teffunit(self):
+        return self._teffunit
 
-    @line_profile.setter
-    def line_profile(self, value: str):
-        if not isinstance(value, str):
-            raise AttributeError('line_profile must be a string')
-        if value not in ('gaussian', 'lorentzian', 'voigt'):
-            raise AttributeError('line_profile must be one of: gaussian, lorentzian or voigt')
-        self._line_profile = value
+    @teffunit.setter
+    def teffunit(self, value):
+        if not self.__assertquantity__(value, False):
+            raise AttributeError('teffunit must be an astropy unit')
+        self._teffunit = value
 
     @property
-    def fitted_profile(self):
-        return self._fitted_profile
+    def gravunit(self):
+        return self._gravunit
 
-    @fitted_profile.setter
-    def fitted_profile(self, value):
-        self._fitted_profile = self.__assertmodel__(value)
+    @gravunit.setter
+    def gravunit(self, value):
+        if not self.__assertquantity__(value, False):
+            raise AttributeError('gravunit must be an astropy unit')
+        self._gravunit = value
+
+    @property
+    def metunit(self):
+        return self._metunit
+
+    @metunit.setter
+    def metunit(self, value):
+        if not self.__assertquantity__(value, False):
+            raise AttributeError('metunit must be an astropy unit')
+        self._metunit = value
 
     def __str__(self):
         s = """
@@ -103,9 +126,6 @@ b - Go back to previous line
         """
         return s
 
-    def __stdtofwhm__(self,) -> u.Quantity:
-        return self.std * (2 * np.sqrt(2 * np.log(2)))
-
     def getcont(self):
         self.__updatewindows__()
         if self.contwindow is None:
@@ -119,118 +139,15 @@ b - Go back to previous line
         self.contfound = True
         self.rescale = True
 
-    def __fitready__(self):
-        self.getcont()
-        self.fitter = LevMarLSQFitter(calc_uncertainties=True)
-
-    def getshift(self, ind: int):
-        self.shift = self.x_0 - self.labline
-        self.cov = self.fitter.fit_info['param_cov']
-        errs = np.sqrt(np.diag(self.cov))
-        self.shifterr = errs[ind] * self.wunit
-
-    def __rvcalc__(self, shift: u.Quantity) -> u.Quantity:
-        c = 299792458 / 1e3 * self.rvunit
-        cair = c / 1.000276
-        return cair * shift / self.labline
-
-    def getrv(self):
-        self.rv = self.__rvcalc__(self.shift)
-        rvup = self.__rvcalc__(self.shift + self.shifterr) - self.rv
-        rvdown = self.rv - self.__rvcalc__(self.shift - self.shifterr)
-        self.rverr = (rvup + rvdown) / 2
-
-    def getlinewidth(self):
-        left = self.x_0 - self.std * 2
-        right = self.x_0 + self.std * 2
-        self.lineedges = [left, right]
-        self.linewidth = self.__rvcalc__(right - left)
-
-    def fit_line_wrap(self, *args, **kwargs):
-        try:
-            fitted = fit_lines(*args, **kwargs)
-            if self.fitter.fit_info['param_cov'] is None:
-                raise ValueError('Could not solve')
-        except Exception as e:
-            print(f'Fit failed: {repr(e)}')
-            if self.ax is not None:
-                self.ax.text(0.5, 0.5, f'Fit failed: {repr(e)}', transform=self.ax.transAxes,
-                             horizontalalignment='center')
-            self.profilefound = False
-            self.rescale = False
-            return None
-        self.rescale = True
-        return fitted
-
-    def gaussian_fit(self):
-        g_init = models.Gaussian1D(self.amplitude, self.mu, self.std)
-        g_fit = self.fit_line_wrap(self.sub_speccorr, g_init, fitter=self.fitter,
-                                   window=self.linewindow, exclude_regions=self.contwindow)
-        if g_fit is None:
-            return False
-        self.fitted_profile = g_fit
-        self.amplitude = g_fit.amplitude
-        self.mu = self.x_0 = g_fit.mean
-        self.std = g_fit.stddev
-        self.fwhm_G = self.__stdtofwhm__()
-        self.getshift(1)
-        return True
-
-    def lorentz_fit(self):
-        l_init = models.Lorentz1D(self.amplitude, self.x_0, self.fwhm_L)
-        l_fit = self.fit_line_wrap(self.sub_speccorr, l_init, fitter=self.fitter,
-                                   window=self.linewindow, exclude_regions=self.contwindow)
-        if l_fit is None:
-            return False
-        self.fitted_profile = l_fit
-        self.amplitude = l_fit.amplitude
-        self.mu = self.x_0 = l_fit.x_0
-        self.fwhm_L = l_fit.fwhm
-        self.std = self.fwhm_L / 2.
-        self.getshift(1)
-        return True
-
-    def voigt_fit(self):
-        v_init = models.Voigt1D(self.x_0, self.amplitude, self.fwhm_L, self.fwhm_G)
-        v_fit = self.fit_line_wrap(self.sub_speccorr, v_init, fitter=self.fitter,
-                                   window=self.linewindow, exclude_regions=self.contwindow)
-        if v_fit is None:
-            return False
-        self.fitted_profile = v_fit
-        self.mu = self.x_0 = v_fit.x_0
-        self.amplitude = v_fit.amplitude_L
-        self.fwhm_L = v_fit.fwhm_L
-        self.fwhm_G = v_fit.fwhm_G
-        self.fwhm_V = self.fwhm_L / 2 + np.sqrt(self.fwhm_L ** 2 / 4 + self.fwhm_G ** 2)
-        self.std = self.fwhm_V / 2.
-        self.getshift(0)
-        return True
-
-    def fit_profile(self):
-        self.__fitready__()
-        if not self.contfound or self.linewindow is None:
-            return
-        self.contwindow = [SpectralRegion(*x, ) for x in self.contwindow]
-        worked = False
-        if self.line_profile == 'gaussian':
-            worked = self.gaussian_fit()
-        elif self.line_profile == 'lorentzian':
-            worked = self.lorentz_fit()
-        elif self.line_profile == 'voigt':
-            worked = self.voigt_fit()
-        if worked:
-            self.getrv()
-            self.getlinewidth()
-            self.profilefound = True
-            self.working_profile = self.line_profile
-
     def plotter(self):
-        self.fit_profile()
         if self.iscut:
             spec = self.sub_spec
+            tempspec = self.sub_temp_spec
         else:
             spec = self.spec
+            tempspec = self.temp_spec
         wave, flux, fluxerr = spec_unpack(spec)
+        wavetemp, fluxtemp = spec_unpack(tempspec)[:2]
         if self.rescale and not self.contfound:
             self.ax.set_xlim(np.min(wave), np.max(wave))
             self.ax.set_ylim(*np.array([np.floor(np.min(flux)),
@@ -257,30 +174,24 @@ b - Go back to previous line
         if not self.contfound or not self.use:
             return
         ls = '-'
-        if self.working_profile == 'lorentzian':
-            ls = '--'
-        elif self.working_profile == 'voigt':
-            ls = '-.'
         contyval = self.cont(fitx * self.wunit).value
         self.ax.plot(fitx, contyval, c='k', ls=ls)
         self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c1.value, self.c2.value,
                               color='grey', alpha=0.25)
         self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c3.value, self.c4.value,
                               color='grey', alpha=0.25)
-
+        fityval = np.interp(fitx, wavetemp, fluxtemp)
         if not self.profilefound:
             return
-        fityval = (self.fitted_profile(fitx * u.AA) + self.cont(fitx * u.AA)).value
         self.ax.plot(fitx, fityval, c='orange', ls=ls)
-        self.ax.axvline(self.x_0.value, color='black', ls='-', label='Measured')
         if self.rescale:
             self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.r1.value, self.r2.value,
                                   color='grey', alpha=0.5)
             self.ax.set_ylim(0.1 * np.floor(np.min(fityval) / 0.1), 0.1 * np.ceil(np.max(fityval) / 0.1))
-            self.ax.set_xlim(self.x_0.value - 2 * self.std.value, self.x_0.value + 2 * self.std.value)
+            self.ax.set_xlim(self.c2.value, self.c3.value)
 
 
-def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], np.ndarray[Splot]]:
+def interactive_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], np.ndarray[Xcorr]]:
     def keypress(e):
         global curr_pos
         obj = objlist[curr_pos]
@@ -345,7 +256,7 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
     goodinds = np.zeros(len(useset), dtype=bool)
     objlist = np.empty_like(goodinds, dtype=object)
     for i, (spec_index, labline) in enumerate(spec_indices.items()):
-        objlist[i] = Splot(spec, labline, spec_index, ax, **kwargs)
+        objlist[i] = Xcorr(spec, labline, spec_index, ax, **kwargs)
     objlist[0].plotter()
     plt.show()
     outset: list = useset[goodinds].tolist()
