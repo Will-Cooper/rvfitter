@@ -28,7 +28,7 @@ def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
 
 
 def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
-                     fname: str, **kwargs) -> Tuple[List[str], List[Xcorr]]:
+                     fname: str, **kwargs) -> Tuple[List[str], Sequence[Xcorr]]:
     dout = json_handle(jsonname)
     args = (spec, spec_indices)
     outset, objlist = manual_xcorr_fit(*args, **kwargs)
@@ -38,7 +38,7 @@ def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
     return outset, objlist
 
 
-def fitparams(useset: List[str], objlist: List[Xcorr]) -> Dict[str, List[Union[float, str, bool]]]:
+def fitparams(useset: List[str], objlist: Sequence[Xcorr]) -> Dict[str, List[Union[float, str, bool]]]:
     dobj = {}
     for obj in objlist:
         key = obj.spec_index
@@ -76,11 +76,12 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         if spec_index not in useset:
             continue
         j += 1
-        logging_rvcalc(f'{spec_index.capitalize()} -- {obj.teff.value}K, {obj.grav.value} log g,'
-                       f' {obj.met.value} [Fe/H]; {obj.rv.value} km/s')
+        teffobj = int(obj.teff.value)
+        logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
+                       f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} km/s')
         rv_list[j] = obj.rv.value
         err_list[j] = obj.rverr.value
-        teff_list[j] = obj.teff.value
+        teff_list[j] = teffobj
         grav_list[j] = obj.grav.value
         met_list[j] = obj.met.value
 
@@ -118,11 +119,12 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
 
 
 def crosscorrelate(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
-                   repeat: bool, tname: str, colname: str, fappend: str = '', **kwargs):
+                   repeat: bool, tname: str,
+                   colname: str, fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, Sequence[float], Sequence[float]]:
     spec = freader(fname)
     logging_rvcalc(f'{tname}: Cross Correlation')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
     if not len(useset):
-        return df
+        return df, [], []
     dfout, xcorr, xerr = auto_xcorr_fit(useset, spec_indices, objlist, df, tname, colname, fappend, **kwargs)
     return dfout, xcorr, xerr

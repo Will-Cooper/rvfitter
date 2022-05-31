@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from specutils.fitting import fit_continuum
 
+from typing import Sequence
+
 from utils import *
 
 curr_pos = 0
@@ -295,7 +297,7 @@ b - Go back to previous line
             self.ax.set_xlim(self.c2.value, self.c3.value)
 
 
-def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], np.ndarray[Xcorr]]:
+def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Xcorr]]:
     def keypress(e):
         global curr_pos
         obj = objlist[curr_pos]

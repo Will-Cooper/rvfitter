@@ -3,6 +3,8 @@ from astropy.modeling.fitting import LevMarLSQFitter
 import matplotlib.pyplot as plt
 from specutils.fitting import fit_lines, fit_continuum
 
+from typing import Sequence
+
 from utils import *
 
 curr_pos = 0
@@ -280,7 +282,7 @@ b - Go back to previous line
             self.ax.set_xlim(self.x_0.value - 2 * self.std.value, self.x_0.value + 2 * self.std.value)
 
 
-def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], np.ndarray[Splot]]:
+def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Splot]]:
     def keypress(e):
         global curr_pos
         obj = objlist[curr_pos]

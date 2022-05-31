@@ -30,7 +30,7 @@ def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
 
 
 def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
-                     fname: str, **kwargs) -> Tuple[List[str], List[Splot]]:
+                     fname: str, **kwargs) -> Tuple[List[str], Sequence[Splot]]:
     dout = json_handle(jsonname)
     args = (spec, spec_indices)
     outset, objlist = manual_lc_fit(*args, **kwargs)
@@ -40,7 +40,7 @@ def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
     return outset, objlist
 
 
-def fitparams(useset: List[str], objlist: List[Splot]) -> Dict[str, List[Union[float, str, bool]]]:
+def fitparams(useset: List[str], objlist: Sequence[Splot]) -> Dict[str, List[Union[float, str, bool]]]:
     dobj = {}
     for obj in objlist:
         key = obj.spec_index
@@ -77,7 +77,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
             continue
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
-                       f' with {obj.std.value:.1f}A sigma; {obj.rv.value} km/s.')
+                       f' with {obj.std.value:.1f}A sigma; {obj.rv.value:.1f} km/s.')
         rv_list[j] = obj.rv.value
         err_list[j] = obj.rverr.value
 
@@ -106,11 +106,12 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
 
 
 def linecentering(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
-                  repeat: bool, tname: str, colname: str, fappend: str = '', **kwargs) -> pd.DataFrame:
+                  repeat: bool, tname: str, colname: str,
+                  fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, Sequence[float], Sequence[float]]:
     spec = freader(fname, **kwargs)
     logging_rvcalc(f'{tname}: Line Center')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
     if not len(useset):
-        return df
+        return df, [], []
     dfout, lcvals, lcerr = auto_lc_fit(useset, spec_indices, objlist, df, tname, colname, fappend, **kwargs)
-    return dfout
+    return dfout, lcvals, lcerr

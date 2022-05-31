@@ -138,18 +138,18 @@ def main(fname, spec_indices, df, dflines, repeat):
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
     logging_rvcalc(f'\n{tname}')
     dfout, lcvals, lcerr = linecentering(fname, spec_indices, df, repeat, tname, 'shortname', fappend)
-    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
-    if len(lcvals) and len(xcorr) and len(lcvals) == len(xcorr):
-        dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
-    dflines = get_indices(tname, 'shortname', fname, dflines)
+    # dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
+    # if len(lcvals) and len(xcorr) and len(lcvals) == len(xcorr):
+    #     dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    # dflines = get_indices(tname, 'shortname', fname, dflines)
     return dfout, dflines
 
 
 if __name__ == '__main__':
-    _spec_indices = {'kI-a': 7664.8991, 'kI-b': 7698.9645,
-                     'rbI-a': 7800.27, 'rbI-b': 7947.60,
-                     'naI-a': 8183.256, 'naI-b': 8194.824,
-                     'csI-a': 8521.13, 'csI-b': 8943.47}
+    _spec_indices = {'k1-a': 7664.8991, 'k1-b': 7698.9645,
+                     'rb1-a': 7800.27, 'rb1-b': 7947.60,
+                     'na1-a': 8183.256, 'na1-b': 8194.824,
+                     'cs1-a': 8521.13, 'cs1-b': 8943.47}
     allinds = list(_spec_indices.keys())
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore
     tabname = 'Master_info_correct_cm_edr3.csv'
