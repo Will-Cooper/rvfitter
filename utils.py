@@ -60,7 +60,9 @@ class Quantiser:
     def __assertquantity__(value: Optional[u.Quantity], optional: bool):
         if optional and value is not None and not isinstance(value, u.Quantity):
             raise AttributeError(f'Value {value} must be numeric or a quantity (or None)')
-        elif not optional and not (isinstance(value, u.CompositeUnit) or isinstance(value, u.Unit)):
+        elif not optional and not (isinstance(value, u.CompositeUnit) or isinstance(value, u.Unit) or
+                                   isinstance(value, u.IrreducibleUnit)):
+            print(value, type(value))
             raise AttributeError(f'Value {value} must be a unit')
         return True
 
@@ -183,7 +185,6 @@ class Quantiser:
             xreg = SpectralRegion(x1, x2)
             sub_spec = extract_region(spec, xreg)
             self.iscut = True
-            self.rescale = True
             return sub_spec
         return spec
 
@@ -257,7 +258,7 @@ def freader(f: str, **kwargs) -> Spectrum1D:
         fluxerr = np.divide(1., target.ivar[1:], where=~np.isclose(target.ivar[1:], 0))
     wunit = kwargs.get('wunit', u.AA)
     funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
-    wave, flux, fluxerr = normaliser(wave, flux, fluxerr)
+    wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=np.min(wave), xmax=np.max(wave))
     spec = Spectrum1D(flux * funit, wave * wunit,
                       uncertainty=StdDevUncertainty(fluxerr, unit=funit))
     return spec

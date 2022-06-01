@@ -137,8 +137,9 @@ def main(fname, spec_indices, df, dflines, repeat):
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
     logging_rvcalc(f'\n{tname}')
-    dfout, lcvals, lcerr = linecentering(fname, spec_indices, df, repeat, tname, 'shortname', fappend)
-    # dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
+    dfout = df
+    # dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
+    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
     # if len(lcvals) and len(xcorr) and len(lcvals) == len(xcorr):
     #     dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     # dflines = get_indices(tname, 'shortname', fname, dflines)

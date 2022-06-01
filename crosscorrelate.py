@@ -45,7 +45,7 @@ def fitparams(useset: List[str], objlist: Sequence[Xcorr]) -> Dict[str, List[Uni
         paramlist = []
         for val in (obj.c1, obj.c2, obj.r1, obj.r2, obj.c3, obj.c4, obj.teff,
                     obj.grav, obj.met, obj.rv, obj.smoothlevel):
-            if not isinstance(val, str) and val is not None:
+            if not (isinstance(val, str) or isinstance(val, float) or isinstance(val, int)) and val is not None:
                 val = float(val.value)
             paramlist.append(val)
         paramlist.append(True if key in useset else False)
@@ -63,7 +63,8 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
     rv_list, err_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan)
-    teff_list, grav_list, met_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan), np.full(len(useset))
+    teff_list, grav_list, met_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan),\
+        np.full(len(useset), np.nan)
     rv, err = np.nan, np.nan
     teff, grav, met = np.nan, np.nan, np.nan
     j = -1
