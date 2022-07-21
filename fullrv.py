@@ -5,6 +5,7 @@ import scipy.stats as ss
 from splat import Spectrum, measureIndexSet
 
 import argparse
+from typing import Sequence
 from warnings import simplefilter
 
 from utils import *
@@ -31,7 +32,7 @@ def tabquery(fname: str, df: pd.DataFrame) -> Optional[pd.Series]:
 
 
 def get_indices(tname: str, colname: str, fname: str, dflines: pd.DataFrame) -> pd.DataFrame:
-    spec = Spectrum1D(fname)
+    spec = freader(fname)
     wave, flux, fluxerr = spec_unpack(spec)
     sp = Spectrum(wave=wave, flux=flux, wave_unit=spec.spectral_axis.unit, flux_unit=spec.flux.unit)
     for ref in ('kirkpatrick', 'martin'):
@@ -51,8 +52,8 @@ def chekres(fname: str) -> bool:
     return hires
 
 
-def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: np.ndarray, lcerr: np.ndarray,
-              xcorr: np.ndarray, xerr: np.ndarray, spec_indices: dict) -> pd.DataFrame:
+def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: Sequence[float], lcerr: Sequence[float],
+              xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict) -> pd.DataFrame:
     fig: plt.Figure = plt.figure(figsize=(4, 3))
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
@@ -60,10 +61,10 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: n
     indicesplot = [specindex.capitalize() + r' $\lambda$'
                    + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()]
     ypos = np.arange(len(allindices)) + 1
-    lcplot = np.full_like(ypos, np.nan, dtype=float)
-    lcploterr = np.full_like(ypos, np.nan, dtype=float)
-    xplot = np.full_like(ypos, np.nan, dtype=float)
-    xploterr = np.full_like(ypos, np.nan, dtype=float)
+    lcplot = copy(lcvals)
+    lcploterr = copy(lcerr)
+    xplot = copy(xcorr)
+    xploterr = copy(xerr)
     xcorr = xcorr[~np.isnan(xcorr)]
     xerr = xerr[~np.isnan(xerr)]
     lcvals = lcvals[~np.isnan(lcvals)]
@@ -138,11 +139,11 @@ def main(fname, spec_indices, df, dflines, repeat):
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
     logging_rvcalc(f'\n{tname}')
     dfout = df
-    # dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
+    dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
-    # if len(lcvals) and len(xcorr) and len(lcvals) == len(xcorr):
-    #     dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
-    # dflines = get_indices(tname, 'shortname', fname, dflines)
+    if len(lcvals) and len(xcorr):
+        dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    dflines = get_indices(tname, 'shortname', fname, dflines)
     return dfout, dflines
 
 

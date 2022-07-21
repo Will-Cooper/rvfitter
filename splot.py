@@ -228,6 +228,7 @@ b - Go back to previous line
 
     def plotter(self):
         self.fit_profile()
+        handles, labels = [], []
         if self.iscut:
             spec = self.sub_spec
         else:
@@ -239,24 +240,33 @@ b - Go back to previous line
                                         np.ceil(np.max(flux))]), )
             self.rescale = False
         if self.iscut:
-            self.ax.errorbar(wave, flux, yerr=fluxerr, marker='s', lw=0, elinewidth=1.5, c='black',
-                             ms=4, mfc='white', mec='black', label='Data', barsabove=True)
+            ebar = self.ax.errorbar(wave, flux, yerr=fluxerr, marker='s', lw=0, elinewidth=1.5, c='black',
+                                    ms=4, mfc='white', mec='black', barsabove=True)
+            fitx, fity, fityerr = self.poly_cutter(wave, flux, fluxerr, 5)
+            splineplot = self.ax.plot(fitx, fity, 'b-')
+            handles.extend([ebar, splineplot[0]])
+            labels.extend(['Data Points', 'Data Spline'])
         else:
-            self.ax.plot(wave, flux, 'k', label='Data')
-        self.ax.axvline(self.labline.value, color='grey', ls='--', label='Lab')
+            p = self.ax.plot(wave, flux, 'k', label='Data')
+            handles.extend(p)
+            labels.append('Data')
+            fitx, fity = wave, flux
+        lablineplot = self.ax.axvline(self.labline.value, color='grey', ls='--')
+        handles.append(lablineplot)
+        labels.append('Laboratory Line')
         if self.profilefound:
             self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.rv.value:.1f} km/s')
         else:
             self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}')
         if not self.iscut:
+            self.ax.legend(handles, labels)
             return
-        fitx, fity, fityerr = self.poly_cutter(wave, flux, fluxerr, 5)
-        self.ax.plot(fitx, fity, 'b-')
         if self.rescale and not self.profilefound:
             self.ax.set_xlim(np.min(wave), np.max(wave))
             self.ax.set_ylim(*np.array([np.floor(np.min(fity)),
                                         np.ceil(np.max(fity))]), )
         if not self.contfound or not self.use:
+            self.ax.legend(handles, labels)
             return
         ls = '-'
         if self.working_profile == 'lorentzian':
@@ -264,22 +274,30 @@ b - Go back to previous line
         elif self.working_profile == 'voigt':
             ls = '-.'
         contyval = self.cont(fitx * self.wunit).value
-        self.ax.plot(fitx, contyval, c='k', ls=ls)
+        contplot = self.ax.plot(fitx, contyval, c='k', ls=ls)
+        handles.extend(contplot)
+        labels.append('Continuum')
         self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c1.value, self.c2.value,
                               color='grey', alpha=0.25)
         self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c3.value, self.c4.value,
                               color='grey', alpha=0.25)
 
         if not self.profilefound:
+            self.ax.legend(handles, labels)
             return
         fityval = (self.fitted_profile(fitx * u.AA) + self.cont(fitx * u.AA)).value
-        self.ax.plot(fitx, fityval, c='orange', ls=ls)
-        self.ax.axvline(self.x_0.value, color='black', ls='-', label='Measured')
+        fitplot = self.ax.plot(fitx, fityval, c='orange', ls=ls)
+        handles.extend(fitplot)
+        labels.append('Model')
+        mesline = self.ax.axvline(self.x_0.value, color='black', ls='-')
+        handles.append(mesline)
+        labels.append('Measured')
         if self.rescale:
             self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.r1.value, self.r2.value,
                                   color='grey', alpha=0.5)
             self.ax.set_ylim(0.1 * np.floor(np.min(fityval) / 0.1), 0.1 * np.ceil(np.max(fityval) / 0.1))
             self.ax.set_xlim(self.x_0.value - 2 * self.std.value, self.x_0.value + 2 * self.std.value)
+        self.ax.legend(handles, labels)
 
 
 def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Splot]]:

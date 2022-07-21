@@ -15,7 +15,7 @@ def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
     else:
         dobj = d[fname]
         useset, objlist = [], []
-        paramlist = ('c1', 'c2', 'r1', 'r2', 'c3', 'c4', 'teff', 'grav', 'met', 'rv', 'smoothlevel', 'use')
+        paramlist = ('c1', 'c4', 'teff', 'grav', 'met', 'rv', 'smoothlevel', 'use')
         for spec_index, objinfo in tqdm(dobj.items(), total=len(dobj.keys()),
                                         desc='Loading Fits', leave=False):
             if objinfo[-1]:
@@ -43,7 +43,7 @@ def fitparams(useset: List[str], objlist: Sequence[Xcorr]) -> Dict[str, List[Uni
     for obj in objlist:
         key = obj.spec_index
         paramlist = []
-        for val in (obj.c1, obj.c2, obj.r1, obj.r2, obj.c3, obj.c4, obj.teff,
+        for val in (obj.c1, obj.c4, obj.teff,
                     obj.grav, obj.met, obj.rv, obj.smoothlevel):
             if not (isinstance(val, str) or isinstance(val, float) or isinstance(val, int)) and val is not None:
                 val = float(val.value)
@@ -62,9 +62,10 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
-    rv_list, err_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan)
-    teff_list, grav_list, met_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan),\
-        np.full(len(useset), np.nan)
+    allindices = np.array(list(spec_indices.keys()))
+    rv_list, err_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
+    teff_list, grav_list, met_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan),\
+        np.full(len(allindices), np.nan)
     rv, err = np.nan, np.nan
     teff, grav, met = np.nan, np.nan, np.nan
     j = -1
@@ -74,6 +75,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
+        ax.legend([], [])
         if spec_index not in useset:
             continue
         j += 1

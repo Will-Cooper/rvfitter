@@ -6,6 +6,7 @@ import numpy as np
 from matplotlib import rcParams
 from scipy.interpolate import interp1d
 
+from copy import copy
 import logging
 import json
 import os
@@ -181,6 +182,7 @@ class Quantiser:
 
     def cutspec(self, spec: Spectrum1D):
         x1, x2 = self.c1, self.c4
+        spec = copy(spec)
         if not any([xpoint is None for xpoint in (x1, x2)]):
             xreg = SpectralRegion(x1, x2)
             sub_spec = extract_region(spec, xreg)
@@ -271,9 +273,9 @@ def logging_rvcalc(s: str = '', perm: str = 'a'):
 
 
 def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    wave = spec.spectral_axis.value
-    flux = spec.flux.value
-    fluxerr = spec.uncertainty.quantity.value
+    wave = copy(spec.spectral_axis.value)
+    flux = copy(spec.flux.value)
+    fluxerr = copy(spec.uncertainty.quantity.value)
     return wave, flux, fluxerr
 
 

@@ -2,7 +2,6 @@ from astropy.convolution import convolve, Gaussian1DKernel
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from copy import copy
 from typing import Sequence
 
 from utils import *
@@ -16,22 +15,22 @@ class Xcorr(Quantiser):
 
     def __init__(self, spec: Spectrum1D, labline: Union[float, u.Quantity],
                  spec_index: str, ax: plt.Axes = None, **kwargs):
+        self.kwargs = kwargs
         wunit = kwargs.get('wunit', u.AA)
         funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
         rvunit = kwargs.get('rvunit', u.km / u.s)
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
-        self.kwargs = kwargs
         self.templatedir = kwargs.get('templatedir', 'bt_spectra/useful/')
         self.templatedf = self.get_template_converter()
-        self.spec = spec
-        self.sub_spec = self.spec
-        self.sub_speccorr = self.sub_spec
+        self.spec = copy(spec)
+        self.sub_spec = copy(self.spec)
+        self.sub_speccorr = copy(self.sub_spec)
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
         self.rv = self.__assertrv__(kwargs.get('rv', 0))
         self.rverr = self.__assertrv__(5)
-        self.rvstep = self.__assertrv__(10)
+        self.rvstep = self.__assertrv__(kwargs.get('rvstep', 10))
         self.teffunit = u.K
         self.gravunit = u.dex
         self.metunit = u.dex
@@ -39,11 +38,12 @@ class Xcorr(Quantiser):
         self.grav = kwargs.get('grav', 5.) * self.gravunit
         self.met = kwargs.get('met', 0.) * self.metunit
         self.templatefname = ''
-        self.temp_spec = spec
-        self.sub_temp_spec = self.temp_spec
-        self.sub_temp_speccorr = self.sub_temp_spec
+        self.temp_spec = copy(spec)
+        self.sub_temp_spec = copy(self.temp_spec)
+        self.sub_temp_speccorr = copy(self.sub_temp_spec)
         self.smoothlevel = kwargs.get('smoothlevel', 1)
         self.gottemplate = False
+        self.tempchanged = True
         self.templates_query()
         if not self.gottemplate:
             raise IndexError('Failed to initialise with default teff/ grav/ met')
@@ -160,11 +160,11 @@ q - Quit routine (lines are rejected by default)
 r - Resets back to default
 1 - Selects left hand edge of spectra; anything further left is cut
 2 - Selects right hand edge of spectra; anything further right is cut
-3 - Increase smoothing level of template by 1 sigma
-4 - Decrease smoothing level of template by 1 sigma
-5 - Increase metallicity by 0.5
-6 - Decrease metallicity by 0.5
-7 - Change RV in steps of 1 km/s
+3 - Decrease smoothing level of template by 1 sigma
+4 - Increase smoothing level of template by 1 sigma
+5 - Deccrease metallicity by 0.5
+6 - Increase metallicity by 0.5
+7 - Change RV in steps of 5 km/s
 8 - Change RV in steps of 10 km/s
 9 - Change RV in steps of 100 km/s
 right - Increase RV
@@ -190,26 +190,24 @@ b - Go back to previous line
         return df
 
     def templates_query(self):
-        try:
-            fname = self.templatedf.loc[(self.templatedf.teff == self.teff.value) &
-                                        (self.templatedf.logg == self.grav.value) &
-                                        (self.templatedf.met == self.met.value)].iloc[0].name
-            fname = self.templatedir + fname
-            temp_spec = freader(fname, **self.kwargs)
-        except (IndexError, FileNotFoundError, OSError):
-            self.gottemplate = False
-            return
-        self.templatefname = fname
-        self.temp_spec = temp_spec
+        if self.tempchanged:
+            try:
+                fname = self.templatedf.loc[(self.templatedf.teff == self.teff.value) &
+                                            (self.templatedf.logg == self.grav.value) &
+                                            (self.templatedf.met == self.met.value)].iloc[0].name
+                fname = self.templatedir + fname
+                temp_spec = self.cutspec(freader(fname, **self.kwargs))
+            except (IndexError, FileNotFoundError, OSError):
+                self.gottemplate = False
+                return
+            self.templatefname = fname
+            self.temp_spec = temp_spec
         self.gottemplate = True
         return
 
     def shiftsmooth(self, temp_spec: Spectrum1D):
-        # wave = spec_unpack(self.spec)[0]
+        temp_spec.radial_velocity = -self.rv
         wavetemp, fluxtemp, fluxtemperr = spec_unpack(temp_spec)
-        # fluxtemp = np.interp(wave, wavetemp, fluxtemp)
-        # fluxtemperr = np.interp(wave, wavetemp, fluxtemperr)
-        wavetemp += inv_rv_calc(self.rv.value, wavetemp)
         fluxsmooth = convolve(fluxtemp, Gaussian1DKernel(self.smoothlevel))
         temp_spec = Spectrum1D(fluxsmooth * self.funit, wavetemp * self.wunit,
                                uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
@@ -234,7 +232,6 @@ b - Go back to previous line
                                        uncertainty=StdDevUncertainty(fluxerr, unit=self.funit))
         self.sub_temp_speccorr = Spectrum1D(fluxtemp * self.funit, wavetemp * self.wunit,
                                             uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
-        self.profilefound = True
 
     def __fitready__(self):
         try:
@@ -256,7 +253,8 @@ b - Go back to previous line
 
     def plotter(self):
         self.__fitready__()
-        if self.profilefound:
+        handles, labels = [], []
+        if self.iscut:
             spec = self.sub_speccorr
             tempspec = self.sub_temp_speccorr
         else:
@@ -270,20 +268,27 @@ b - Go back to previous line
                                         np.ceil(np.max(flux))]), )
             self.rescale = False
         if self.iscut:
-            self.ax.errorbar(wave, flux, yerr=fluxerr, marker='s', lw=0, elinewidth=1.5, c='black',
-                             ms=4, mfc='white', mec='black', label='Data', barsabove=True)
+            ebar = self.ax.errorbar(wave, flux, yerr=fluxerr, marker='s', lw=0, elinewidth=1.5, c='black',
+                                    ms=4, mfc='white', mec='black', barsabove=True)
+            fitx, fity, fityerr = self.poly_cutter(wave, flux, fluxerr, 5)
+            splineplot = self.ax.plot(fitx, fity, 'b-')
+            handles.extend([ebar, splineplot[0]])
+            labels.extend(['Data Points', 'Data Spline'])
         else:
-            self.ax.plot(wave, flux, 'k', label='Data')
+            p = self.ax.plot(wave, flux, 'k')
+            handles.extend(p)
+            labels.append('Data')
         self.ax.axvline(self.labline.value + inv_rv_calc(self.rv.value, self.labline.value),
-                        color='grey', ls='--', label='Lab')
+                        color='grey', ls='--')
         self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.teff.value}K, '
                                      f'{self.grav.value} log g, {self.met.value} Fe/H, {self.rv.value:.1f} km/s')
-        fitx, fity, fityerr = self.poly_cutter(wave, flux, fluxerr, 5)
-        self.ax.plot(fitx, fity, 'b-')
         if not self.use:
             return
         ls = '-'
-        self.ax.plot(wavetemp, fluxtemp, c='orange', ls=ls)
+        templateplot = self.ax.plot(wavetemp, fluxtemp, c='orange', ls=ls, label='Template')
+        handles.extend(templateplot)
+        labels.append('Template')
+        self.ax.legend(handles, labels)
 
 
 def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Xcorr]]:
@@ -294,20 +299,26 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
             goodinds[curr_pos] = True
             curr_pos += 1
             if curr_pos < len(useset):
-                objlist[curr_pos].teff = obj.teff.copy()
-                objlist[curr_pos].grav = obj.grav.copy()
-                objlist[curr_pos].met = obj.met.copy()
-                objlist[curr_pos].rv = obj.rv.copy()
-                objlist[curr_pos].rvstep = copy(obj.rvstep)
+                objkwargs = obj.kwargs
+                objkwargs['teff'] = copy(obj.teff.value)
+                objkwargs['grav'] = copy(obj.grav.value)
+                objkwargs['met'] = copy(obj.met.value)
+                objkwargs['rv'] = copy(obj.rv.value)
+                objkwargs['rvstep'] = copy(obj.rvstep.value)
+                objlist[curr_pos].kwargs = objkwargs
+                objlist[curr_pos].reset()
         elif e.key == 'n':
             goodinds[curr_pos] = False
             curr_pos += 1
             if curr_pos < len(useset):
-                objlist[curr_pos].teff = obj.teff.copy()
-                objlist[curr_pos].grav = obj.grav.copy()
-                objlist[curr_pos].met = obj.met.copy()
-                objlist[curr_pos].rv = obj.rv.copy()
-                objlist[curr_pos].rvstep = copy(obj.rvstep)
+                objkwargs = obj.kwargs
+                objkwargs['teff'] = copy(obj.teff.value)
+                objkwargs['grav'] = copy(obj.grav.value)
+                objkwargs['met'] = copy(obj.met.value)
+                objkwargs['rv'] = copy(obj.rv.value)
+                objkwargs['rvstep'] = copy(obj.rvstep.value)
+                objlist[curr_pos].kwargs = objkwargs
+                objlist[curr_pos].reset()
         elif e.key == 'b':
             curr_pos -= 1 if curr_pos - 1 >= 0 else curr_pos
         elif e.key == 'r':
@@ -327,14 +338,14 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
         elif e.key == '6':
             obj.met += 0.5 * u.dex
         elif e.key == '7':
-            obj.rvstep = 1
+            obj.rvstep = 5 * rvunit
         elif e.key == '8':
-            obj.rvstep = 10
+            obj.rvstep = 10 * rvunit
         elif e.key == '9':
-            obj.rvstep = 100
+            obj.rvstep = 100 * rvunit
         elif e.key == '-':
             obj.grav -= 0.5 * u.dex
-        elif e.key == '+':
+        elif e.key in ('+', '='):
             obj.grav += 0.5 * u.dex
         elif e.key == 'up':
             obj.teff += 100 * u.K
@@ -353,15 +364,20 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
         if curr_pos == len(useset):
             plt.close()
             return
+        if e.key in ('up', 'down', '-', '+', '=', '5', '6'):
+            obj.tempchanged = True
+        else:
+            obj.tempchanged = False
         for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts:
             artist.remove()
-        objlist[curr_pos].plotter()
+        if e.key != 'q':
+            objlist[curr_pos].plotter()
         fig.canvas.draw()
         return
 
     global curr_pos
     curr_pos = 0
-
+    rvunit = kwargs.get('rvunit', u.km / u.s)
     fig, ax = plt.subplots(figsize=(8, 5))
     fig: plt.Figure = fig
     ax: plt.Axes = ax

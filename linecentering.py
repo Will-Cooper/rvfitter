@@ -64,7 +64,8 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
-    rv_list, err_list = np.full(len(useset), np.nan), np.full(len(useset), np.nan)
+    allindices = np.array(list(spec_indices.keys()))
+    rv_list, err_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
     rv, err = np.nan, np.nan
     j = -1
     for i, spec_index in tqdm(enumerate(spec_indices), total=len(spec_indices.keys()),
@@ -73,6 +74,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
+        ax.legend([], [])
         if spec_index not in useset:
             continue
         j += 1
