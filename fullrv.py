@@ -156,7 +156,7 @@ if __name__ == '__main__':
                      'cs1-a': 8521.13, 'cs1-b': 8943.47}
     allinds = list(_spec_indices.keys())
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore
-    tabname = 'Master_info_correct_cm_edr3.csv'
+    tabname = 'gtc_fullinfo.csv'
     myargs = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     myargs.add_argument('-f', '--file-name', required=True, help='File to be plotted')
     myargs.add_argument('-r', '--repeat', action='store_true', default=False)
