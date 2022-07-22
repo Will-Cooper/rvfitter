@@ -5,9 +5,11 @@ import scipy.stats as ss
 from splat import Spectrum, measureIndexSet
 
 import argparse
+import sys
 from typing import Sequence
 from warnings import simplefilter
 
+sys.path.insert(0, 'rvfitter/')
 from utils import *
 from linecentering import linecentering
 from crosscorrelate import crosscorrelate

@@ -51,8 +51,8 @@ class Xcorr(Quantiser):
         self.profilefound = False
         self.use = kwargs.get('use', True)
         self.conttemplate = None
-        self.c1 = self.spec.spectral_axis.min()
-        self.c4 = self.spec.spectral_axis.max()
+        self.c1 = kwargs.get('c1', self.spec.spectral_axis.min())
+        self.c4 = kwargs.get('c4', self.spec.spectral_axis.max())
         self.linewindow = self.getlinewindow()
         self.contwindow = self.getcontwindow()
         self.iscut = False
@@ -162,7 +162,7 @@ r - Resets back to default
 2 - Selects right hand edge of spectra; anything further right is cut
 3 - Decrease smoothing level of template by 1 sigma
 4 - Increase smoothing level of template by 1 sigma
-5 - Deccrease metallicity by 0.5
+5 - Decrease metallicity by 0.5
 6 - Increase metallicity by 0.5
 7 - Change RV in steps of 5 km/s
 8 - Change RV in steps of 10 km/s
@@ -285,7 +285,7 @@ b - Go back to previous line
         if not self.use:
             return
         ls = '-'
-        templateplot = self.ax.plot(wavetemp, fluxtemp, c='orange', ls=ls, label='Template')
+        templateplot = self.ax.plot(wavetemp, fluxtemp, c='orange', ls=ls)
         handles.extend(templateplot)
         labels.append('Template')
         self.ax.legend(handles, labels)
