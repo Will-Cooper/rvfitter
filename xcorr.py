@@ -1,6 +1,5 @@
 from astropy.convolution import convolve, Gaussian1DKernel
 import matplotlib.pyplot as plt
-import pandas as pd
 
 from typing import Sequence
 
@@ -21,7 +20,7 @@ class Xcorr(Quantiser):
         rvunit = kwargs.get('rvunit', u.km / u.s)
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
-        self.templatedir = kwargs.get('templatedir', 'bt_spectra/useful/')
+        self.templatedir = kwargs.get('templatedir', 'bt-settl-cifist/useful/')
         self.templatedf = self.get_template_converter()
         self.spec = copy(spec)
         self.sub_spec = copy(self.spec)
@@ -59,7 +58,7 @@ class Xcorr(Quantiser):
         return
 
     def reset(self):
-        self.__init__(self.spec, self.labline, self.spec_index, self.ax, **self.kwargs)
+        self.__init__(copy(self.spec), self.labline, self.spec_index, self.ax, **self.kwargs)
 
     def __assertteff__(self, value: Optional[Union[float, u.Quantity]]) -> Optional[u.Quantity]:
         if isinstance(value, float) or isinstance(value, int):
@@ -206,7 +205,7 @@ b - Go back to previous line
         return
 
     def shiftsmooth(self, temp_spec: Spectrum1D):
-        temp_spec.radial_velocity = -self.rv
+        temp_spec.radial_velocity = self.rv
         wavetemp, fluxtemp, fluxtemperr = spec_unpack(temp_spec)
         fluxsmooth = convolve(fluxtemp, Gaussian1DKernel(self.smoothlevel))
         temp_spec = Spectrum1D(fluxsmooth * self.funit, wavetemp * self.wunit,
@@ -358,11 +357,11 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
         elif e.key == '?':
             print(obj)
         elif e.key == 'q':
-            plt.close()
+            plt.close(2)
         else:
             return
         if curr_pos == len(useset):
-            plt.close()
+            plt.close(2)
             return
         if e.key in ('up', 'down', '-', '+', '=', '5', '6'):
             obj.tempchanged = True
@@ -371,14 +370,17 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
         for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts:
             artist.remove()
         if e.key != 'q':
-            objlist[curr_pos].plotter()
+            try:
+                objlist[curr_pos].plotter()
+            except Exception as e:
+                print(e)
         fig.canvas.draw()
         return
 
     global curr_pos
     curr_pos = 0
     rvunit = kwargs.get('rvunit', u.km / u.s)
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 5), num=2)
     fig: plt.Figure = fig
     ax: plt.Axes = ax
     fig.canvas.mpl_connect('key_press_event', keypress)

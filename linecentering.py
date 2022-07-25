@@ -1,4 +1,3 @@
-import pandas as pd
 import scipy.stats as ss
 from tqdm import tqdm
 
@@ -60,7 +59,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
                 fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     nrows = kwargs.get('nrows', 4)
     ncols = kwargs.get('ncols', 2)
-    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4))
+    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4), num=3)
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
@@ -105,6 +104,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         os.mkdir('lcplots')
     fname = f'lcplots/{tname}{"_" + fappend}_lc.pdf'
     plt.savefig(fname, bbox_inches='tight')
+    plt.close(3)
     return df, rv_list, err_list
 
 

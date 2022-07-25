@@ -58,7 +58,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
                    fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     nrows = kwargs.get('nrows', 4)
     ncols = kwargs.get('ncols', 2)
-    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4))
+    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4), num=4)
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
@@ -121,6 +121,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         os.mkdir('xcorrplots')
     fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'
     plt.savefig(fname, bbox_inches='tight')
+    plt.close(4)
     return df, rv_list, err_list
 
 

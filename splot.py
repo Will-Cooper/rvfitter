@@ -339,22 +339,26 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
         elif e.key == '?':
             print(obj)
         elif e.key == 'q':
-            plt.close()
+            plt.close(1)
         else:
             return
         if curr_pos == len(useset):
-            plt.close()
+            plt.close(1)
             return
         for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts:
             artist.remove()
-        objlist[curr_pos].plotter()
+        if e.key != 'q':
+            try:
+                objlist[curr_pos].plotter()
+            except Exception as e:
+                print(e)
         fig.canvas.draw()
         return
 
     global curr_pos
     curr_pos = 0
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 5), num=1)
     fig: plt.Figure = fig
     ax: plt.Axes = ax
     fig.canvas.mpl_connect('key_press_event', keypress)

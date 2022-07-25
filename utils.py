@@ -2,8 +2,9 @@ from astropy.io.fits import getdata
 from astropy.modeling import Fittable1DModel
 from astropy.nddata import StdDevUncertainty
 import astropy.units as u
-import numpy as np
 from matplotlib import rcParams
+import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 
 from copy import copy
@@ -261,8 +262,9 @@ def freader(f: str, **kwargs) -> Spectrum1D:
     wunit = kwargs.get('wunit', u.AA)
     funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
     wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=np.min(wave), xmax=np.max(wave))
+    unc = StdDevUncertainty(fluxerr, unit=funit)
     spec = Spectrum1D(flux * funit, wave * wunit,
-                      uncertainty=StdDevUncertainty(fluxerr, unit=funit))
+                      uncertainty=unc)
     return spec
 
 
@@ -277,6 +279,12 @@ def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     flux = copy(spec.flux.value)
     fluxerr = copy(spec.uncertainty.quantity.value)
     return wave, flux, fluxerr
+
+
+def stephens(s: Union[pd.Series, float]) -> np.ndarray:
+    teff = 4400.9 - 467.26 * s + 54.67 * s ** 2 - 4.4727 * s ** 3 + 0.17667 * s ** 4 - 0.0025492 * s ** 5
+    teff = np.where((1200 < teff) & (teff < 4000), teff, np.nan)
+    return teff
 
 
 logging.getLogger().setLevel(logging.ERROR)

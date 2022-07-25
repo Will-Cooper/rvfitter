@@ -1,4 +1,3 @@
-import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import scipy.stats as ss
@@ -139,21 +138,29 @@ def main(fname, spec_indices, df, dflines, repeat):
     else:
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
+    expectedteff = df.loc[df['index'] == ind].kasttypenum.iloc[0]
+    if np.isnan(expectedteff):
+        expectedteff = 2000
+    else:
+        expectedteff = 100 * round(expectedteff / 100)
     logging_rvcalc(f'\n{tname}')
     dfout = df
-    dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
-    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
-    if len(lcvals) and len(xcorr):
-        dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    if hires:
+        dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
+    else:
+        lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
+    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, True, tname, 'shortname', fappend,
+                                        kwargs={'teff': expectedteff})
+    dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     dflines = get_indices(tname, 'shortname', fname, dflines)
     return dfout, dflines
 
 
 if __name__ == '__main__':
-    _spec_indices = {'k1-a': 7664.8991, 'k1-b': 7698.9645,
-                     'rb1-a': 7800.27, 'rb1-b': 7947.60,
-                     'na1-a': 8183.256, 'na1-b': 8194.824,
-                     'cs1-a': 8521.13, 'cs1-b': 8943.47}
+    _spec_indices = {'k1-a': 7664.8991, 'k1-b': 7698.9646,
+                     'rb1-a': 7800.268, 'rb1-b': 7947.603,
+                     'na1-a': 8183.2556, 'na1-b': 8194.8240,
+                     'cs1-a': 8521.13165, 'cs1-b': 8943.47424}  # air
     allinds = list(_spec_indices.keys())
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore
     tabname = 'gtc_fullinfo.csv'
