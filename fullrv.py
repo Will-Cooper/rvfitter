@@ -139,6 +139,8 @@ def main(fname, spec_indices, df, dflines, repeat):
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
     expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)
+    print(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60, expectedteff)
+    exit()
     if np.isnan(expectedteff):
         expectedteff = 2000
     else:
@@ -153,7 +155,8 @@ def main(fname, spec_indices, df, dflines, repeat):
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, True, tname, 'shortname', fappend,
                                         kwargs={'teff': expectedteff})
-    dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    if len(lcvals) and len(xcorr):
+        dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     dflines = get_indices(tname, 'shortname', fname, dflines)
     return dfout, dflines
 
