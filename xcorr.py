@@ -35,7 +35,6 @@ class Xcorr(Quantiser):
         self.gravunit = u.dex
         self.metunit = u.dex
         self.teff = kwargs.get('teff', 2000) * self.teffunit
-        print(self.teff)
         self.grav = kwargs.get('grav', 5.) * self.gravunit
         self.met = kwargs.get('met', 0.) * self.metunit
         self.templatefname = ''
