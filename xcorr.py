@@ -35,6 +35,7 @@ class Xcorr(Quantiser):
         self.gravunit = u.dex
         self.metunit = u.dex
         self.teff = kwargs.get('teff', 2000) * self.teffunit
+        print(self.teff)
         self.grav = kwargs.get('grav', 5.) * self.gravunit
         self.met = kwargs.get('met', 0.) * self.metunit
         self.templatefname = ''
@@ -191,6 +192,7 @@ b - Go back to previous line
 
     def templates_query(self):
         if self.tempchanged:
+            print(self.teff)
             try:
                 fname = self.templatedf.loc[(self.templatedf.teff == self.teff.value) &
                                             (self.templatedf.logg == self.grav.value) &
@@ -393,6 +395,7 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
     curr_pos = 0
     goodinds = np.zeros(len(useset), dtype=bool)
     objlist = np.empty_like(goodinds, dtype=object)
+    print(kwargs)
     for i, (spec_index, labline) in tqdm(enumerate(spec_indices.items()), total=len(spec_indices),
                                          desc='Prepping Cross Correlation', leave=False):
         objlist[i] = Xcorr(copy(spec), labline, spec_index, ax, **kwargs)

@@ -140,7 +140,6 @@ def main(fname, spec_indices, df, dflines, repeat):
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
     expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)
     print(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60, expectedteff)
-    exit()
     if np.isnan(expectedteff):
         expectedteff = 2000
     else:
