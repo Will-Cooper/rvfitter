@@ -195,6 +195,8 @@ b - Go back to previous line
                                             (self.templatedf.logg == self.grav.value) &
                                             (self.templatedf.met == self.met.value)].iloc[0].name
                 fname = self.templatedir + fname
+                kwargs = self.kwargs
+                kwargs['wavearr'] = self.spec.spectral_axis.value
                 temp_spec = self.cutspec(freader(fname, **self.kwargs))
             except (IndexError, FileNotFoundError, OSError):
                 self.gottemplate = False

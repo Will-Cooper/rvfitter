@@ -245,6 +245,7 @@ def normaliser(x: np.ndarray, *args, xmin: float = 8100, xmax: float = 8200):
 
 
 def freader(f: str, **kwargs) -> Spectrum1D:
+    wavearr = kwargs.get('wavearr', None)
     if f.endswith('txt'):
         try:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1))  # load file
@@ -252,6 +253,9 @@ def freader(f: str, **kwargs) -> Spectrum1D:
             raise (e, 'Cannot find given file in: ', f)
         except ValueError:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1), skiprows=1)  # load file
+        if wavearr is not None:
+            flux = np.interp(wavearr, wave, flux)
+        wave = wavearr
         fluxerr = np.zeros_like(flux)
     else:  # fits
         target = getdata(f)
