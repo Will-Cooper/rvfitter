@@ -138,11 +138,13 @@ def main(fname, spec_indices, df, dflines, repeat):
     else:
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
-    expectedteff = df.loc[df['index'] == ind].kasttypenum.iloc[0]
+    expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0])
     if np.isnan(expectedteff):
         expectedteff = 2000
     else:
         expectedteff = 100 * round(expectedteff / 100)
+        if 1200 > expectedteff > 4000:
+            expectedteff = 2000
     logging_rvcalc(f'\n{tname}')
     dfout = df
     if hires:
