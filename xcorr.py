@@ -1,5 +1,6 @@
 from astropy.convolution import convolve, Gaussian1DKernel
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from typing import Sequence
 
@@ -392,7 +393,8 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
     curr_pos = 0
     goodinds = np.zeros(len(useset), dtype=bool)
     objlist = np.empty_like(goodinds, dtype=object)
-    for i, (spec_index, labline) in enumerate(spec_indices.items()):
+    for i, (spec_index, labline) in tqdm(enumerate(spec_indices.items()), total=len(spec_indices),
+                                         desc='Prepping Cross Correlation', leave=False):
         objlist[i] = Xcorr(copy(spec), labline, spec_index, ax, **kwargs)
     objlist[0].plotter()
     plt.show()

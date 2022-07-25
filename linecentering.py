@@ -115,6 +115,8 @@ def linecentering(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
     logging_rvcalc(f'{tname}: Line Center')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
     if not len(useset):
-        return df, [], []
+        allindices = np.array(list(spec_indices.keys()))
+        lcvals, lcerr = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
+        return df, lcvals, lcerr
     dfout, lcvals, lcerr = auto_lc_fit(useset, spec_indices, objlist, df, tname, colname, fappend, **kwargs)
     return dfout, lcvals, lcerr

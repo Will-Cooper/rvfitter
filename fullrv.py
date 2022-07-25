@@ -66,7 +66,6 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     lcploterr = copy(lcerr)
     xplot = copy(xcorr)
     xploterr = copy(xerr)
-    print(xcorr)
     xcorr = xcorr[~np.isnan(xcorr)]
     xerr = xerr[~np.isnan(xerr)]
     lcvals = lcvals[~np.isnan(lcvals)]
@@ -139,7 +138,7 @@ def main(fname, spec_indices, df, dflines, repeat):
     else:
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
-    expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0])
+    expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)
     if np.isnan(expectedteff):
         expectedteff = 2000
     else:

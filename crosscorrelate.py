@@ -132,6 +132,8 @@ def crosscorrelate(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
     logging_rvcalc(f'{tname}: Cross Correlation')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
     if not len(useset):
-        return df, [], []
+        allindices = np.array(list(spec_indices.keys()))
+        xcorr, xerr = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
+        return df, xcorr, xerr
     dfout, xcorr, xerr = auto_xcorr_fit(useset, spec_indices, objlist, df, tname, colname, fappend, **kwargs)
     return dfout, xcorr, xerr
