@@ -1,5 +1,4 @@
 import scipy.stats as ss
-from tqdm import tqdm
 
 from xcorr import *
 

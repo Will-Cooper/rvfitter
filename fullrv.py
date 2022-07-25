@@ -55,7 +55,7 @@ def chekres(fname: str) -> bool:
 
 def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: Sequence[float], lcerr: Sequence[float],
               xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict) -> pd.DataFrame:
-    fig: plt.Figure = plt.figure(figsize=(4, 3))
+    fig: plt.Figure = plt.figure(figsize=(4, 3), num=5)
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
@@ -70,6 +70,9 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     xerr = xerr[~np.isnan(xerr)]
     lcvals = lcvals[~np.isnan(lcvals)]
     lcerr = lcerr[~np.isnan(lcerr)]
+    if not len(lcvals) or not len(xcorr):
+        plt.close(5)
+        return df
     locx, scalex = ss.norm.fit(xcorr)
     loclc, scalelc = ss.norm.fit(lcvals)
     if len(lcvals) == 1:
@@ -139,7 +142,6 @@ def main(fname, spec_indices, df, dflines, repeat):
         return df, dflines
     tname = df.loc[df['index'] == ind].shortname.iloc[0]
     expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)
-    print(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60, expectedteff)
     if np.isnan(expectedteff):
         expectedteff = 2000
     else:
@@ -153,9 +155,8 @@ def main(fname, spec_indices, df, dflines, repeat):
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, True, tname, 'shortname', fappend,
-                                        kwargs={'teff': expectedteff})
-    if len(lcvals) and len(xcorr):
-        dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+                                        teff=expectedteff)
+    dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     dflines = get_indices(tname, 'shortname', fname, dflines)
     return dfout, dflines
 
