@@ -154,7 +154,7 @@ def main(fname, spec_indices, df, dflines, repeat):
         dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
-    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, True, tname, 'shortname', fappend,
+    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend,
                                         teff=expectedteff)
     dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     dflines = get_indices(tname, 'shortname', fname, dflines)
