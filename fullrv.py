@@ -129,6 +129,15 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     return df
 
 
+def errorappend(df: pd.DataFrame, tname: str, colname: str):
+    teffstd = df.loc[df[colname] == tname, 'xcorrtefferr'].iloc[0]
+    gravstd = df.loc[df[colname] == tname, 'xcorrgraverr'].iloc[0]
+    if not np.isnan(df.loc[df[colname] == tname, 'xcorrtefferr'].iloc[0]):
+        df.loc[df[colname] == tname, 'xcorrtefferr'] = np.sqrt(teffstd ** 2 + 50 ** 2)
+        df.loc[df[colname] == tname, 'xcorrgraverr'] = np.sqrt(gravstd ** 2 + 0.25 ** 2)
+    return df
+
+
 def main(fname, spec_indices, df, dflines, repeat):
     hires = chekres(fname)
     if hires:
@@ -140,7 +149,8 @@ def main(fname, spec_indices, df, dflines, repeat):
         ind = row['index']
     else:
         return df, dflines
-    tname = df.loc[df['index'] == ind].shortname.iloc[0]
+    colname = 'shortname'
+    tname = df.loc[df['index'] == ind, colname].iloc[0]
     expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)
     if np.isnan(expectedteff):
         expectedteff = 2000
@@ -151,13 +161,14 @@ def main(fname, spec_indices, df, dflines, repeat):
     logging_rvcalc(f'\n{tname}')
     dfout = df
     if hires:
-        dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend)
+        dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname, fappend)
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
-    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, 'shortname', fappend,
-                                        teff=expectedteff)
-    dfout = adoptedrv(dfout, 'shortname', tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
-    dflines = get_indices(tname, 'shortname', fname, dflines)
+    dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname, fappend,
+                                        teff=expectedteff, dorv=hires)
+    dfout = errorappend(dfout, tname, colname)
+    dfout = adoptedrv(dfout, colname, tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    dflines = get_indices(tname, colname, fname, dflines)
     return dfout, dflines
 
 

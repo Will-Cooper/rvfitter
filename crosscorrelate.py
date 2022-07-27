@@ -57,6 +57,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
                    fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
     nrows = kwargs.get('nrows', 4)
     ncols = kwargs.get('ncols', 2)
+    dorv = kwargs.get('dorv', True)
     fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4), num=4)
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
@@ -84,8 +85,9 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         teffobj = int(obj.teff.value)
         logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
                        f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} km/s')
-        rv_list[j] = obj.rv.value
-        err_list[j] = obj.rverr.value
+        if dorv:
+            rv_list[j] = obj.rv.value
+            err_list[j] = obj.rverr.value
         teff_list[j] = teffobj
         grav_list[j] = obj.grav.value
         met_list[j] = obj.met.value
@@ -97,9 +99,6 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     met_list_cut = met_list[~np.isnan(met_list)]
     if len(rv_list_cut):
         rv, std = ss.norm.fit(rv_list_cut)
-        teff, _ = ss.norm.fit(teff_list_cut)
-        grav, _ = ss.norm.fit(grav_list_cut)
-        met, _ = ss.norm.fit(met_list_cut)
         if len(rv_list_cut) > 1:
             err = std / np.sqrt(len(rv_list_cut))
         else:
@@ -107,11 +106,20 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         df.loc[df[colname] == tname, 'thisrvxcorrerr'] = round(err, 1)
     else:
         logging_rvcalc('Empty RV list for cross correlation calculation!')
+    if len(teff_list_cut):
+        teff, teffstd = ss.norm.fit(teff_list_cut)
+        grav, gravstd = ss.norm.fit(grav_list_cut)
+        met, metstd = ss.norm.fit(met_list_cut)
+    else:
+        teffstd, gravstd, metstd = np.nan, np.nan, np.nan
     logging_rvcalc(f'RV Cross Correlation = {rv:.1f} +/- {err:.1f}km/s')
     df.loc[df[colname] == tname, 'thisrvxcorr'] = round(rv, 1)
     df.loc[df[colname] == tname, 'xcorrteff'] = teff
     df.loc[df[colname] == tname, 'xcorrgrav'] = grav
     df.loc[df[colname] == tname, 'xcorrmet'] = met
+    df.loc[df[colname] == tname, 'xcorrtefferr'] = teffstd
+    df.loc[df[colname] == tname, 'xcorrgraverr'] = gravstd
+    df.loc[df[colname] == tname, 'xcorrmeterr'] = metstd
 
     fig.supxlabel(r'Wavelength [' + wunit.to_string(u.format.Latex) + ']')
     fig.supylabel(r'Normalised Flux [$F_{\lambda}$]')
