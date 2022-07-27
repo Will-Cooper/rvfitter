@@ -59,9 +59,9 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
-    indicesplot = [specindex.capitalize() + r' $\lambda$'
-                   + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()]
-    ypos = (np.arange(len(allindices)) + 1)[::-1]
+    indicesplot = np.array([specindex.capitalize() + r' $\lambda$'
+                           + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()])[::-1]
+    ypos = np.arange(len(allindices)) + 1
     lcplot = copy(lcvals)
     lcploterr = copy(lcerr)
     xplot = copy(xcorr)
