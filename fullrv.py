@@ -61,7 +61,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     allindices = np.array(list(spec_indices.keys()))
     indicesplot = [specindex.capitalize() + r' $\lambda$'
                    + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()]
-    ypos = np.arange(len(allindices)) + 1
+    ypos = (np.arange(len(allindices)) + 1)[::-1]
     lcplot = copy(lcvals)
     lcploterr = copy(lcerr)
     xplot = copy(xcorr)
