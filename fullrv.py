@@ -187,7 +187,7 @@ if __name__ == '__main__':
     _fname: str = sysargs.file_name
     _repeat: bool = sysargs.repeat
     _df: pd.DataFrame = pd.read_csv(tabname)
-    _dflines: pd.DataFrame = pd.read_csv(tabname.replace('.csv', '_lines.csv'))
+    _dflines: pd.DataFrame = pd.read_csv('spectral_indices.csv')
     _df.rename(columns={col: col.lower() for col in _df.columns}, inplace=True)
     _df, _dflines = main(_fname, _spec_indices, _df, _dflines, _repeat)
-    _dflines.to_csv(tabname.replace('.csv', '_lines.csv'), index=False)
+    _dflines.to_csv('spectral_indices.csv', index=False)
