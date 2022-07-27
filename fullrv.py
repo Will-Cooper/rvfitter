@@ -193,4 +193,5 @@ if __name__ == '__main__':
     _dflines: pd.DataFrame = pd.read_csv('spectral_indices.csv')
     _df.rename(columns={col: col.lower() for col in _df.columns}, inplace=True)
     _df, _dflines = main(_fname, _spec_indices, _df, _dflines, _repeat)
+    _df.to_csv(tabname, index=False)
     _dflines.to_csv('spectral_indices.csv', index=False)
