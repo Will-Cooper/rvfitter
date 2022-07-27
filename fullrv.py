@@ -18,7 +18,10 @@ def tabquery(fname: str, df: pd.DataFrame) -> Optional[pd.Series]:
     fnameonly = fname.split('/')[-1]
     if 'R2500I' in fname:
         thisres = 'R2500I'
-        tgtname = fnameonly[: fnameonly.find('_tellcorr.fits')]
+        if 'tellcorr' in fnameonly:
+            tgtname = fnameonly[: fnameonly.find('_tellcorr.fits')]
+        else:
+            tgtname = fnameonly[: fnameonly.find('.fits')]
     elif 'R300R' in fname:
         thisres = 'R0300R'
         tgtname = fnameonly[: fnameonly.find('.fits')]
