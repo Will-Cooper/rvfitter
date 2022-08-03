@@ -64,7 +64,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
     indicesplot = np.array([specindex.capitalize() + r' $\lambda$'
-                           + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()])[::-1]
+                           + f'{int(pos)}' + r'$\AA$' for specindex, pos in spec_indices.items()])
     ypos = np.arange(len(allindices)) + 1
     lcplot = copy(lcvals)
     lcploterr = copy(lcerr)
@@ -120,7 +120,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axpdf.set_ylim(-0.1, 1.1)
     axpdf.set_xlim(minpos, maxpos)
     axpdf.set_xlabel('RV [km/s]', fontsize='medium')
-    axpdf.set_ylabel('Normalised PDF', fontsize='medium')
+    axpdf.set_ylabel('PDF', fontsize='medium')
 
     if hires:
         fig.savefig(f'adoptedrvplots/{tname}_R2500I_adoptedrv.pdf', bbox_inches='tight')
