@@ -255,7 +255,7 @@ b - Go back to previous line
         handles.append(lablineplot)
         labels.append('Laboratory Line')
         if self.profilefound:
-            self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.rv.value:.1f} km/s')
+            self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.rv.value:.1f}\,km/s')
         else:
             self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}')
         if not self.iscut:
@@ -296,7 +296,9 @@ b - Go back to previous line
             self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.r1.value, self.r2.value,
                                   color='grey', alpha=0.5)
             self.ax.set_ylim(0.1 * np.floor(np.min(fityval) / 0.1), 0.1 * np.ceil(np.max(fityval) / 0.1))
-            self.ax.set_xlim(self.x_0.value - 2 * self.std.value, self.x_0.value + 2 * self.std.value)
+            ldiff = self.x_0 - self.r1
+            rdiff = self.r2 - self.x_0
+            self.ax.set_xlim(self.x_0.value - 1.5 * ldiff.value, self.x_0.value + 1.5 * rdiff.value)
         self.ax.legend(handles, labels)
 
 
