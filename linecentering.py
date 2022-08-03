@@ -73,8 +73,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
-        ax.set_ylim(*np.array([np.floor(np.min(obj.sub_speccorr.flux.value) / 0.1) * 0.1,
-                               np.ceil(np.max(obj.sub_speccorr.flux.value) / 0.1) * 0.1]), )
+        ax.set_ylim(None, None)
         ax.set_xticks([spec_indices[spec_index]])
         ax.set_yticks([])
         ax.legend([], [])
