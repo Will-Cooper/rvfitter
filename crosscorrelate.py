@@ -77,10 +77,13 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         obj.plotter()
         ax.set_ylim(*np.array([np.floor(np.min(obj.sub_speccorr.flux.value)),
                                np.ceil(np.max(obj.sub_speccorr.flux.value))]), )
+        ax.set_xticks([spec_indices[spec_index]])
         ax.set_yticks([])
         ax.legend([], [])
         if spec_index not in useset:
             continue
+        shift: float = inv_rv_calc(obj.rv.value, spec_indices[spec_index])
+        ax.set_xticklabels([f'$\Delta \lambda = ${shift:.2f}'])
         j += 1
         teffobj = int(obj.teff.value)
         logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
@@ -123,7 +126,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
 
     fig.supxlabel(r'Wavelength [' + wunit.to_string(u.format.Latex) + ']')
     fig.supylabel(r'Normalised Flux [$F_{\lambda}$]')
-    fig.subplots_adjust(hspace=1)
+    fig.subplots_adjust(hspace=1, wspace=0.5)
     if not os.path.exists('xcorrplots'):
         os.mkdir('xcorrplots')
     fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'

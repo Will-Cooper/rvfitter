@@ -298,7 +298,8 @@ b - Go back to previous line
             self.ax.set_ylim(0.1 * np.floor(np.min(fityval) / 0.1), 0.1 * np.ceil(np.max(fityval) / 0.1))
             ldiff = self.x_0 - self.r1
             rdiff = self.r2 - self.x_0
-            self.ax.set_xlim(self.x_0.value - 1.5 * ldiff.value, self.x_0.value + 1.5 * rdiff.value)
+            mdiff = np.mean([ldiff.value, rdiff.value])
+            self.ax.set_xlim(self.x_0.value - 1.5 * mdiff, self.x_0.value + 1.5 * mdiff)
         self.ax.legend(handles, labels)
 
 

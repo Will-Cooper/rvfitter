@@ -212,7 +212,7 @@ class Quantiser:
         self.linewindow = self.getlinewindow()
 
 
-def inv_rv_calc(shift: float, wave: np.ndarray) -> np.ndarray:
+def inv_rv_calc(shift: float, wave: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
     c = 299792458 / 1e3
     cair = c / 1.000276
     return shift * wave / cair
