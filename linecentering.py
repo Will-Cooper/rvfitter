@@ -73,13 +73,15 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
+        ax.set_ylim(*np.array([np.floor(np.min(obj.sub_speccorr.flux.value)),
+                               np.ceil(np.max(obj.sub_speccorr.flux.value))]), )
         ax.set_xticks([spec_indices[spec_index]])
         ax.set_yticks([])
         ax.legend([], [])
         if spec_index not in useset:
             continue
         shift: float = spec_indices[spec_index] - obj.x_0.value
-        ax.set_xticklabels([f'$\Delta \lambda = ${shift:.2f}\,' + wunit.to_string(u.format.Latex)])
+        ax.set_xticklabels([f'$\Delta \lambda = $ {shift:.2f}\,' + wunit.to_string(u.format.Latex)])
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
                        f' with {obj.std.value:.1f}A sigma; {obj.rv.value:.1f} km/s.')
@@ -100,9 +102,8 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
     logging_rvcalc(f'RV Line Centre = {rv:.1f} +/- {err:.1f}km/s')
     df.loc[df[colname] == tname, 'thisrvlc'] = round(rv, 1)
 
-    fig.supxlabel(r'Wavelength [' + wunit.to_string(u.format.Latex) + ']')
     fig.supylabel(r'Normalised Flux [$F_{\lambda}$]')
-    fig.subplots_adjust(hspace=1, wspace=0)
+    fig.subplots_adjust(hspace=1, wspace=0.01)
     if not os.path.exists('lcplots'):
         os.mkdir('lcplots')
     fname = f'lcplots/{tname}{"_" + fappend}_lc.pdf'

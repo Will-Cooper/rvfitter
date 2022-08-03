@@ -4,6 +4,7 @@ import scipy.stats as ss
 from splat import Spectrum, measureIndexSet
 
 import argparse
+from collections import OrderedDict
 import sys
 from typing import Sequence
 from warnings import simplefilter
@@ -142,6 +143,7 @@ def errorappend(df: pd.DataFrame, tname: str, colname: str):
 
 
 def main(fname, spec_indices, df, dflines, repeat):
+    spec_indices = OrderedDict(spec_indices)
     hires = chekres(fname)
     if hires:
         fappend = 'R2500I'
