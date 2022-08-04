@@ -1,3 +1,4 @@
+from astropy.io.fits import getheader
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import scipy.stats as ss
@@ -143,6 +144,14 @@ def errorappend(df: pd.DataFrame, tname: str, colname: str):
     return df
 
 
+def getwaverms(fname: str) -> float:
+    wvcalibf = fname[:fname.find('Science')] + 'wvcalib.fits'
+    head: Dict[str, float] = getheader(wvcalibf, 2)
+    disp: float = head['CEN_DISP']  # central dispersion in wave/ pix
+    rms: float = head['RMS']  # rms in pixels
+    return disp * rms
+
+
 def main(fname, spec_indices, df, dflines, repeat):
     spec_indices = OrderedDict(spec_indices)
     hires = chekres(fname)
@@ -166,12 +175,14 @@ def main(fname, spec_indices, df, dflines, repeat):
             expectedteff = 2000
     logging_rvcalc(f'\n{tname}')
     dfout = df
+    waverms = getwaverms(fname)
     if hires:
-        dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname, fappend)
+        dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname, fappend,
+                                             waverms=waverms)
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname, fappend,
-                                        teff=expectedteff, dorv=hires)
+                                        teff=expectedteff, dorv=hires, waverms=waverms)
     dfout = errorappend(dfout, tname, colname)
     dfout = adoptedrv(dfout, colname, tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     dflines = get_indices(tname, colname, fname, dflines)
