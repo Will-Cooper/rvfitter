@@ -80,7 +80,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         ax.legend([], [])
         if spec_index not in useset:
             continue
-        shift: float = spec_indices[spec_index] - obj.x_0.value
+        shift: float = obj.x_0.value - spec_indices[spec_index]
         ax.set_xticklabels([f'$\Delta \lambda = $ {shift:.2f}\,' + wunit.to_string(u.format.Latex)])
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'

@@ -280,8 +280,9 @@ b - Go back to previous line
             p = self.ax.plot(wave, flux, 'k')
             handles.extend(p)
             labels.append('Data')
+        self.ax.axvline(self.labline.value, color='grey', ls='--')
         self.ax.axvline(self.labline.value + inv_rv_calc(self.rv.value, self.labline.value),
-                        color='grey', ls='--')
+                        color='black', ls='--')
         self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.teff.value}\,K, '
                                      f'{self.grav.value}\,dex, {self.met.value}\,dex, {self.rv.value:.1f}\,km/s')
         if not self.use:
