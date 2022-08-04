@@ -28,6 +28,7 @@ class Xcorr(Quantiser):
         self.sub_speccorr = copy(self.sub_spec)
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
+        self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))
         self.rv = self.__assertrv__(kwargs.get('rv', 0))
         self.rverr = self.__assertrv__(5)
         self.rvstep = self.__assertrv__(kwargs.get('rvstep', 10))
@@ -213,7 +214,7 @@ b - Go back to previous line
         fluxsmooth = convolve(fluxtemp, Gaussian1DKernel(self.smoothlevel))
         temp_spec = Spectrum1D(fluxsmooth * self.funit, wavetemp * self.wunit,
                                uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
-        self.rverr = self.rvstep / 2
+        self.rverr = self.rvstep / 2 + inv_rv_calc(self.waverms.value, self.labline.value) * self.rvunit
         return temp_spec
 
     def __updatewindows__(self):

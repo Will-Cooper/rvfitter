@@ -45,6 +45,7 @@ class Splot(Quantiser):
         self.linewindow = self.getlinewindow()
         self.contwindow = self.getcontwindow()
         self.fitter = LevMarLSQFitter(calc_uncertainties=True)
+        self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))
         self.shift = self.__assertwavelength__(np.nan)
         self.shifterr = self.__assertwavelength__(np.nan)
         self.rv = self.__assertrv__(np.nan)
@@ -129,7 +130,7 @@ b - Go back to previous line
         self.shift = self.x_0 - self.labline
         self.cov = self.fitter.fit_info['param_cov']
         errs = np.sqrt(np.diag(self.cov))
-        self.shifterr = errs[ind] * self.wunit
+        self.shifterr = errs[ind] * self.wunit + self.waverms
 
     def __rvcalc__(self, shift: u.Quantity) -> u.Quantity:
         c = 299792458 / 1e3 * self.rvunit
