@@ -96,7 +96,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     posteriorpdf = xcorrpdf * lcpdf
     locpost = (locx * scalelc ** 2 + loclc * scalex ** 2) / (scalex ** 2 + scalelc ** 2)
     stdpost = np.sqrt(scalex ** 2 * scalelc ** 2 / (scalex ** 2 + scalelc ** 2))
-    errpost = stdpost / np.sqrt(len(xcorr) + len(lcvals))
+    errpost = stdpost
 
     xcorrpdf /= np.max(xcorrpdf)
     lcpdf /= np.max(lcpdf)
