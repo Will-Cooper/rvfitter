@@ -390,8 +390,8 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
     ax: plt.Axes = ax
     fig.canvas.mpl_connect('key_press_event', keypress)
     useset = np.fromiter(spec_indices.keys(), dtype='<U8')
-    ax.set_xlabel(r'Wavelength [$\AA$]')
-    ax.set_ylabel('Normalised Flux')
+    ax.set_xlabel(r'Wavelength\,[$\AA$]')
+    ax.set_ylabel('Normalised Flux [$F_{\lambda}$]')
     curr_pos = 0
     goodinds = np.zeros(len(useset), dtype=bool)
     objlist = np.empty_like(goodinds, dtype=object)
