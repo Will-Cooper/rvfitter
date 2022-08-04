@@ -73,8 +73,9 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
-        specreg: Spectrum1D = extract_region(obj.sub_spec, SpectralRegion(obj.r1, obj.r2))
-        ax.set_ylim(np.floor(specreg.flux.min().value / 0.1) * 0.1, np.ceil(specreg.flux.max().value / 0.1) * 0.1)
+        if all([isinstance(objcoord, u.Quantity) for objcoord in (obj.r1, obj.r2)]):
+            specreg: Spectrum1D = extract_region(obj.sub_spec, SpectralRegion(obj.r1, obj.r2))
+            ax.set_ylim(np.floor(specreg.flux.min().value / 0.1) * 0.1, np.ceil(specreg.flux.max().value / 0.1) * 0.1)
         ax.set_xticks([spec_indices[spec_index]])
         ax.set_yticks([])
         ax.legend([], [])
