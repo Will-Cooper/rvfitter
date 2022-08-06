@@ -259,10 +259,12 @@ def freader(f: str, **kwargs) -> Spectrum1D:
         fluxerr = np.zeros_like(flux)
     else:  # fits
         target = getdata(f)
-        wave = target.wave[1:]
+        wave = target.wave
+        wave, uniquebool = np.unique(wave, return_index=True)  # check there aren't duplicate wavelengths
         wave = np.array(vac_to_air(wave * u.AA, method='Edlen1953') / u.AA)
-        flux = target.flux[1:]
-        fluxerr = np.divide(1., target.ivar[1:], where=~np.isclose(target.ivar[1:], 0))
+        flux = target.flux[uniquebool]
+        fluxivar = target.ivar[uniquebool]
+        fluxerr = np.divide(1., fluxivar, where=~np.isclose(fluxivar, 0))
     wunit = kwargs.get('wunit', u.AA)
     funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
     wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=np.min(wave), xmax=np.max(wave))

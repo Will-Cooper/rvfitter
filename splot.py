@@ -344,6 +344,7 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
             print(obj)
         elif e.key == 'q':
             plt.close(1)
+            return
         else:
             return
         if curr_pos == len(useset):
