@@ -12,37 +12,57 @@ rcParams['keymap.forward'].remove('right')
 
 
 class Xcorr(Quantiser):
+    """
+    The programme for cross correlation
+    """
 
     def __init__(self, spec: Spectrum1D, labline: Union[float, u.Quantity],
                  spec_index: str, ax: plt.Axes = None, **kwargs):
+        """
+        When initialising the cross correlation programme
+
+        Parameters
+        ----------
+        spec
+            The spectrum of the object
+        labline
+            The wavelength of the spectral index
+        spec_index
+            The name of the spectral index
+        ax
+            The axis being plotted on
+        kwargs
+            Extra fitting parameters, see:
+            wunit, funit, rvunit, templatedir, waverms, rv, rvstep, teff, grav, met, smoothlevel, use, c1, c4
+        """
         self.kwargs = kwargs
-        wunit = kwargs.get('wunit', u.AA)
-        funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
-        rvunit = kwargs.get('rvunit', u.km / u.s)
+        wunit = kwargs.get('wunit', u.AA)  # the unit for wavelengths
+        funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)  # flux unit
+        rvunit = kwargs.get('rvunit', u.km / u.s)  # RV unit
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
-        self.templatedir = kwargs.get('templatedir', 'bt-settl-cifist/useful/')
+        self.templatedir = kwargs.get('templatedir', 'bt-settl-cifist/useful/')  # the template directory
         self.templatedf = self.get_template_converter()
         self.spec = copy(spec)
         self.sub_spec = copy(self.spec)
         self.sub_speccorr = copy(self.sub_spec)
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
-        self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))
-        self.rv = self.__assertrv__(kwargs.get('rv', 0))
+        self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))  # wavelength rms
+        self.rv = self.__assertrv__(kwargs.get('rv', 0))  # RV
         self.rverr = self.__assertrv__(5)
-        self.rvstep = self.__assertrv__(kwargs.get('rvstep', 10))
+        self.rvstep = self.__assertrv__(kwargs.get('rvstep', 10))  # RV step size
         self.teffunit = u.K
         self.gravunit = u.dex
         self.metunit = u.dex
-        self.teff = kwargs.get('teff', 2000) * self.teffunit
-        self.grav = kwargs.get('grav', 5.) * self.gravunit
-        self.met = kwargs.get('met', 0.) * self.metunit
+        self.teff = kwargs.get('teff', 2000) * self.teffunit  # teff
+        self.grav = kwargs.get('grav', 5.) * self.gravunit  # gravity
+        self.met = kwargs.get('met', 0.) * self.metunit  # metallicity
         self.templatefname = ''
         self.temp_spec = copy(spec)
         self.sub_temp_spec = copy(self.temp_spec)
         self.sub_temp_speccorr = copy(self.sub_temp_spec)
-        self.smoothlevel = kwargs.get('smoothlevel', 1)
+        self.smoothlevel = kwargs.get('smoothlevel', 1)  # smoothing level
         self.gottemplate = False
         self.tempchanged = True
         self.templates_query()
@@ -50,16 +70,19 @@ class Xcorr(Quantiser):
             raise IndexError('Failed to initialise with default teff/ grav/ met')
         self.contfound = False
         self.profilefound = False
-        self.use = kwargs.get('use', True)
+        self.use = kwargs.get('use', True)  # whether to use this spectral line or not
         self.conttemplate = None
-        self.c1 = kwargs.get('c1', self.spec.spectral_axis.min())
-        self.c4 = kwargs.get('c4', self.spec.spectral_axis.max())
+        self.c1 = kwargs.get('c1', self.spec.spectral_axis.min())  # the left most spectral boundary
+        self.c4 = kwargs.get('c4', self.spec.spectral_axis.max())  # the right most spectral boundary
         self.linewindow = self.getlinewindow()
         self.contwindow = self.getcontwindow()
         self.iscut = False
         return
 
     def reset(self):
+        """
+        Resetting the data
+        """
         self.__init__(copy(self.spec), self.labline, self.spec_index, self.ax, **self.kwargs)
 
     def __assertteff__(self, value: Optional[Union[float, u.Quantity]]) -> Optional[u.Quantity]:
@@ -182,6 +205,14 @@ b - Go back to previous line
 
     @staticmethod
     def get_template_converter() -> pd.DataFrame:
+        """
+        Converting the .json of templates into a dataframe
+
+        Returns
+        -------
+        df
+            The dataframe of the template lookup
+        """
         jdname = 'template_lookup.json'
         if not os.path.exists(jdname):
             raise FileNotFoundError(f'Need lookup file: {jdname}')
@@ -191,6 +222,9 @@ b - Go back to previous line
         return df
 
     def templates_query(self):
+        """
+        Querying the templates with a given teff, gravity and metallicity
+        """
         if self.tempchanged:
             try:
                 fname = self.templatedf.loc[(self.templatedf.teff == self.teff.value) &
@@ -208,7 +242,20 @@ b - Go back to previous line
         self.gottemplate = True
         return
 
-    def shiftsmooth(self, temp_spec: Spectrum1D):
+    def shiftsmooth(self, temp_spec: Spectrum1D) -> Spectrum1D:
+        """
+        Shifting and smoothing the spectrum
+
+        Parameters
+        ----------
+        temp_spec
+            The input spectrum
+
+        Returns
+        -------
+        temp_spec
+            The shifted input spectrum
+        """
         temp_spec.radial_velocity = self.rv
         wavetemp, fluxtemp, fluxtemperr = spec_unpack(temp_spec)
         fluxsmooth = convolve(fluxtemp, Gaussian1DKernel(self.smoothlevel))
@@ -218,6 +265,9 @@ b - Go back to previous line
         return temp_spec
 
     def __updatewindows__(self):
+        """
+        Cutting the spectrum
+        """
         super().__updatewindows__()
         self.sub_temp_spec = self.cutspec(self.temp_spec)
         if self.c1 == self.spec.spectral_axis.min() or self.c4 == self.spec.spectral_axis.max():
@@ -226,6 +276,9 @@ b - Go back to previous line
             self.iscut = True
 
     def normalise(self):
+        """
+        Normalising the spectra
+        """
         wave, flux, fluxerr = spec_unpack(self.sub_spec)
         wavetemp, fluxtemp, fluxtemperr = spec_unpack(self.sub_temp_spec)
         wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=self.c1.value, xmax=self.c4.value)
@@ -237,6 +290,9 @@ b - Go back to previous line
                                             uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
 
     def __fitready__(self):
+        """
+        A check being made before any plotting
+        """
         try:
             self.templates_query()
             if not self.gottemplate:
@@ -255,6 +311,9 @@ b - Go back to previous line
         self.gottemplate = True
 
     def plotter(self):
+        """
+        Plotting routine
+        """
         self.__fitready__()
         handles, labels = [], []
         if self.iscut:
@@ -296,6 +355,24 @@ b - Go back to previous line
 
 
 def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Xcorr]]:
+    """
+    Manually fitting the cross correlation for each object
+
+    Parameters
+    ----------
+    spec
+        The spectrum of the object
+    spec_indices
+        The dictionary of indices
+    kwargs
+        The fit parameters passed on to the fitting
+
+    Returns
+    -------
+    useset, objlist
+        The list of lines used
+        The list of all of the fits
+    """
     def keypress(e):
         global curr_pos
         obj = objlist[curr_pos]

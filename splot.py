@@ -11,41 +11,62 @@ curr_pos = 0
 
 
 class Splot(Quantiser):
+    """
+    The programme for line centering
+    """
 
     def __init__(self, spec: Spectrum1D, labline: Union[float, u.Quantity],
                  spec_index: str, ax: plt.Axes = None, **kwargs):
-        wunit = kwargs.get('wunit', u.AA)
-        funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
-        rvunit = kwargs.get('rvunit', u.km / u.s)
+        """
+        When initialising the line centering programme
+
+        Parameters
+        ----------
+        spec
+            The spectrum of the object
+        labline
+            The wavelength of the spectral index
+        spec_index
+            The name of the spectral index
+        ax
+            The axis being plotted on
+        kwargs
+            Extra fitting parameters, see:
+            wunit, funit, rvunit, waverms, use, c1, c2, c3, c4, r1, r2, mu, std, fwhm_g, fwhm_L, fwhm_V
+            x_0, amplitude, line_profile, fitted_profile, cont
+        """
+        self.kwargs = kwargs
+        wunit = kwargs.get('wunit', u.AA)  # the unit for wavelengths
+        funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)  # flux unit
+        rvunit = kwargs.get('rvunit', u.km / u.s)  # RV unit
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
-        self.kwargs = kwargs
-        self.c1 = kwargs.get('c1', self.c1)
-        self.c2 = kwargs.get('c2', self.c2)
-        self.r1 = kwargs.get('r1', self.r1)
-        self.r2 = kwargs.get('r2', self.r2)
-        self.c3 = kwargs.get('c3', self.c3)
-        self.c4 = kwargs.get('c4', self.c4)
+        self.c1 = kwargs.get('c1', self.c1)  # the left side of the left continuum
+        self.c2 = kwargs.get('c2', self.c2)  # the right side of the left continuum
+        self.r1 = kwargs.get('r1', self.r1)  # the left side of the fitting region
+        self.r2 = kwargs.get('r2', self.r2)  # the right side of the fitting region
+        self.c3 = kwargs.get('c3', self.c3)  # the left side of the right continuum
+        self.c4 = kwargs.get('c4', self.c4)  # the right side of the right continuum
         self.spec = spec
         self.sub_spec = self.spec
         self.sub_speccorr = self.sub_spec
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
-        self.mu = self.__assertwavelength__(kwargs.get('mu', self.labline))
-        self.std = self.__assertwavelength__(kwargs.get('std', 2))
-        self.fwhm_G = self.__assertwavelength__(kwargs.get('fwhm_G', self.__stdtofwhm__()))
-        self.fwhm_L = self.__assertwavelength__(kwargs.get('fwhm_L', self.__stdtofwhm__()))
-        self.fwhm_V = self.__assertwavelength__(kwargs.get('fwhm_V', self.__stdtofwhm__()))
-        self.x_0 = self.__assertwavelength__(kwargs.get('x_0', self.labline))
-        self.amplitude = self.__assertflux__(kwargs.get('amplitude', 0))
-        self.line_profile = kwargs.get('line_profile', 'gaussian')
+        self.mu = self.__assertwavelength__(kwargs.get('mu', self.labline))  # mean value
+        self.std = self.__assertwavelength__(kwargs.get('std', 2))  # standard deviation
+        self.fwhm_G = self.__assertwavelength__(kwargs.get('fwhm_G', self.__stdtofwhm__()))  # fwhm of Gaussian
+        self.fwhm_L = self.__assertwavelength__(kwargs.get('fwhm_L', self.__stdtofwhm__()))  # fwhm of Lorentzian
+        self.fwhm_V = self.__assertwavelength__(kwargs.get('fwhm_V', self.__stdtofwhm__()))  # fwhm of Voigt
+        self.x_0 = self.__assertwavelength__(kwargs.get('x_0', self.labline))  # central value
+        self.amplitude = self.__assertflux__(kwargs.get('amplitude', 0))  # fit amplitude
+        self.line_profile = kwargs.get('line_profile', 'gaussian')  # the line profile
         self.working_profile = self.line_profile
         self.cont = kwargs.get('cont', None)
-        self.fitted_profile = kwargs.get('fitted_profile', None)
+        self.fitted_profile = kwargs.get('fitted_profile', None)  # the current fitted pofile
         self.linewindow = self.getlinewindow()
         self.contwindow = self.getcontwindow()
         self.fitter = LevMarLSQFitter(calc_uncertainties=True)
-        self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))
+        self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))  # the wavelength rms
         self.shift = self.__assertwavelength__(np.nan)
         self.shifterr = self.__assertwavelength__(np.nan)
         self.rv = self.__assertrv__(np.nan)
@@ -57,10 +78,13 @@ class Splot(Quantiser):
         self.linewidth = None
         self.lineedges = None
         self.rescale = True
-        self.use = kwargs.get('use', True)
+        self.use = kwargs.get('use', True)  # whether to use this spectrum or not
         return
 
     def reset(self):
+        """
+        Resetting the data
+        """
         self.__init__(self.spec, self.labline, self.spec_index, self.ax, **self.kwargs)
 
     @property
@@ -107,9 +131,20 @@ b - Go back to previous line
         return s
 
     def __stdtofwhm__(self,) -> u.Quantity:
+        """
+        Standard deviation to full width half maximum
+
+        Returns
+        -------
+        _
+            fwhm
+        """
         return self.std * (2 * np.sqrt(2 * np.log(2)))
 
     def getcont(self):
+        """
+        Fitting the continuum
+        """
         self.__updatewindows__()
         if self.contwindow is None:
             return
@@ -123,33 +158,78 @@ b - Go back to previous line
         self.rescale = True
 
     def __fitready__(self):
+        """
+        Check before plotting
+        """
         self.getcont()
         self.fitter = LevMarLSQFitter(calc_uncertainties=True)
 
     def getshift(self, ind: int):
+        """
+        Getting the shift in wavelength
+
+        Parameters
+        ----------
+        ind
+            Which part of the covariance matrix to use for the error
+        """
         self.shift = self.x_0 - self.labline
         self.cov = self.fitter.fit_info['param_cov']
         errs = np.sqrt(np.diag(self.cov))
         self.shifterr = errs[ind] * self.wunit + self.waverms
 
     def __rvcalc__(self, shift: u.Quantity) -> u.Quantity:
+        """
+        Calculation of radial velocity
+
+        Parameters
+        ----------
+        shift
+            The shift in wavelength
+
+        Returns
+        -------
+        _
+            The radial velocity shift
+        """
         c = 299792458 / 1e3 * self.rvunit
         cair = c / 1.000276
         return cair * shift / self.labline
 
     def getrv(self):
+        """
+        Find the radial velocity
+        """
         self.rv = self.__rvcalc__(self.shift)
         rvup = self.__rvcalc__(self.shift + self.shifterr) - self.rv
         rvdown = self.rv - self.__rvcalc__(self.shift - self.shifterr)
         self.rverr = (rvup + rvdown) / 2
 
     def getlinewidth(self):
+        """
+        Calculate the line width
+        """
         left = self.x_0 - self.std * 2
         right = self.x_0 + self.std * 2
         self.lineedges = [left, right]
         self.linewidth = self.__rvcalc__(right - left)
 
     def fit_line_wrap(self, *args, **kwargs):
+        """
+        The wrapper around the line fitting
+
+        Parameters
+        ----------
+        args
+            Arguments passed to the line fitting
+        kwargs
+            Keyword arguments as extra arguments
+
+        Returns
+        -------
+        fitted
+            Compound model of the fitting
+        """
         try:
             fitted = fit_lines(*args, **kwargs)
             if self.fitter.fit_info['param_cov'] is None:
@@ -166,6 +246,14 @@ b - Go back to previous line
         return fitted
 
     def gaussian_fit(self):
+        """
+        Fitting a Gaussian profile
+
+        Returns
+        -------
+        _
+            Switch if a fit was successful or not
+        """
         g_init = models.Gaussian1D(self.amplitude, self.mu, self.std)
         g_fit = self.fit_line_wrap(self.sub_speccorr, g_init, fitter=self.fitter,
                                    window=self.linewindow, exclude_regions=self.contwindow)
@@ -180,6 +268,14 @@ b - Go back to previous line
         return True
 
     def lorentz_fit(self):
+        """
+        Fitting a Lorentzian profile
+
+        Returns
+        -------
+        _
+            Switch if a fit was successful or not
+        """
         l_init = models.Lorentz1D(self.amplitude, self.x_0, self.fwhm_L)
         l_fit = self.fit_line_wrap(self.sub_speccorr, l_init, fitter=self.fitter,
                                    window=self.linewindow, exclude_regions=self.contwindow)
@@ -194,6 +290,14 @@ b - Go back to previous line
         return True
 
     def voigt_fit(self):
+        """
+        Fitting a Voight profile
+
+        Returns
+        -------
+        _
+            Switch if a fit was successful or not
+        """
         v_init = models.Voigt1D(self.x_0, self.amplitude, self.fwhm_L, self.fwhm_G)
         v_fit = self.fit_line_wrap(self.sub_speccorr, v_init, fitter=self.fitter,
                                    window=self.linewindow, exclude_regions=self.contwindow)
@@ -210,6 +314,9 @@ b - Go back to previous line
         return True
 
     def fit_profile(self):
+        """
+        Fitting any profiles
+        """
         self.__fitready__()
         if not self.contfound or self.linewindow is None:
             return
@@ -228,6 +335,9 @@ b - Go back to previous line
             self.working_profile = self.line_profile
 
     def plotter(self):
+        """
+        Plotting the data
+        """
         self.fit_profile()
         handles, labels = [], []
         if self.iscut:
@@ -305,6 +415,24 @@ b - Go back to previous line
 
 
 def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Splot]]:
+    """
+    Manually fitting the line centering for each object
+
+    Parameters
+    ----------
+    spec
+        The spectrum of the object
+    spec_indices
+        The dictionary of indices
+    kwargs
+        The fit parameters passed on to the fitting
+
+    Returns
+    -------
+    useset, objlist
+        The list of lines used
+        The list of all of the fits
+    """
     def keypress(e):
         global curr_pos
         obj = objlist[curr_pos]

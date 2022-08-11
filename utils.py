@@ -18,8 +18,25 @@ from typing import Union, Optional, List, Dict, Tuple
 
 
 class Quantiser:
+    """
+    Underlying RV fitting class
+    """
 
     def __init__(self, wunit: u.Quantity, funit: u.Quantity, rvunit: u.Quantity, spec: Spectrum1D):
+        """
+        When initialising the line centering programme
+
+        Parameters
+        ----------
+        wunit
+            The wavelength unit
+        funit
+            The flux unit
+        rvunit
+            The radial velocity unit
+        spec
+            The spectrum of the object
+        """
         self.wunit = wunit
         self.funit = funit
         self.rvunit = rvunit
@@ -171,17 +188,45 @@ class Quantiser:
         return True
 
     def getcontwindow(self) -> Optional[Tuple[List[u.Quantity], List[u.Quantity]]]:
+        """
+        Retrieving the continuum window
+
+        Returns
+        -------
+        _
+            The collection of continuum points
+        """
         if not self.__checkcontpoints__():
             return None
         return [self.c1, self.c2], [self.c3, self.c4]
 
     def getlinewindow(self) -> Optional[SpectralRegion]:
+        """
+        Retrieving the region with the spectral line
+
+        Returns
+        -------
+        _
+            The spectral region for the line
+        """
         if not self.__checkregionpoints__():
             return None
         else:
             return SpectralRegion(self.r1, self.r2)
 
-    def cutspec(self, spec: Spectrum1D):
+    def cutspec(self, spec: Spectrum1D) -> Spectrum1D:
+        """
+        Cutting the spectrum to the left and right-most points
+
+        Parameters
+        ----------
+        spec
+            The spectrum to be cut
+        Returns
+        -------
+        spec
+            The spectrum cut
+        """
         x1, x2 = self.c1, self.c4
         spec = copy(spec)
         if not any([xpoint is None for xpoint in (x1, x2)]):
@@ -194,6 +239,29 @@ class Quantiser:
     @staticmethod
     def poly_cutter(wave: np.ndarray, flux: np.ndarray, fluxerr: np.ndarray = None,
                     polycoeff: int = 5, bign: int = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Creating a interpolation of a given order
+
+        Parameters
+        ----------
+        wave
+            The array of wavelengths
+        flux
+            The array of fluxes
+        fluxerr
+            The array of flux errors
+        polycoeff
+            The coefficient to use when interpolating
+        bign
+            The number by which to multiply the number of data points by
+
+        Returns
+        -------
+        x, y, yerr
+            The array of wavelengths
+            The array of fluxes
+            The array of flux errors
+        """
         if bign is None:
             bign = len(wave) * 10
         x = np.linspace(np.min(wave), np.max(wave), bign)
@@ -207,12 +275,30 @@ class Quantiser:
         return x, y, yerr
 
     def __updatewindows__(self):
+        """
+        Updating the windows for cutting spectra by the continuum and line window
+        """
         self.sub_spec = self.cutspec(self.spec)
         self.contwindow = self.getcontwindow()
         self.linewindow = self.getlinewindow()
 
 
 def inv_rv_calc(shift: float, wave: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    """
+    Inverse RV shift
+
+    Parameters
+    ----------
+    shift
+        The shift in RV
+    wave
+        The wavelength values to shift
+
+    Returns
+    -------
+    _
+        The shifted wavelengths
+    """
     c = 299792458 / 1e3
     cair = c / 1.000276
     return shift * wave / cair
@@ -221,6 +307,21 @@ def inv_rv_calc(shift: float, wave: Union[float, np.ndarray]) -> Union[float, np
 def json_handle(jf: Union[os.PathLike, str, bytes],
                 d: Dict[str, Dict[str, List[Union[float, str, bool]]]] = None) \
         -> Dict[str, Dict[str, List[Union[float, str, bool]]]]:
+    """
+    Handling a .json, either saving or loading
+
+    Parameters
+    ----------
+    jf
+        The filename of the .json
+    d
+        The dictionary of data to be saved or loaded to the json
+
+    Returns
+    -------
+    d
+        The dictionary of data to be saved or loaded to the json
+    """
     if not os.path.exists(jf):
         d = {}
     if d is None:
@@ -233,6 +334,25 @@ def json_handle(jf: Union[os.PathLike, str, bytes],
 
 
 def normaliser(x: np.ndarray, *args, xmin: float = 8100, xmax: float = 8200):
+    """
+    Normalising a flux from a given wavelength
+
+    Parameters
+    ----------
+    x
+        Wavelength array
+    args
+        The arguments to be normalised
+    xmin
+        The minimum wavelength
+    xmax
+        The maximum wavelength
+
+    Returns
+    -------
+    out
+        The list of arrays starting with wavelength
+    """
     boolcut: np.ndarray = (x > xmin) & (x < xmax)
     args = list(args)
     if np.any([len(x) != len(arg) for arg in args]):
@@ -245,7 +365,22 @@ def normaliser(x: np.ndarray, *args, xmin: float = 8100, xmax: float = 8200):
 
 
 def freader(f: str, **kwargs) -> Spectrum1D:
-    wavearr = kwargs.get('wavearr', None)
+    """
+    Reading a file out into a spectrum
+
+    Parameters
+    ----------
+    f
+        The filename
+    kwargs
+        Extra parameters
+
+    Returns
+    -------
+    spec
+        The spectrum from the filename
+    """
+    wavearr = kwargs.get('wavearr', None)  # the wavelength array to interpolate for
     if f.endswith('txt'):
         try:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1))  # load file
@@ -275,12 +410,37 @@ def freader(f: str, **kwargs) -> Spectrum1D:
 
 
 def logging_rvcalc(s: str = '', perm: str = 'a'):
+    """
+    Logging the information to a file
+
+    Parameters
+    ----------
+    s
+        The string being saved
+    perm
+        The permission of the file opening
+    """
+    if not os.path.exists('calculating.log'):
+        perm = 'w'
     with open('calculating.log', perm) as f:
         f.write(s + '\n')
     return
 
 
 def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Unpacking a spectrum object into wavelength, flux and flux error
+
+    Parameters
+    ----------
+    spec
+        The spectrum to be unpacked
+
+    Returns
+    -------
+    wave, flux, fluxerr
+        The arrays of wavelength, flux and flux error
+    """
     wave = copy(spec.spectral_axis.value)
     flux = copy(spec.flux.value)
     fluxerr = copy(spec.uncertainty.quantity.value)
@@ -288,6 +448,19 @@ def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def stephens(s: Union[pd.Series, float]) -> np.ndarray:
+    """
+    Stephens relation for converting to teff
+
+    Parameters
+    ----------
+    s
+        The spectral type number for the Stephens relation
+
+    Returns
+    -------
+    teff
+        The effective temperature converted
+    """
     teff = 4400.9 - 467.26 * s + 54.67 * s ** 2 - 4.4727 * s ** 3 + 0.17667 * s ** 4 - 0.0025492 * s ** 5
     teff = np.where((1200 < teff) & (teff < 4000), teff, np.nan)
     return teff

@@ -8,6 +8,28 @@ jsonname = 'xcorr_used.json'
 
 def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
                  fname: str, repeat: bool, **kwargs) -> Tuple[List[str], List[Xcorr]]:
+    """
+    Loading the information of the cross correlation fits
+
+    Parameters
+    ----------
+    spec
+        The spectrum of the object
+    spec_indices
+        The dictionary of spectral indices
+    fname
+        The full file name
+    repeat
+        Switch to repeat the process or not
+    kwargs
+        Dictionary of information to pass to the fitting procedure
+
+    Returns
+    -------
+    useset, objlist
+        The list of lines used
+        The list of all of the fits
+    """
     d = json_handle(jsonname)
     if repeat or fname not in d.keys():
         useset, objlist = interactive_loop(spec, spec_indices, fname, **kwargs)
@@ -28,6 +50,26 @@ def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
 
 def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
                      fname: str, **kwargs) -> Tuple[List[str], Sequence[Xcorr]]:
+    """
+    Interactively fitting the cross correlation
+
+    Parameters
+    ----------
+    spec
+        The spectrum of the object
+    spec_indices
+        The dictionary of the spectral indices
+    fname
+        The full filename
+    kwargs
+        The fit parameters to pass to the fitting routine
+
+    Returns
+    -------
+    useset, objlist
+        The list of lines used
+        The list of all of the fits
+    """
     dout = json_handle(jsonname)
     args = (spec, spec_indices)
     outset, objlist = manual_xcorr_fit(*args, **kwargs)
@@ -38,8 +80,23 @@ def interactive_loop(spec: Spectrum1D, spec_indices: Dict[str, float],
 
 
 def fitparams(useset: List[str], objlist: Sequence[Xcorr]) -> Dict[str, List[Union[float, str, bool]]]:
+    """
+    Saving the fitted parameters
+
+    Parameters
+    ----------
+    useset
+        List of spectral lines used
+    objlist
+        The list of line fits
+
+    Returns
+    -------
+    dobj
+        The dictionary of object fit parameters
+    """
     dobj = {}
-    for obj in objlist:
+    for obj in objlist:  # for every object
         key = obj.spec_index
         paramlist = []
         for val in (obj.c1, obj.c4, obj.teff,
@@ -55,6 +112,35 @@ def fitparams(useset: List[str], objlist: Sequence[Xcorr]) -> Dict[str, List[Uni
 def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Xcorr], df: pd.DataFrame,
                    tname: str, colname: str,
                    fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """
+    Automatically cross correlating each spectral line
+
+    Parameters
+    ----------
+    useset
+        The list of objects to use
+    spec_indices
+        The dictionary of spectral indices
+    objlist
+        The list of object fit parameters
+    df
+        The dataframe to insert the data within
+    tname
+        The target name
+    colname
+        The column to check for the target names
+    fappend
+        What to append to a filename when saving
+    kwargs
+        The fit parameters
+
+    Returns
+    -------
+    df, rv_list, err_list
+        The dataframe of all of the data
+        The list of radial velocities for each spectral line
+        The list of RV errors from each spectral line
+    """
     nrows = kwargs.get('nrows', 4)
     ncols = kwargs.get('ncols', 2)
     dorv = kwargs.get('dorv', True)
@@ -70,7 +156,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     teff, grav, met = np.nan, np.nan, np.nan
     j = -1
     for i, spec_index in tqdm(enumerate(spec_indices), total=len(spec_indices.keys()),
-                              desc='Fitting Cross Correlation', leave=False):
+                              desc='Fitting Cross Correlation', leave=False):  # every spectral index
         ax: plt.Axes = axs[i]
         obj = objlist[i]
         obj.ax = ax
@@ -100,7 +186,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     teff_list_cut = teff_list[~np.isnan(teff_list)]
     grav_list_cut = grav_list[~np.isnan(grav_list)]
     met_list_cut = met_list[~np.isnan(met_list)]
-    if len(rv_list_cut):
+    if len(rv_list_cut):  # if there is at least a line used in the cross correlation
         rv, std = ss.norm.fit(rv_list_cut)
         if len(rv_list_cut) > 1:
             err = std / np.sqrt(len(rv_list_cut))
@@ -137,10 +223,39 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
 def crosscorrelate(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
                    repeat: bool, tname: str,
                    colname: str, fappend: str = '', **kwargs) -> Tuple[pd.DataFrame, Sequence[float], Sequence[float]]:
+    """
+    The main cross correlation programme
+
+    Parameters
+    ----------
+    fname
+        The full filename
+    spec_indices
+        The dictionary of spectral indices
+    df
+        The dataframe of all of the data
+    repeat
+        Switch to repeat the manual fitting or not
+    tname
+        The name of the target
+    colname
+        The column name to check for the target
+    fappend
+        What to append to a filename when saving
+    kwargs
+        Additional fit parameter information to pass to the fitting routine
+
+    Returns
+    -------
+    dfout, xcorr, xerr
+        The dataframe with appended RV fits
+        The list of cross correlated RVs for each spectral line
+        The list of cross correlated RV errors from each spectral line
+    """
     spec = freader(fname)
     logging_rvcalc(f'{tname}: Cross Correlation')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
-    if not len(useset):
+    if not len(useset):  # if no successful fits, return the same lists but empty
         allindices = np.array(list(spec_indices.keys()))
         xcorr, xerr = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
         return df, xcorr, xerr

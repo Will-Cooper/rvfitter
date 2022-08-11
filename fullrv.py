@@ -17,6 +17,21 @@ from crosscorrelate import crosscorrelate
 
 
 def tabquery(fname: str, df: pd.DataFrame) -> Optional[pd.Series]:
+    """
+    Queries the dataframe to extract that row
+
+    Parameters
+    ----------
+    fname
+        The full filename
+    df
+        The DataFrame containing the data
+
+    Returns
+    -------
+    row
+        The series for a given object
+    """
     fnameonly = fname.split('/')[-1]
     if 'R2500I' in fname:
         thisres = 'R2500I'
@@ -38,6 +53,25 @@ def tabquery(fname: str, df: pd.DataFrame) -> Optional[pd.Series]:
 
 
 def get_indices(tname: str, colname: str, fname: str, dflines: pd.DataFrame) -> pd.DataFrame:
+    """
+    Retrieve the spectral indices for a spectrum
+
+    Parameters
+    ----------
+    tname
+        The name of the object to compare with the column
+    colname
+        The column to check the object name
+    fname
+        The full filename
+    dflines
+        The dataframe to insert the spectral indices
+
+    Returns
+    -------
+    dflines
+        The dataframe to insert the spectral indices
+    """
     spec = freader(fname)
     wave, flux, fluxerr = spec_unpack(spec)
     sp = Spectrum(wave=wave, flux=flux, wave_unit=spec.spectral_axis.unit, flux_unit=spec.flux.unit)
@@ -51,6 +85,19 @@ def get_indices(tname: str, colname: str, fname: str, dflines: pd.DataFrame) -> 
 
 
 def chekres(fname: str) -> bool:
+    """
+    Checks the resolution of the spectra from the filename
+
+    Parameters
+    ----------
+    fname
+        The full filename
+
+    Returns
+    -------
+    hires
+        Switch if spectra is high resolution or not
+    """
     if 'R300R' in fname:
         hires = False
     else:
@@ -60,6 +107,35 @@ def chekres(fname: str) -> bool:
 
 def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: Sequence[float], lcerr: Sequence[float],
               xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict) -> pd.DataFrame:
+    """
+    The method for creating an adopted radial velocity
+
+    Parameters
+    ----------
+    df
+        The dataframe to insert the adopted RV
+    colname
+        The column name in the dataframe to find the correct object
+    tname
+        The name of the object to check in the column
+    hires
+        Switch to be high resolution or not
+    lcvals
+        The array of line centered RVs
+    lcerr
+        The array of line centered RV errors
+    xcorr
+        The array of cross correlated RVs
+    xerr
+        The array of cross correlated RV errors
+    spec_indices
+        Dictionary of spectral indices to central wavelength
+
+    Returns
+    -------
+    df
+        The dataframe to enter the adopted RV
+    """
     fig: plt.Figure = plt.figure(figsize=(4, 3), num=5)
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
@@ -135,7 +211,24 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     return df
 
 
-def errorappend(df: pd.DataFrame, tname: str, colname: str):
+def errorappend(df: pd.DataFrame, tname: str, colname: str) -> pd.DataFrame:
+    """
+    Editing the errors on Teff and log g to account for grid model size
+
+    Parameters
+    ----------
+    df
+        The dataframe of all data
+    tname
+        The name of the target
+    colname
+        The column name that contains the target name
+
+    Returns
+    -------
+    df
+        The dataframe of all objects
+    """
     teffstd = df.loc[df[colname] == tname, 'xcorrtefferr'].iloc[0]
     gravstd = df.loc[df[colname] == tname, 'xcorrgraverr'].iloc[0]
     if not np.isnan(df.loc[df[colname] == tname, 'xcorrtefferr'].iloc[0]):
@@ -145,6 +238,19 @@ def errorappend(df: pd.DataFrame, tname: str, colname: str):
 
 
 def getwaverms(fname: str) -> float:
+    """
+    Finding the wavelength rms
+
+    Parameters
+    ----------
+    fname
+        The full file name
+
+    Returns
+    -------
+    _
+        The wavelength rms
+    """
     wvcalibf = fname[:fname.find('Science')] + 'wvcalib.fits'
     head: Dict[str, float] = getheader(wvcalibf, 2)
     disp: float = head['CEN_DISP']  # central dispersion in wave/ pix
@@ -153,6 +259,28 @@ def getwaverms(fname: str) -> float:
 
 
 def main(fname, spec_indices, df, dflines, repeat):
+    """
+    The main control module
+
+    Parameters
+    ----------
+    fname
+        The full filename
+    spec_indices
+        The dictionary of spectral indices
+    df
+        The dataframe with all of the data
+    dflines
+        The dataframe of the spectral lines
+    repeat
+        Switch to repeat or not
+
+    Returns
+    -------
+    dfout, dflines
+        The dataframe of all data
+        The dataframe of spectral lines
+    """
     spec_indices = OrderedDict(spec_indices)
     hires = chekres(fname)
     if hires:
@@ -166,7 +294,7 @@ def main(fname, spec_indices, df, dflines, repeat):
         return df, dflines
     colname = 'shortname'
     tname = df.loc[df['index'] == ind, colname].iloc[0]
-    expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)
+    expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)  # expected teff
     if np.isnan(expectedteff):
         expectedteff = 2000
     else:
@@ -176,13 +304,13 @@ def main(fname, spec_indices, df, dflines, repeat):
     logging_rvcalc(f'\n{tname}')
     dfout = df
     waverms = getwaverms(fname)
-    if hires:
+    if hires:  # checking high resolution
         dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname, fappend,
-                                             waverms=waverms)
-    else:
+                                             waverms=waverms)  # perform the line centering
+    else:  # don't do line centering for low resolution
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname, fappend,
-                                        teff=expectedteff, dorv=hires, waverms=waverms)
+                                        teff=expectedteff, dorv=hires, waverms=waverms)  # cross correlation
     dfout = errorappend(dfout, tname, colname)
     dfout = adoptedrv(dfout, colname, tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
     dflines = get_indices(tname, colname, fname, dflines)
