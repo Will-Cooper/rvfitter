@@ -215,7 +215,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     df.loc[df[colname] == tname, 'xcorrmeterr'] = metstd
     fig.supxlabel(fr'Wavelength\,[{wunit.to_string(u.format.Latex)}]')
     fig.supylabel(r'Normalised Flux\,[$F_{\lambda}$]')
-    fig.subplots_adjust(hspace=2.15, wspace=0.15)
+    fig.subplots_adjust(hspace=2.5, wspace=0.15)
     if not os.path.exists('xcorrplots'):
         os.mkdir('xcorrplots')
     fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'
