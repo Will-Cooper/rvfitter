@@ -161,15 +161,19 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
-        ax.set_ylim(*np.array([np.floor(np.min(obj.sub_speccorr.flux.value)),
-                               np.ceil(np.max(obj.sub_speccorr.flux.value))]), )
-        ax.set_xticks([spec_indices[spec_index]])
-        ax.set_yticks([])
+        yroundpoint = 0.5
+        if all([isinstance(objcoord, u.Quantity) for objcoord in (obj.c1, obj.c4)]):
+            specreg: Spectrum1D = extract_region(obj.sub_speccorr, SpectralRegion(obj.c1, obj.c4))
+            miny, maxy = specreg.flux.min().value, specreg.flux.max().value
+            roundmin = np.floor(miny / yroundpoint) * yroundpoint
+            roundmax = np.ceil(maxy / yroundpoint) * yroundpoint
+            if roundmax - maxy < 0.1:
+                roundmax += yroundpoint / 2
+            ax.set_ylim(roundmin, roundmax)
+            ax.set_xlim(obj.c1.value, obj.c4.value)
         ax.legend([], [])
         if spec_index not in useset:
             continue
-        shift: float = inv_rv_calc(obj.rv.value, spec_indices[spec_index])
-        ax.set_xticklabels([f'$\Delta \lambda = $ {shift:.2f}\,' + wunit.to_string(u.format.Latex)])
         j += 1
         teffobj = int(obj.teff.value)
         logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
@@ -209,9 +213,9 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     df.loc[df[colname] == tname, 'xcorrtefferr'] = teffstd
     df.loc[df[colname] == tname, 'xcorrgraverr'] = gravstd
     df.loc[df[colname] == tname, 'xcorrmeterr'] = metstd
-
-    fig.supylabel(r'Normalised Flux [$F_{\lambda}$]')
-    fig.subplots_adjust(hspace=1.1, wspace=0.1)
+    fig.supxlabel(fr'Wavelength\,[{wunit.to_string(u.format.Latex)}]')
+    fig.supylabel(r'Normalised Flux\,[$F_{\lambda}$]')
+    fig.subplots_adjust(hspace=2.5, wspace=0.15)
     if not os.path.exists('xcorrplots'):
         os.mkdir('xcorrplots')
     fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'

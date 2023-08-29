@@ -325,9 +325,10 @@ b - Go back to previous line
         wave, flux, fluxerr = spec_unpack(spec)
         wavetemp, fluxtemp = spec_unpack(tempspec)[:2]
         if self.rescale:
-            self.ax.set_xlim(np.min(wave), np.max(wave))
-            self.ax.set_ylim(*np.array([np.floor(np.min(flux)),
-                                        np.ceil(np.max(flux))]), )
+            xroundpoint, yroundpoint = 5, 1
+            self.ax.set_ylim(yroundpoint * np.floor(np.min(flux) / yroundpoint),
+                             yroundpoint * np.ceil(np.max(flux) / yroundpoint))
+            self.ax.set_xlim(self.c1.value, self.c4.value)
             self.rescale = False
         if self.iscut:
             ebar = self.ax.errorbar(wave, flux, yerr=fluxerr, marker='s', lw=0, elinewidth=1.5, c='black',
@@ -343,8 +344,10 @@ b - Go back to previous line
         self.ax.axvline(self.labline.value, color='grey', ls='--')
         self.ax.axvline(self.labline.value + inv_rv_calc(self.rv.value, self.labline.value),
                         color='black')
-        self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.teff.value}\,K, '
-                                     f'{self.grav.value}\,dex, {self.met.value}\,dex, {self.rv.value:.1f}\,km/s')
+        spectitle = self.spec_index.capitalize().replace('1', '\,\\textsc{i}')
+        self.ax.set_title('\t' * 2 + f'{spectitle}: RV={self.rv.value:.1f}\,km\,s$^{{-1}}$\n'
+                                     f'T={self.teff.value}\,K, $\log g$={self.grav.value}\,dex, '
+                                     f'$\\vert$Fe/H$\\vert$={self.met.value}\,dex')
         if not self.use:
             return
         ls = '-'

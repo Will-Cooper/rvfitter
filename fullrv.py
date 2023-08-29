@@ -140,7 +140,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
-    indicesplot = np.array([specindex.capitalize() + r' $\lambda$'
+    indicesplot = np.array([specindex.capitalize().replace('1', '\,\\textsc{i}') + r' $\lambda$'
                            + f'{int(pos)}\,' + u.AA.to_string(u.format.Latex)
                             for specindex, pos in spec_indices.items()])
     ypos = np.arange(len(allindices)) + 1
@@ -188,16 +188,19 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axlines.set_xlim(minpos, maxpos)
     axlines.set_ylabel('Spectral Feature', fontsize='medium')
 
-    axpdf.plot(pdfxpoints, xcorrpdf, color='orange', label=rf'${locx:.1f}\pm{scalex / np.sqrt(len(xcorr)):.1f}$ km/s')
+    axpdf.plot(pdfxpoints, xcorrpdf, color='orange',
+               label=rf'${locx:.1f}\pm{scalex / np.sqrt(len(xcorr)):.1f}$\,km\,s$^{{-1}}$')
     [ax.axvline(locx, color='orange', ls='--', lw=0.75) for ax in (axpdf, axlines)]
-    axpdf.plot(pdfxpoints, lcpdf, color='blue', label=rf'${loclc:.1f}\pm{scalelc / np.sqrt(len(lcvals)):.1f}$ km/s')
+    axpdf.plot(pdfxpoints, lcpdf, color='blue',
+               label=rf'${loclc:.1f}\pm{scalelc / np.sqrt(len(lcvals)):.1f}$\,km\,s$^{{-1}}$')
     [ax.axvline(loclc, color='blue', ls='--', lw=0.75) for ax in (axpdf, axlines)]
-    axpdf.plot(pdfxpoints, posteriorpdf, color='black', label=rf'${locpost:.1f}\pm{errpost:.1f}$ km/s')
+    axpdf.plot(pdfxpoints, posteriorpdf, color='black',
+               label=rf'${locpost:.1f}\pm{errpost:.1f}$\,km\,s$^{{-1}}$')
     [ax.axvline(locpost, color='black', ls='--', lw=0.75) for ax in (axpdf, axlines)]
     axpdf.set_yticks([0, 0.5, 1])
     axpdf.set_ylim(-0.1, 1.1)
     axpdf.set_xlim(minpos, maxpos)
-    axpdf.set_xlabel('RV\,[km/s]', fontsize='medium')
+    axpdf.set_xlabel(f'RV\,[km\,s$^{{-1}}$]', fontsize='medium')
     axpdf.set_ylabel('PDF', fontsize='medium')
 
     if hires:

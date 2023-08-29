@@ -159,16 +159,19 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         obj = objlist[i]
         obj.ax = ax
         obj.plotter()
-        if all([isinstance(objcoord, u.Quantity) for objcoord in (obj.r1, obj.r2)]):
-            specreg: Spectrum1D = extract_region(obj.sub_spec, SpectralRegion(obj.r1, obj.r2))
-            ax.set_ylim(np.floor(specreg.flux.min().value / 0.1) * 0.1, np.ceil(specreg.flux.max().value / 0.1) * 0.1)
-        ax.set_xticks([spec_indices[spec_index]])
-        ax.set_yticks([])
+        yroundpoint = 0.5
+        if all([isinstance(objcoord, u.Quantity) for objcoord in (obj.c2, obj.c3)]):
+            specreg: Spectrum1D = extract_region(obj.sub_spec, SpectralRegion(obj.c2, obj.c3))
+            miny, maxy = specreg.flux.min().value, specreg.flux.max().value
+            roundmin = np.floor(miny / yroundpoint) * yroundpoint
+            roundmax = np.ceil(maxy / yroundpoint) * yroundpoint
+            if roundmax - maxy < 0.1:
+                roundmax += yroundpoint / 2
+            ax.set_ylim(roundmin, roundmax)
+            ax.set_xlim(obj.c2.value, obj.c3.value)
         ax.legend([], [])
         if spec_index not in useset:
             continue
-        shift: float = obj.x_0.value - spec_indices[spec_index]
-        ax.set_xticklabels([f'$\Delta \lambda = $ {shift:.2f}\,' + wunit.to_string(u.format.Latex)])
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
                        f' with {obj.std.value:.1f}A sigma; {obj.rv.value:.1f} km/s.')
@@ -188,9 +191,9 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         logging_rvcalc('Empty RV list for line centre calculation!')
     logging_rvcalc(f'RV Line Centre = {rv:.1f} +/- {err:.1f}km/s')
     df.loc[df[colname] == tname, 'thisrvlc'] = round(rv, 1)
-
-    fig.supylabel(r'Normalised Flux [$F_{\lambda}$]')
-    fig.subplots_adjust(hspace=1, wspace=0.01)
+    fig.supxlabel(fr'Wavelength\,[{wunit.to_string(u.format.Latex)}]')
+    fig.supylabel(r'Normalised Flux\,[$F_{\lambda}$]')
+    fig.subplots_adjust(hspace=1.15, wspace=0.15)
     if not os.path.exists('lcplots'):
         os.mkdir('lcplots')
     fname = f'lcplots/{tname}{"_" + fappend}_lc.pdf'

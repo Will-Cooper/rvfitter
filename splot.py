@@ -365,10 +365,11 @@ b - Go back to previous line
         lablineplot = self.ax.axvline(self.labline.value, color='grey', ls='--')
         handles.append(lablineplot)
         labels.append('Laboratory Line')
+        spectitle = self.spec_index.capitalize().replace('1', '\,\\textsc{i}')
         if self.profilefound:
-            self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}: {self.rv.value:.1f}\,km/s')
+            self.ax.set_title('\t' * 2 + f'{spectitle}: RV={self.rv.value:.1f}\,km\,s$^{{-1}}$')
         else:
-            self.ax.set_title('\t' * 2 + f'{self.spec_index.capitalize()}')
+            self.ax.set_title('\t' * 2 + f'{spectitle}')
         if not self.iscut:
             self.ax.legend(handles, labels)
             return
@@ -388,10 +389,10 @@ b - Go back to previous line
         contplot = self.ax.plot(fitx, contyval, c='k', ls=ls)
         handles.extend(contplot)
         labels.append('Continuum')
-        self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c1.value, self.c2.value,
-                              color='grey', alpha=0.25)
-        self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.c3.value, self.c4.value,
-                              color='grey', alpha=0.25)
+        self.ax.axvspan(self.c1.value, self.c2.value,
+                        color='grey', alpha=0.25)
+        self.ax.axvspan(self.c3.value, self.c4.value,
+                        color='grey', alpha=0.25)
 
         if not self.profilefound:
             self.ax.legend(handles, labels)
@@ -404,13 +405,16 @@ b - Go back to previous line
         handles.append(mesline)
         labels.append('Measured')
         if self.rescale:
-            self.ax.fill_betweenx([np.min(fity), np.max(fity)], self.r1.value, self.r2.value,
-                                  color='grey', alpha=0.5)
-            self.ax.set_ylim(0.1 * np.floor(np.min(fityval) / 0.1), 0.1 * np.ceil(np.max(fityval) / 0.1))
+            self.ax.axvspan(self.r1.value, self.r2.value,
+                            color='grey', alpha=0.5)
+            xroundpoint, yroundpoint = 5, 1
+            self.ax.set_ylim(yroundpoint * np.floor(np.min(fityval) / yroundpoint),
+                             yroundpoint * np.ceil(np.max(fityval) / yroundpoint))
             ldiff = self.x_0 - self.r1
             rdiff = self.r2 - self.x_0
             mdiff = np.mean([ldiff.value, rdiff.value])
-            self.ax.set_xlim(self.x_0.value - 1.5 * mdiff, self.x_0.value + 1.5 * mdiff)
+            self.ax.set_xlim(self.x_0.value - xroundpoint * mdiff,
+                             self.x_0.value + xroundpoint * mdiff)
         self.ax.legend(handles, labels)
 
 
