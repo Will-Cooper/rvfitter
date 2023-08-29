@@ -27,7 +27,7 @@ It's the only script given set up for a specific use-case.
 Clone this repository locally with
 ```bash
 git clone https://github.com/Will-Cooper/rvfitter.git
-conda create --file environment.yml
+conda env create -f environment.yml
 ```
 The `fullrv` code requires the `splat` package,
 follow the installation instructions
