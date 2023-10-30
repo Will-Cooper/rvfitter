@@ -1,8 +1,11 @@
+import arviz as az
 from astropy.io.fits import getheader
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
+import pymc3 as pm
 import scipy.stats as ss
 from splat import Spectrum, measureIndexSet
+import theano.tensor as tt
 
 import argparse
 from collections import OrderedDict
@@ -169,10 +172,46 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1))
     xcorrpdf = ss.norm.pdf(pdfxpoints, loc=locx, scale=scalex)
     lcpdf = ss.norm.pdf(pdfxpoints, loc=loclc, scale=scalelc)
-    posteriorpdf = xcorrpdf * lcpdf
     locpost = (locx * scalelc ** 2 + loclc * scalex ** 2) / (scalex ** 2 + scalelc ** 2)
     stdpost = np.sqrt(scalex ** 2 * scalelc ** 2 / (scalex ** 2 + scalelc ** 2))
-    errpost = stdpost / np.sqrt(2)
+    n = len(lcvals)
+
+    with pm.Model() as model:
+        # Hyperparameters
+        mu = pm.Normal('mu', mu=locpost, sigma=stdpost, shape=n)
+        sigma_lc = pm.HalfNormal('sigma_lc', sigma=scalelc, shape=n)
+        sigma_xc = pm.HalfNormal('sigma_xc', sigma=scalex, shape=n)
+        rho = pm.Uniform('rho', lower=1, upper=4)  # correlation coefficient
+
+        # Covariance matrix for each observable
+        cov = tt.stack([tt.stacklists([
+                         [sigma_lc[i]**2, rho * sigma_lc[i] * sigma_xc[i]],
+                         [rho * sigma_lc[i] * sigma_xc[i], sigma_xc[i]**2]
+                      ]) for i in range(n)])
+
+        # Univariate normal likelihoods
+        for i in range(n):
+            lc_mu = mu
+            xc_mu = mu
+
+            lc_sigma = tt.sqrt(sigma_lc ** 2 + lcerr[i] ** 2)
+            xc_sigma = tt.sqrt(sigma_xc ** 2 + xerr[i] ** 2)
+
+            obs_lc = pm.Normal(f'obs_lc_{i}', mu=lc_mu, sd=lc_sigma, observed=lcvals[i])
+            obs_xc = pm.Normal(f'obs_xc_{i}', mu=xc_mu, sd=xc_sigma, observed=xcorr[i])
+
+        # Sampling
+        trace = pm.sample(10_000, tune=1000)
+        # figtrace, axtrace = plt.subplots(4, 2, num=6)
+        # az.plot_trace(trace, axes=axtrace, compact=True, show=True)
+        print(az.summary(trace))
+
+    # Extract posterior samples for mu
+    print(locpost, stdpost)
+    posterior_mu = trace['mu']
+    locpost = np.mean(posterior_mu)
+    errpost = np.std(posterior_mu)
+    posteriorpdf = ss.norm.pdf(pdfxpoints, loc=locpost, scale=errpost)
 
     xcorrpdf /= np.max(xcorrpdf)
     lcpdf /= np.max(lcpdf)
