@@ -333,6 +333,44 @@ def json_handle(jf: Union[os.PathLike, str, bytes],
     return d
 
 
+def sigma_clipper(wave: np.ndarray, flux: np.ndarray, fluxerr: np.ndarray,
+                  sigma: int = 5) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Sigma clip the spectra by the sigma from the median of entire flux array
+
+    Parameters
+    ----------
+    wave
+        Wavelength array
+    flux
+        Flux array
+    fluxerr
+        Flux error array
+    sigma
+        Number of sigma to determine as outliers
+
+    Returns
+    -------
+    wave
+        Wavelength array, cut
+    flux
+        Flux array, cut
+    fluxerr
+        Flux error array, cut
+    """
+    med = np.median(flux)
+    std = np.std(flux)
+    boolcut: np.ndarray = (flux > med - sigma * std) & (flux < med + sigma * std)
+
+    if len(flux[boolcut]) < int(0.95 * len(flux)):  # 95% of original data
+        return wave, flux, fluxerr
+
+    wave = wave[boolcut]
+    flux = flux[boolcut]
+    fluxerr = fluxerr[boolcut]
+    return wave, flux, fluxerr
+
+
 def normaliser(x: np.ndarray, *args, xmin: float = 8100, xmax: float = 8200):
     """
     Normalising a flux from a given wavelength
@@ -405,13 +443,14 @@ def freader(f: str, **kwargs) -> Spectrum1D:
             fluxerr = np.divide(1., fluxivar, where=~np.isclose(fluxivar, 0))
         except AttributeError:
             wave = target[0]
-            wave = np.array(vac_to_air(wave * wunit, method='Edlen1953') / wunit)
+            wave: np.ndarray = np.array(vac_to_air(wave * wunit, method='Edlen1953') / wunit)
             flux = target[1]
             fluxerr = target[2]
             boolcut = (~np.isnan(wave)) & (~np.isnan(flux)) & (~np.isnan(fluxerr))
             wave = wave[boolcut]
             flux = flux[boolcut]
             fluxerr = fluxerr[boolcut]
+    wave, flux, fluxerr = sigma_clipper(wave, flux, fluxerr, sigma=5)
     wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=np.min(wave), xmax=np.max(wave))
     unc = StdDevUncertainty(fluxerr, unit=funit)
     spec = Spectrum1D(flux * funit, wave * wunit,
