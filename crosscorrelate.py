@@ -256,7 +256,7 @@ def crosscorrelate(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame,
         The list of cross correlated RVs for each spectral line
         The list of cross correlated RV errors from each spectral line
     """
-    spec = freader(fname)
+    spec = freader(fname, **kwargs)
     logging_rvcalc(f'{tname}: Cross Correlation')
     useset, objlist = load_fitinfo(spec, spec_indices, fname, repeat, **kwargs)
     if not len(useset):  # if no successful fits, return the same lists but empty

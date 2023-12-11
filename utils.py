@@ -381,6 +381,8 @@ def freader(f: str, **kwargs) -> Spectrum1D:
         The spectrum from the filename
     """
     wavearr = kwargs.get('wavearr', None)  # the wavelength array to interpolate for
+    wunit = kwargs.get('wunit', u.AA)
+    funit = kwargs.get('funit', u.erg / u.cm ** 2 / wunit / u.s)
     if f.endswith('txt'):
         try:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1))  # load file
@@ -394,14 +396,22 @@ def freader(f: str, **kwargs) -> Spectrum1D:
         fluxerr = np.zeros_like(flux)
     else:  # fits
         target = getdata(f)
-        wave = target.wave
-        wave, uniquebool = np.unique(wave, return_index=True)  # check there aren't duplicate wavelengths
-        wave = np.array(vac_to_air(wave * u.AA, method='Edlen1953') / u.AA)
-        flux = target.flux[uniquebool]
-        fluxivar = target.ivar[uniquebool]
-        fluxerr = np.divide(1., fluxivar, where=~np.isclose(fluxivar, 0))
-    wunit = kwargs.get('wunit', u.AA)
-    funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)
+        try:
+            wave = target.wave
+            wave, uniquebool = np.unique(wave, return_index=True)  # check there aren't duplicate wavelengths
+            wave = np.array(vac_to_air(wave * wunit, method='Edlen1953') / wunit)
+            flux = target.flux[uniquebool]
+            fluxivar = target.ivar[uniquebool]
+            fluxerr = np.divide(1., fluxivar, where=~np.isclose(fluxivar, 0))
+        except AttributeError:
+            wave = target[0]
+            wave = np.array(vac_to_air(wave * wunit, method='Edlen1953') / wunit)
+            flux = target[1]
+            fluxerr = target[2]
+            boolcut = (~np.isnan(wave)) & (~np.isnan(flux)) & (~np.isnan(fluxerr))
+            wave = wave[boolcut]
+            flux = flux[boolcut]
+            fluxerr = fluxerr[boolcut]
     wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=np.min(wave), xmax=np.max(wave))
     unc = StdDevUncertainty(fluxerr, unit=funit)
     spec = Spectrum1D(flux * funit, wave * wunit,
@@ -447,7 +457,7 @@ def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return wave, flux, fluxerr
 
 
-def stephens(s: Union[pd.Series, float]) -> np.ndarray:
+def stephens(s: Union[pd.Series, float]) -> Union[np.ndarray, float]:
     """
     Stephens relation for converting to teff
 

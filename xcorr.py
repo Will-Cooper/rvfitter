@@ -37,7 +37,7 @@ class Xcorr(Quantiser):
         """
         self.kwargs = kwargs
         wunit = kwargs.get('wunit', u.AA)  # the unit for wavelengths
-        funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)  # flux unit
+        funit = kwargs.get('funit', u.erg / u.cm ** 2 / wunit / u.s)  # flux unit
         rvunit = kwargs.get('rvunit', u.km / u.s)  # RV unit
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
@@ -231,9 +231,13 @@ b - Go back to previous line
                                             (self.templatedf.logg == self.grav.value) &
                                             (self.templatedf.met == self.met.value)].iloc[0].name
                 fname = self.templatedir + fname
-                kwargs = self.kwargs
-                kwargs['wavearr'] = self.spec.spectral_axis.value
-                temp_spec = self.cutspec(freader(fname, **self.kwargs))
+                wave = copy(self.spec.spectral_axis)
+                kwargs = dict(wunit=u.AA)
+                kwargs['wavearr'] = wave.to(u.AA).value
+                temp_spec = freader(fname, **kwargs)
+                temp_spec = Spectrum1D(temp_spec.flux, temp_spec.spectral_axis.to(self.wunit),
+                                       uncertainty=temp_spec.uncertainty)
+                temp_spec = self.cutspec(temp_spec)
             except (IndexError, FileNotFoundError, OSError):
                 self.gottemplate = False
                 return
@@ -471,7 +475,7 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
     ax: plt.Axes = ax
     fig.canvas.mpl_connect('key_press_event', keypress)
     useset = np.fromiter(spec_indices.keys(), dtype='<U8')
-    ax.set_xlabel(r'Wavelength\,[$\AA$]')
+    ax.set_xlabel(f'Wavelength\,[{spec.spectral_axis.unit.to_string()}]')
     ax.set_ylabel('Normalised Flux [$F_{\lambda}$]')
     curr_pos = 0
     goodinds = np.zeros(len(useset), dtype=bool)
