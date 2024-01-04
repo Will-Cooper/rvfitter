@@ -44,7 +44,7 @@ def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
             if objinfo[-1]:
                 useset.append(spec_index)
             labline = spec_indices[spec_index]
-            kwargs = {param: objinfo[i] for i, param in enumerate(paramlist)}
+            kwargs.update({param: objinfo[i] for i, param in enumerate(paramlist)})
             obj = Splot(spec, labline, spec_index, **kwargs)
             objlist.append(obj)
     return useset, objlist
@@ -174,7 +174,8 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
             continue
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
-                       f' with {obj.std.value:.1f}A sigma; {obj.rv.value:.1f} km/s.')
+                       f' with {(obj.std.value * wunit).to(u.AA).value:.1f}A sigma;'
+                       f' {obj.rv.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f}')
         rv_list[j] = obj.rv.value
         err_list[j] = obj.rverr.value
 
@@ -196,7 +197,10 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
     fig.subplots_adjust(hspace=1.15, wspace=0.15)
     if not os.path.exists('lcplots'):
         os.mkdir('lcplots')
-    fname = f'lcplots/{tname}{"_" + fappend}_lc.pdf'
+    if fappend:
+        fname = f'lcplots/{tname}{"_" + fappend}_lc.pdf'
+    else:
+        fname = f'lcplots/{tname}_lc.pdf'
     plt.savefig(fname, bbox_inches='tight')
     plt.close(3)
     return df, rv_list, err_list

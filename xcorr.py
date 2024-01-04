@@ -246,7 +246,7 @@ b - Go back to previous line
         self.gottemplate = True
         return
 
-    def shiftsmooth(self, temp_spec: Spectrum1D) -> Spectrum1D:
+    def shiftsmooth(self, temp_spec: Spectrum1D, wavearr: np.ndarray) -> Spectrum1D:
         """
         Shifting and smoothing the spectrum
 
@@ -254,6 +254,8 @@ b - Go back to previous line
         ----------
         temp_spec
             The input spectrum
+        wavearr
+            Wavelength array to be interpolated to
 
         Returns
         -------
@@ -263,7 +265,8 @@ b - Go back to previous line
         temp_spec.radial_velocity = self.rv
         wavetemp, fluxtemp, fluxtemperr = spec_unpack(temp_spec)
         fluxsmooth = convolve(fluxtemp, Gaussian1DKernel(self.smoothlevel))
-        temp_spec = Spectrum1D(fluxsmooth * self.funit, wavetemp * self.wunit,
+        fluxsmooth = np.interp(wavearr, wavetemp, fluxsmooth)
+        temp_spec = Spectrum1D(fluxsmooth * self.funit, wavearr * self.wunit,
                                uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
         self.rverr = self.rvstep / 2 + inv_rv_calc(self.waverms.value, self.labline.value) * self.rvunit
         return temp_spec
@@ -302,7 +305,7 @@ b - Go back to previous line
             if not self.gottemplate:
                 raise ValueError('Out of template range')
             self.__updatewindows__()
-            self.sub_temp_spec = self.shiftsmooth(self.sub_temp_spec)
+            self.sub_temp_spec = self.shiftsmooth(self.sub_temp_spec, self.sub_spec.wavelength.to(self.wunit).value)
             self.normalise()
         except Exception as e:
             print(f'Fit failed: {repr(e)}')
@@ -358,7 +361,16 @@ b - Go back to previous line
         templateplot = self.ax.plot(wavetemp, fluxtemp, c='orange', ls=ls)
         handles.extend(templateplot)
         labels.append('Template')
-        self.ax.legend(handles, labels)
+        rmsdiqr, sig = rmsdiqr_check(flux, fluxtemp, self.best_rmsdiqr)
+        if sig:
+            self.best_rmsdiqr = rmsdiqr
+            sigcol = 'green'
+        else:
+            sigcol = 'red'
+        self.ax.text(0.05, 0.95,  f'RMSDIQR = {rmsdiqr:.2f}', transform=self.ax.transAxes, zorder=6,
+                     verticalalignment='top', c=sigcol, bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
+        leg = self.ax.legend(handles, labels)
+        leg.set_draggable(True)
 
 
 def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Xcorr]]:

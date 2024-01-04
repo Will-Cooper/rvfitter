@@ -1,17 +1,19 @@
-from astropy.io.fits import getheader
-from astropy.convolution import convolve, Gaussian1DKernel
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import scipy.stats as ss
-from splat import Spectrum, measureIndexSet
 
 import argparse
 from collections import OrderedDict
+import io
 import sys
 from typing import Sequence
 from warnings import simplefilter
 
 sys.path.insert(0, 'rvfitter/')
+original_stdout = sys.stdout
+sys.stdout = io.StringIO()
+from splat import Spectrum, measureIndexSet
+sys.stdout = original_stdout
 from utils import *
 from linecentering import linecentering
 from crosscorrelate import crosscorrelate
@@ -131,7 +133,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, lcvals: Sequence[float
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
     indicesplot = np.array([specindex.capitalize().replace('1', '\,\\textsc{i}') + r' $\lambda$'
-                           + f'{int(pos)}\,' + u.AA.to_string(u.format.Latex)
+                           + f'{pos:.2f}\,' + u.um.to_string(u.format.Latex)
                             for specindex, pos in spec_indices.items()])
     ypos = np.arange(len(allindices)) + 1
     lcplot = copy(lcvals)
@@ -151,21 +153,23 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, lcvals: Sequence[float
         scalelc = lcerr[0]
     if len(xcorr) == 1:
         scalex = xerr[0]
+    if scalex < scalelc:
+        locpost = locx
+        scalepost = scalex
+        errpost = scalex / np.sqrt(len(xcorr))
+    else:
+        locpost = loclc
+        scalepost = scalelc
+        errpost = scalelc / np.sqrt(len(lcvals))
     minlc, maxlc = np.min(lcvals - lcerr), np.max(lcvals + lcerr)
     minxc, maxxc = np.min(xcorr - xerr), np.max(xcorr + xerr)
     minboth, maxboth = np.min([minlc, minxc]), np.max([maxlc, maxxc])
     minpos = np.floor(minboth / 5) * 5
     maxpos = np.ceil(maxboth / 5) * 5
-    pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1))
+    pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1) * 10)
     xcorrpdf = ss.norm.pdf(pdfxpoints, loc=locx, scale=scalex)
     lcpdf = ss.norm.pdf(pdfxpoints, loc=loclc, scale=scalelc)
-    if scalex < scalelc:
-        locpost = locx
-        errpost = scalex
-    else:
-        locpost = loclc
-        errpost = scalelc
-    posteriorpdf = ss.norm.pdf(pdfxpoints, loc=locpost, scale=errpost)
+    posteriorpdf = ss.norm.pdf(pdfxpoints, loc=locpost, scale=scalepost)
 
     xcorrpdf /= np.max(xcorrpdf)
     lcpdf /= np.max(lcpdf)
@@ -273,12 +277,12 @@ def main(fname, spec_indices, df, dflines, repeat):
     dfout = df
     if hires:
         dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname,
-                                             wunit=wunit, funit=funit)  # perform the line centering
+                                             wunit=wunit, funit=funit, nrows=3)  # perform the line centering
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname,
                                         wunit=wunit, funit=funit, teff=expectedteff, dorv=hires,
-                                        templatedir='bt-settl-cifist/useful_gemma/')  # cross correlation
+                                        templatedir='bt-settl-cifist/useful_gemma/', nrows=3)  # cross correlation
     try:
         dfout = errorappend(dfout, tname, colname)
     except KeyError:
@@ -289,9 +293,7 @@ def main(fname, spec_indices, df, dflines, repeat):
 
 
 if __name__ == '__main__':
-    _spec_indices = {'k1-a': 7664.8991, 'k1-b': 7698.9645,
-                     'rb1-a': 7800.27, 'rb1-b': 7947.60,
-                     'na1-a': 8183.2556, 'na1-b': 8194.8240,
+    _spec_indices = {'na1-a': 8183.2556, 'na1-b': 8194.8240,
                      'cs1-a': 8521.13, 'cs1-b': 8943.47,
                      'cs1-c': 13588.29, 'cs1-d': 14694.91}  # air
     _spec_indices = {spec: val / 1e4 for spec, val in _spec_indices.items()}

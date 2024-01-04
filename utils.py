@@ -48,6 +48,7 @@ class Quantiser:
         self.r2 = None
         self.iscut = False
         self.rescale = True
+        self.best_rmsdiqr = np.inf
         self.spec = spec
         self.sub_spec = self.spec
         self.cont = None
@@ -418,7 +419,7 @@ def freader(f: str, **kwargs) -> Spectrum1D:
     spec
         The spectrum from the filename
     """
-    wavearr = kwargs.get('wavearr', None)  # the wavelength array to interpolate for
+    wavearr: Optional[np.ndarray] = kwargs.get('wavearr', None)  # the wavelength array to interpolate for
     wunit = kwargs.get('wunit', u.AA)
     funit = kwargs.get('funit', u.erg / u.cm ** 2 / wunit / u.s)
     if f.endswith('txt'):
@@ -430,7 +431,7 @@ def freader(f: str, **kwargs) -> Spectrum1D:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1), skiprows=1)  # load file
         if wavearr is not None:
             flux = np.interp(wavearr, wave, flux)
-        wave = wavearr
+            wave = wavearr
         fluxerr = np.zeros_like(flux)
     else:  # fits
         target = getdata(f)
@@ -456,6 +457,36 @@ def freader(f: str, **kwargs) -> Spectrum1D:
     spec = Spectrum1D(flux * funit, wave * wunit,
                       uncertainty=unc)
     return spec
+
+
+def rmsdiqr_check(observed: np.ndarray, expected: np.ndarray, best: float) -> Tuple[float, bool]:
+    """
+    Calculate the rmsdiqr of two distributions
+
+    Parameters
+    ----------
+    observed
+        Observed values
+    expected
+        Expected values
+    best
+        Current best value
+
+    Returns
+    -------
+    chi
+        Chisquare value
+    significant
+        Switch whether value is significant
+    """
+    rmsd = np.sqrt(np.sum((observed - expected) ** 2) / len(observed))
+    iqr = np.subtract(*np.percentile(observed, [75, 25]))
+    rmsdiqr = rmsd / iqr
+    if rmsdiqr < best:
+        significant = True
+    else:
+        significant = False
+    return rmsdiqr, significant
 
 
 def logging_rvcalc(s: str = '', perm: str = 'a'):

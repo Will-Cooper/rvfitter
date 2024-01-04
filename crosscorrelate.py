@@ -42,7 +42,7 @@ def load_fitinfo(spec: Spectrum1D, spec_indices: Dict[str, float],
             if objinfo[-1]:
                 useset.append(spec_index)
             labline = spec_indices[spec_index]
-            kwargs = {param: objinfo[i] for i, param in enumerate(paramlist)}
+            kwargs.update({param: objinfo[i] for i, param in enumerate(paramlist)})
             obj = Xcorr(spec, labline, spec_index, **kwargs)
             objlist.append(obj)
     return useset, objlist
@@ -150,7 +150,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     wunit: u.Unit = kwargs.get('wunit', u.AA)
     allindices = np.array(list(spec_indices.keys()))
     rv_list, err_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
-    teff_list, grav_list, met_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan),\
+    teff_list, grav_list, met_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan), \
         np.full(len(allindices), np.nan)
     rv, err = np.nan, np.nan
     teff, grav, met = np.nan, np.nan, np.nan
@@ -177,7 +177,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         j += 1
         teffobj = int(obj.teff.value)
         logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
-                       f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} km/s')
+                       f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f}')
         if dorv:
             rv_list[j] = obj.rv.value
             err_list[j] = obj.rverr.value
@@ -218,7 +218,10 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     fig.subplots_adjust(hspace=2.5, wspace=0.15)
     if not os.path.exists('xcorrplots'):
         os.mkdir('xcorrplots')
-    fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'
+    if fappend:
+        fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'
+    else:
+        fname = f'xcorrplots/{tname}_xcorr.pdf'
     plt.savefig(fname, bbox_inches='tight')
     plt.close(4)
     return df, rv_list, err_list

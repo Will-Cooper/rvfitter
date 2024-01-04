@@ -37,7 +37,7 @@ class Splot(Quantiser):
         """
         self.kwargs = kwargs
         wunit = kwargs.get('wunit', u.AA)  # the unit for wavelengths
-        funit = kwargs.get('funit', u.erg / u.cm ** 2 / u.Angstrom / u.s)  # flux unit
+        funit = kwargs.get('funit', u.erg / u.cm ** 2 / wunit / u.s)  # flux unit
         rvunit = kwargs.get('rvunit', u.km / u.s)  # RV unit
         self.spec_index = spec_index
         super().__init__(wunit, funit, rvunit, spec)
@@ -53,7 +53,7 @@ class Splot(Quantiser):
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
         self.mu = self.__assertwavelength__(kwargs.get('mu', self.labline))  # mean value
-        self.std = self.__assertwavelength__(kwargs.get('std', 2))  # standard deviation
+        self.std = self.__assertwavelength__(kwargs.get('std', None))  # standard deviation
         self.fwhm_G = self.__assertwavelength__(kwargs.get('fwhm_G', self.__stdtofwhm__()))  # fwhm of Gaussian
         self.fwhm_L = self.__assertwavelength__(kwargs.get('fwhm_L', self.__stdtofwhm__()))  # fwhm of Lorentzian
         self.fwhm_V = self.__assertwavelength__(kwargs.get('fwhm_V', self.__stdtofwhm__()))  # fwhm of Voigt
@@ -130,7 +130,7 @@ b - Go back to previous line
         """
         return s
 
-    def __stdtofwhm__(self,) -> u.Quantity:
+    def __stdtofwhm__(self) -> u.Quantity:
         """
         Standard deviation to full width half maximum
 
@@ -139,7 +139,22 @@ b - Go back to previous line
         _
             fwhm
         """
-        return self.std * (2 * np.sqrt(2 * np.log(2)))
+        std = self.std
+        if self.std is None:
+            std = 0
+        return std * (2 * np.sqrt(2 * np.log(2)))
+
+    @staticmethod
+    def __fwhmtostd__(fwhm: u.Quantity) -> u.Quantity:
+        """
+        Full width half maximum to standard deviation
+
+        Returns
+        -------
+        _
+            std
+        """
+        return fwhm / (2 * np.sqrt(2 * np.log(2)))
 
     def getcont(self):
         """
@@ -173,10 +188,10 @@ b - Go back to previous line
         ind
             Which part of the covariance matrix to use for the error
         """
-        self.shift = self.x_0 - self.labline
+        self.shift: u.Quantity = self.x_0 - self.labline
         self.cov = self.fitter.fit_info['param_cov']
         errs = np.sqrt(np.diag(self.cov))
-        self.shifterr = errs[ind] * self.wunit + self.waverms
+        self.shifterr: u.Quantity = errs[ind] * self.wunit + self.waverms
 
     def __rvcalc__(self, shift: u.Quantity) -> u.Quantity:
         """
@@ -237,8 +252,8 @@ b - Go back to previous line
         except Exception as e:
             print(f'Fit failed: {repr(e)}')
             if self.ax is not None:
-                self.ax.text(0.5, 0.5, f'Fit failed: {repr(e)}', transform=self.ax.transAxes,
-                             horizontalalignment='center')
+                self.ax.text(0.5, 0.75, f'Fit failed: {repr(e)}', transform=self.ax.transAxes,
+                             horizontalalignment='center', bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
             self.profilefound = False
             self.rescale = False
             return None
@@ -285,7 +300,7 @@ b - Go back to previous line
         self.amplitude = l_fit.amplitude
         self.mu = self.x_0 = l_fit.x_0
         self.fwhm_L = l_fit.fwhm
-        self.std = self.fwhm_L / 2.
+        self.std = self.__fwhmtostd__(self.fwhm_L)
         self.getshift(1)
         return True
 
@@ -309,7 +324,7 @@ b - Go back to previous line
         self.fwhm_L = v_fit.fwhm_L
         self.fwhm_G = v_fit.fwhm_G
         self.fwhm_V = self.fwhm_L / 2 + np.sqrt(self.fwhm_L ** 2 / 4 + self.fwhm_G ** 2)
-        self.std = self.fwhm_V / 2.
+        self.std = self.__fwhmtostd__(self.fwhm_V)
         self.getshift(0)
         return True
 
@@ -321,6 +336,8 @@ b - Go back to previous line
         if not self.contfound or self.linewindow is None:
             return
         self.contwindow = [SpectralRegion(*x, ) for x in self.contwindow]
+        if self.std is None:
+            self.std = 0.5 * (self.r2 - self.r1)
         worked = False
         if self.line_profile == 'gaussian':
             worked = self.gaussian_fit()
@@ -351,6 +368,7 @@ b - Go back to previous line
                                         np.ceil(np.max(flux))]), )
             self.rescale = False
         if self.iscut:
+            self.ax.set_xlim(np.min(wave), np.max(wave))
             ebar = self.ax.errorbar(wave, flux, yerr=fluxerr, marker='s', lw=0, elinewidth=1.5, c='black',
                                     ms=4, mfc='white', mec='black', barsabove=True)
             fitx, fity, fityerr = self.poly_cutter(wave, flux, fluxerr, 5)
@@ -381,10 +399,12 @@ b - Go back to previous line
             self.ax.legend(handles, labels)
             return
         ls = '-'
+        ddof = 3
         if self.working_profile == 'lorentzian':
             ls = '--'
         elif self.working_profile == 'voigt':
             ls = '-.'
+            ddof = 4
         contyval = self.cont(fitx * self.wunit).value
         contplot = self.ax.plot(fitx, contyval, c='k', ls=ls)
         handles.extend(contplot)
@@ -397,10 +417,22 @@ b - Go back to previous line
         if not self.profilefound:
             self.ax.legend(handles, labels)
             return
-        fityval = (self.fitted_profile(fitx * u.AA) + self.cont(fitx * u.AA)).value
+        fityval = (self.fitted_profile(fitx * self.wunit) + self.cont(fitx * self.wunit)).value
         fitplot = self.ax.plot(fitx, fityval, c='orange', ls=ls)
         handles.extend(fitplot)
         labels.append('Model')
+        regspec: Spectrum1D = extract_region(spec, SpectralRegion(self.r1, self.r2))
+        rmsdiqr, sig = rmsdiqr_check(regspec.flux.value,
+                                     (self.fitted_profile(regspec.spectral_axis.value * self.wunit) +
+                                      self.cont(regspec.spectral_axis.value * self.wunit)).value,
+                                     self.best_rmsdiqr)
+        if sig:
+            self.best_rmsdiqr = rmsdiqr
+            sigcol = 'green'
+        else:
+            sigcol = 'red'
+        self.ax.text(0.05, 0.95, f'RMSDIQR = {rmsdiqr:.2f}', transform=self.ax.transAxes, zorder=6,
+                     verticalalignment='top', c=sigcol, bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
         mesline = self.ax.axvline(self.x_0.value, color='black', ls='-')
         handles.append(mesline)
         labels.append('Measured')
@@ -415,7 +447,8 @@ b - Go back to previous line
             mdiff = np.mean([ldiff.value, rdiff.value])
             self.ax.set_xlim(self.x_0.value - xroundpoint * mdiff,
                              self.x_0.value + xroundpoint * mdiff)
-        self.ax.legend(handles, labels)
+        leg = self.ax.legend(handles, labels)
+        leg.set_draggable(True)
 
 
 def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) -> Tuple[List[str], Sequence[Splot]]:
@@ -482,7 +515,7 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
         if curr_pos == len(useset):
             plt.close(1)
             return
-        for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts:
+        for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts + plt.gca().patches:
             artist.remove()
         if e.key != 'q':
             try:
