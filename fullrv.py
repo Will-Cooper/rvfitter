@@ -161,21 +161,23 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
         scalelc = lcerr[0]
     if len(xcorr) == 1:
         scalex = xerr[0]
+    if scalex < scalelc:
+        locpost = locx
+        scalepost = scalex
+        errpost = scalex / np.sqrt(len(xcorr))
+    else:
+        locpost = loclc
+        scalepost = scalelc
+        errpost = scalelc / np.sqrt(len(lcvals))
     minlc, maxlc = np.min(lcvals - lcerr), np.max(lcvals + lcerr)
     minxc, maxxc = np.min(xcorr - xerr), np.max(xcorr + xerr)
     minboth, maxboth = np.min([minlc, minxc]), np.max([maxlc, maxxc])
     minpos = np.floor(minboth / 5) * 5
     maxpos = np.ceil(maxboth / 5) * 5
-    pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1))
+    pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1) * 10)
     xcorrpdf = ss.norm.pdf(pdfxpoints, loc=locx, scale=scalex)
     lcpdf = ss.norm.pdf(pdfxpoints, loc=loclc, scale=scalelc)
-    if scalex < scalelc:
-        locpost = locx
-        errpost = scalex
-    else:
-        locpost = loclc
-        errpost = scalelc
-    posteriorpdf = ss.norm.pdf(pdfxpoints, loc=locpost, scale=errpost)
+    posteriorpdf = ss.norm.pdf(pdfxpoints, loc=locpost, scale=scalepost)
 
     xcorrpdf /= np.max(xcorrpdf)
     lcpdf /= np.max(lcpdf)
