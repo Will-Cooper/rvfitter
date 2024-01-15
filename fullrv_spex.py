@@ -277,12 +277,12 @@ def main(fname, spec_indices, df, dflines, repeat):
     dfout = df
     if hires:
         dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname,
-                                             wunit=wunit, funit=funit, nrows=3)  # perform the line centering
+                                             wunit=wunit, funit=funit, nrows=4)  # perform the line centering
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname,
                                         wunit=wunit, funit=funit, teff=expectedteff, dorv=hires,
-                                        templatedir='bt-settl-cifist/useful_gemma/', nrows=3)  # cross correlation
+                                        templatedir='bt-settl-cifist/useful_gemma/', nrows=4)  # cross correlation
     try:
         dfout = errorappend(dfout, tname, colname)
     except KeyError:
@@ -293,9 +293,14 @@ def main(fname, spec_indices, df, dflines, repeat):
 
 
 if __name__ == '__main__':
-    _spec_indices = {'na1-a': 8183.2556, 'na1-b': 8194.8240,
-                     'cs1-a': 8521.13, 'cs1-b': 8943.47,
-                     'cs1-c': 13588.29, 'cs1-d': 14694.91}  # air
+    _spec_indices = {
+        'na1-a': 8183.2556, 'na1-b': 8194.8240,  # continuum a challenge
+        # 'cs1-a': 8521.13, 'cs1-b': 8943.47,  # often too noisy
+        'na1-c': 11381.45, 'na1-d': 11403.78,
+        'k1-a': 11690.219, 'k1-b': 11772.838,
+        'k1-c': 12432.274, 'k1-d': 12522.144,
+        # 'na1-e': 22062.42, 'na1-f': 22089.69  # too low signal
+    }  # air unless > 20000A
     _spec_indices = {spec: val / 1e4 for spec, val in _spec_indices.items()}
     allinds = list(_spec_indices.keys())
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore

@@ -48,6 +48,8 @@ class Xcorr(Quantiser):
         self.sub_speccorr = copy(self.sub_spec)
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
+        if self.labline > (2 * u.um):  # NIST values greater than 2 microns are in vacuum, need air
+            self.labline = vac_to_air(self.labline, method='Edlen1953')
         self.waverms = self.__assertwavelength__(kwargs.get('waverms', 0))  # wavelength rms
         self.rv = self.__assertrv__(kwargs.get('rv', 0))  # RV
         self.rverr = self.__assertrv__(5)
@@ -344,6 +346,14 @@ b - Go back to previous line
             splineplot = self.ax.plot(fitx, fity, 'b-')
             handles.extend([ebar, splineplot[0]])
             labels.extend(['Data Points', 'Data Spline'])
+            rmsdiqr, sig = rmsdiqr_check(flux, fluxtemp, self.best_rmsdiqr)
+            if sig:
+                self.best_rmsdiqr = rmsdiqr
+                sigcol = 'green'
+            else:
+                sigcol = 'red'
+            self.ax.text(0.05, 0.95,  f'RMSDIQR = {rmsdiqr:.2f}', transform=self.ax.transAxes, zorder=6,
+                         verticalalignment='top', c=sigcol, bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
         else:
             p = self.ax.plot(wave, flux, 'k')
             handles.extend(p)
@@ -361,14 +371,6 @@ b - Go back to previous line
         templateplot = self.ax.plot(wavetemp, fluxtemp, c='orange', ls=ls)
         handles.extend(templateplot)
         labels.append('Template')
-        rmsdiqr, sig = rmsdiqr_check(flux, fluxtemp, self.best_rmsdiqr)
-        if sig:
-            self.best_rmsdiqr = rmsdiqr
-            sigcol = 'green'
-        else:
-            sigcol = 'red'
-        self.ax.text(0.05, 0.95,  f'RMSDIQR = {rmsdiqr:.2f}', transform=self.ax.transAxes, zorder=6,
-                     verticalalignment='top', c=sigcol, bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
         leg = self.ax.legend(handles, labels)
         leg.set_draggable(True)
 

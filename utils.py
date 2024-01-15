@@ -1,3 +1,4 @@
+from astropy import log as astropy_log
 from astropy.io.fits import getdata
 from astropy.modeling import Fittable1DModel
 from astropy.nddata import StdDevUncertainty
@@ -8,7 +9,6 @@ import pandas as pd
 from scipy.interpolate import interp1d
 
 from copy import copy
-import logging
 import json
 import os
 from specutils import Spectrum1D, SpectralRegion
@@ -482,7 +482,7 @@ def rmsdiqr_check(observed: np.ndarray, expected: np.ndarray, best: float) -> Tu
     rmsd = np.sqrt(np.sum((observed - expected) ** 2) / len(observed))
     iqr = np.subtract(*np.percentile(observed, [75, 25]))
     rmsdiqr = rmsd / iqr
-    if rmsdiqr < best:
+    if rmsdiqr <= best:
         significant = True
     else:
         significant = False
@@ -546,7 +546,7 @@ def stephens(s: Union[pd.Series, float]) -> Union[np.ndarray, float]:
     return teff
 
 
-logging.getLogger().setLevel(logging.ERROR)
+astropy_log.setLevel('ERROR')
 dpi = 200  # 200-300 as per guidelines
 maxpix = 670  # max pixels of plot
 width = maxpix / dpi  # max allowed with

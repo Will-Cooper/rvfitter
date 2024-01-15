@@ -52,6 +52,8 @@ class Splot(Quantiser):
         self.sub_speccorr = self.sub_spec
         self.ax = ax
         self.labline = self.__assertwavelength__(labline)
+        if self.labline > (2 * u.um):  # NIST values greater than 2 microns are in vacuum, need air
+            self.labline = vac_to_air(self.labline, method='Edlen1953')
         self.mu = self.__assertwavelength__(kwargs.get('mu', self.labline))  # mean value
         self.std = self.__assertwavelength__(kwargs.get('std', None))  # standard deviation
         self.fwhm_G = self.__assertwavelength__(kwargs.get('fwhm_G', self.__stdtofwhm__()))  # fwhm of Gaussian
