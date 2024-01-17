@@ -275,14 +275,16 @@ def main(fname, spec_indices, df, dflines, repeat):
         if 1200 > expectedteff > 4000:
             expectedteff = 2000
     dfout = df
+    # line centering
     if hires:
         dfout, lcvals, lcerr = linecentering(fname, spec_indices, dfout, repeat, tname, colname,
-                                             wunit=wunit, funit=funit, nrows=4)  # perform the line centering
+                                             wunit=wunit, funit=funit, nrows=4, waverms=waverms)
     else:
         lcvals, lcerr = np.full(len(spec_indices), np.nan), np.full(len(spec_indices), np.nan)
+    # cross correlation
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname,
                                         wunit=wunit, funit=funit, teff=expectedteff, dorv=hires,
-                                        templatedir='bt-settl-cifist/useful_gemma/', nrows=4)  # cross correlation
+                                        templatedir='bt-settl-cifist/useful_gemma/', nrows=4, waverms=waverms)
     try:
         dfout = errorappend(dfout, tname, colname)
     except KeyError:
@@ -305,6 +307,7 @@ if __name__ == '__main__':
     allinds = list(_spec_indices.keys())
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore
     tabname = 'CandidateInfo.csv'
+    waverms = 0.075 * u.Angstrom
     myargs = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     myargs.add_argument('-f', '--file-name', required=True, help='File to be plotted')
     myargs.add_argument('-r', '--repeat', action='store_true', default=False)

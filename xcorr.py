@@ -270,7 +270,7 @@ b - Go back to previous line
         fluxsmooth = np.interp(wavearr, wavetemp, fluxsmooth)
         temp_spec = Spectrum1D(fluxsmooth * self.funit, wavearr * self.wunit,
                                uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
-        self.rverr = self.rvstep / 2 + inv_rv_calc(self.waverms.value, self.labline.value) * self.rvunit
+        self.rverr = self.rvstep / 2 + inv_rv_calc(self.waverms.to(self.wunit).value, self.labline.value) * self.rvunit
         return temp_spec
 
     def __updatewindows__(self):
