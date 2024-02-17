@@ -2,15 +2,19 @@ from astropy.io.fits import getheader
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 import scipy.stats as ss
-from splat import Spectrum, measureIndexSet
 
 import argparse
 from collections import OrderedDict
+import io
 import sys
 from typing import Sequence
 from warnings import simplefilter
 
 sys.path.insert(0, 'rvfitter/')
+original_stdout = sys.stdout
+sys.stdout = io.StringIO()
+from splat import Spectrum, measureIndexSet
+sys.stdout = original_stdout
 from utils import *
 from linecentering import linecentering
 from crosscorrelate import crosscorrelate

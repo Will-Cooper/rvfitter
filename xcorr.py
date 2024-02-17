@@ -268,8 +268,9 @@ b - Go back to previous line
         wavetemp, fluxtemp, fluxtemperr = spec_unpack(temp_spec)
         fluxsmooth = convolve(fluxtemp, Gaussian1DKernel(self.smoothlevel))
         fluxsmooth = np.interp(wavearr, wavetemp, fluxsmooth)
+        fluxerrsmooth = np.interp(wavearr, wavetemp, fluxtemperr)
         temp_spec = Spectrum1D(fluxsmooth * self.funit, wavearr * self.wunit,
-                               uncertainty=StdDevUncertainty(fluxtemperr, unit=self.funit))
+                               uncertainty=StdDevUncertainty(fluxerrsmooth, unit=self.funit))
         self.rverr = self.rvstep / 2 + inv_rv_calc(self.waverms.to(self.wunit).value, self.labline.value) * self.rvunit
         return temp_spec
 
