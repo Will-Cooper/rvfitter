@@ -177,7 +177,8 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         j += 1
         teffobj = int(obj.teff.value)
         logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
-                       f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f}')
+                       f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} +- {obj.rverr.value:.1f} km/s;'
+                       f' RMSDIQR = {obj.best_rmsdiqr:.2f}')
         if dorv:
             rv_list[j] = obj.rv.value
             err_list[j] = obj.rverr.value
@@ -191,7 +192,9 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     grav_list_cut = grav_list[~np.isnan(grav_list)]
     met_list_cut = met_list[~np.isnan(met_list)]
     if len(rv_list_cut):  # if there is at least a line used in the cross correlation
-        rv, std = ss.norm.fit(rv_list_cut)
+        weights = 1.0 / err_list_cut ** 2
+        rv = np.average(rv_list_cut, weights=weights)
+        std = np.sqrt(np.average((rv_list_cut - rv) ** 2, weights=weights))
         if len(rv_list_cut) > 1:
             err = std / np.sqrt(len(rv_list_cut))
         else:

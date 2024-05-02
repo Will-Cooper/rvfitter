@@ -175,14 +175,16 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
                        f' with {(obj.std.value * wunit).to(u.AA).value:.1f}A sigma;'
-                       f' {obj.rv.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f}')
+                       f' {obj.rv.value:.1f} +- {obj.rverr.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f}')
         rv_list[j] = obj.rv.value
         err_list[j] = obj.rverr.value
 
     rv_list_cut = rv_list[~np.isnan(rv_list)]
     err_list_cut = err_list[~np.isnan(err_list)]
     if len(rv_list_cut):
-        rv, std = ss.norm.fit(rv_list_cut)
+        weights = 1.0 / err_list_cut ** 2
+        rv = np.average(rv_list_cut, weights=weights)
+        std = np.sqrt(np.average((rv_list_cut - rv) ** 2, weights=weights))
         if len(rv_list_cut) > 1:
             err = std / np.sqrt(len(rv_list_cut))
         else:

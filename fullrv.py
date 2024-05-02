@@ -159,20 +159,30 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     if not len(lcvals) or not len(xcorr):
         plt.close(5)
         return df
-    locx, scalex = ss.norm.fit(xcorr)
-    loclc, scalelc = ss.norm.fit(lcvals)
+    weights = 1.0 / lcerr ** 2
+    loclc = np.average(lcvals, weights=weights)
+    scalelc = np.sqrt(np.average((lcvals - loclc) ** 2, weights=weights))
+    weights = 1.0 / xerr ** 2
+    locx = np.average(xcorr, weights=weights)
+    scalex = np.sqrt(np.average((xcorr - locx) ** 2, weights=weights))
     if len(lcvals) == 1:
         scalelc = lcerr[0]
     if len(xcorr) == 1:
         scalex = xerr[0]
-    if scalex < scalelc:
-        locpost = locx
-        scalepost = scalex
-        errpost = scalex / np.sqrt(len(xcorr))
-    else:
-        locpost = loclc
-        scalepost = scalelc
-        errpost = scalelc / np.sqrt(len(lcvals))
+    # if scalex < scalelc:
+    #     locpost = locx
+    #     scalepost = scalex
+    #     errpost = scalex / np.sqrt(len(xcorr))
+    # else:
+    #     locpost = loclc
+    #     scalepost = scalelc
+    #     errpost = scalelc / np.sqrt(len(lcvals))
+    weights_lc = 1.0 / scalelc ** 2
+    weights_x = 1.0 / scalex ** 2
+
+    locpost = (weights_lc * loclc + weights_x * locx) / (weights_lc + weights_x)
+    scalepost = np.sqrt(1.0 / (weights_lc + weights_x))
+    errpost = scalepost / np.sqrt(2)
     minlc, maxlc = np.min(lcvals - lcerr), np.max(lcvals + lcerr)
     minxc, maxxc = np.min(xcorr - xerr), np.max(xcorr + xerr)
     minboth, maxboth = np.min([minlc, minxc]), np.max([maxlc, maxxc])
