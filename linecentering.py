@@ -175,7 +175,8 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
                        f' with {(obj.std.value * wunit).to(u.AA).value:.1f}A sigma;'
-                       f' {obj.rv.value:.1f} +- {obj.rverr.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f}')
+                       f' {obj.rv.value:.1f} +- {obj.rverr.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f};'
+                       f' SNR estimate {obj.snr:.1f}')
         rv_list[j] = obj.rv.value
         err_list[j] = obj.rverr.value
 

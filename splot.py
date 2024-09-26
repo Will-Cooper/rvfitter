@@ -433,6 +433,9 @@ b - Go back to previous line
             sigcol = 'green'
         else:
             sigcol = 'red'
+        self.snr, _ = get_snr_and_rvunc(self.sub_spec, SpectralRegion([[self.c1, self.c2],
+                                                                       [self.c3, self.c4]]),
+                                        SpectralRegion(self.r1, self.r2), self.fwhm_G)
         self.ax.text(0.05, 0.95, f'RMSDIQR = {rmsdiqr:.2f}', transform=self.ax.transAxes, zorder=6,
                      verticalalignment='top', c=sigcol, bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
         mesline = self.ax.axvline(self.x_0.value, color='black', ls='-')

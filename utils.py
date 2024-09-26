@@ -49,6 +49,7 @@ class Quantiser:
         self.iscut = False
         self.rescale = True
         self.best_rmsdiqr = np.inf
+        self.snr = 0
         self.spec = spec
         self.sub_spec = self.spec
         self.cont = None
@@ -487,6 +488,39 @@ def rmsdiqr_check(observed: np.ndarray, expected: np.ndarray, best: float) -> Tu
     else:
         significant = False
     return rmsdiqr, significant
+
+
+def get_snr_and_rvunc(spec: Spectrum1D, continuum_region: SpectralRegion,
+                      fitting_region: SpectralRegion, fwhm: u.Quantity) -> Tuple[float, float]:
+    """
+    Finds the SNR for a given region and the minimum RV uncertainty based on that
+
+    Parameters
+    ----------
+    spec
+        The spectrum object
+    continuum_region
+        The continuum region not used in the line fitting
+    fitting_region
+        The region used in line fitting
+    fwhm
+        FWHM of the fit
+
+    Returns
+    -------
+    snr_value
+        Signal to noise ratio
+    rvunc_min
+        Minimum rv uncertainty from resolution
+    """
+    line_reg: Spectrum1D = extract_region(spec, fitting_region)
+    n_pix = len(line_reg.spectral_axis.value)
+    cont_reg: Spectrum1D = extract_region(spec, continuum_region, return_single_spectrum=True)
+    fwhm_value = fwhm.value
+    resolution = np.nanmean(line_reg.spectral_axis.value) / fwhm_value
+    snr_value = np.mean(cont_reg.flux.value) / np.std(cont_reg.flux.value)
+    rvunc_min = 3e5 / (resolution * np.sqrt(n_pix * snr_value))
+    return snr_value, rvunc_min
 
 
 def logging_rvcalc(s: str = '', perm: str = 'a'):

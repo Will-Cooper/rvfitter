@@ -110,7 +110,7 @@ def chekres(fname: str) -> bool:
 
 
 def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: Sequence[float], lcerr: Sequence[float],
-              xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict) -> pd.DataFrame:
+              xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict, systematic: float = 0) -> pd.DataFrame:
     """
     The method for creating an adopted radial velocity
 
@@ -134,6 +134,8 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
         The array of cross correlated RV errors
     spec_indices
         Dictionary of spectral indices to central wavelength
+    systematic
+        Systematic RV error to be appeneded in quadrature
 
     Returns
     -------
@@ -183,6 +185,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     locpost = (weights_lc * loclc + weights_x * locx) / (weights_lc + weights_x)
     scalepost = np.sqrt(1.0 / (weights_lc + weights_x))
     errpost = scalepost / np.sqrt(2)
+    errpost = np.sqrt(errpost ** 2 + systematic ** 2)
     minlc, maxlc = np.min(lcvals - lcerr), np.max(lcvals + lcerr)
     minxc, maxxc = np.min(xcorr - xerr), np.max(xcorr + xerr)
     minboth, maxboth = np.min([minlc, minxc]), np.max([maxlc, maxxc])
@@ -280,7 +283,8 @@ def getwaverms(fname: str) -> float:
     return disp * rms
 
 
-def main(fname, spec_indices, df, dflines, repeat):
+def main(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame, dflines: pd.DataFrame,
+         repeat: bool, systematic: float):
     """
     The main control module
 
@@ -296,6 +300,8 @@ def main(fname, spec_indices, df, dflines, repeat):
         The dataframe of the spectral lines
     repeat
         Switch to repeat or not
+    systematic
+        Systematic RV uncertainty to add on
 
     Returns
     -------
@@ -334,7 +340,7 @@ def main(fname, spec_indices, df, dflines, repeat):
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname, fappend,
                                         teff=expectedteff, dorv=hires, waverms=waverms)  # cross correlation
     dfout = errorappend(dfout, tname, colname)
-    dfout = adoptedrv(dfout, colname, tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices)
+    dfout = adoptedrv(dfout, colname, tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices, systematic=systematic)
     dflines = get_indices(tname, colname, fname, dflines)
     return dfout, dflines
 
@@ -349,13 +355,15 @@ if __name__ == '__main__':
     tabname = 'gtc_fullinfo.csv'
     myargs = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     myargs.add_argument('-f', '--file-name', required=True, help='File to be plotted')
-    myargs.add_argument('-r', '--repeat', action='store_true', default=False)
+    myargs.add_argument('-r', '--repeat', action='store_true', default=False, help='Repeat manual measurements?')
+    myargs.add_argument('-s', '--systematic', default=0, help='Systematic RV uncertainty')
     sysargs = myargs.parse_args()
     _fname: str = sysargs.file_name
     _repeat: bool = sysargs.repeat
+    _systematic: float = sysargs.systematic
     _df: pd.DataFrame = pd.read_csv(tabname)
     _dflines: pd.DataFrame = pd.read_csv('spectral_indices.csv')
     _df.rename(columns={col: col.lower() for col in _df.columns}, inplace=True)
-    _df, _dflines = main(_fname, _spec_indices, _df, _dflines, _repeat)
+    _df, _dflines = main(_fname, _spec_indices, _df, _dflines, _repeat, _systematic)
     _df.to_csv(tabname, index=False)
     _dflines.to_csv('spectral_indices.csv', index=False)
