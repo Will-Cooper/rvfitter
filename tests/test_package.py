@@ -22,10 +22,9 @@ def test_cli_version():
     assert rvfitter.__version__ in out.stdout
 
 
-def test_cli_placeholder_exits_2(capsys):
+def test_cli_usage_error_exits_2():
     from rvfitter.cli import main
     assert main(['measure']) == 2
-    assert 'not yet implemented' in capsys.readouterr().out
 
 
 def _stub_modules():
