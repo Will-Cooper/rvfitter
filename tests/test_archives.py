@@ -184,3 +184,31 @@ def test_group_by_object():
     assert list(over) == ['Star A'] and len(over['Star A']) == 4
     over2 = group_by_object(specs, override={'/x/a.fits': 'solo  one'})
     assert 'solo one' in over2 and len(over2['Star A']) == 1
+
+
+@pytest.fixture(params=['filter', 'no_filter'])
+def tar_mode(request, monkeypatch):
+    if request.param == 'no_filter':
+        monkeypatch.delattr(tarfile, 'data_filter', raising=False)
+    return request.param
+
+
+def test_tar_both_paths_good_and_bad(tmp_path, tar_mode):
+    root = _tree(tmp_path / 'd')
+    t = tmp_path / 'x.tar.gz'
+    with tarfile.open(t, 'w:gz') as tf:
+        tf.add(root, arcname='.')
+    with open_inputs(t) as files:
+        assert _names(files) == ['a.txt', 'b.csv']
+    for name in ('../evil.txt', '/tmp/evil.txt'):
+        m = tarfile.TarInfo(name)
+        m.size = 1
+        bad = _tar_with(tmp_path / 'bad.tar.gz', m, b'x')
+        with pytest.raises(UnsafeArchiveError), open_inputs(bad):
+            pass
+    m = tarfile.TarInfo('l.txt')
+    m.type = tarfile.SYMTYPE
+    m.linkname = '/etc/passwd'
+    with pytest.raises(UnsafeArchiveError), open_inputs(_tar_with(tmp_path / 'l.tar.gz', m)):
+        pass
+    assert not (tmp_path / 'evil.txt').exists()

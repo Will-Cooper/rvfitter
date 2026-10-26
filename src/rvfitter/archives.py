@@ -122,8 +122,8 @@ def _extract_zip(path: Path, dest: Path, budget: _Budget) -> None:
 
 
 def _extract_tar(path: Path, dest: Path, budget: _Budget) -> None:
-    if not hasattr(tarfile, 'data_filter'):
-        raise RuntimeError('safe tar extraction needs Python >= 3.11.4 (tarfile extraction filters)')
+    # Python >= 3.11.4 has extraction filters; older versions rely on the explicit per-member checks below
+    use_filter = hasattr(tarfile, 'data_filter')
     with tarfile.open(path, 'r:*') as tf:
         for member in tf:
             budget.member(member.name)
@@ -132,10 +132,15 @@ def _extract_tar(path: Path, dest: Path, budget: _Budget) -> None:
                 raise UnsafeArchiveError(f'link in archive: {member.name!r}')
             if not (member.isreg() or member.isdir()):
                 raise UnsafeArchiveError(f'special file in archive: {member.name!r}')
-            _dest_path(dest, rel)
+            _dest_path(dest, rel)  # resolved path must stay inside dest
             if member.isreg():
                 budget.add(member.size)  # tar sizes are what is actually read from the stream
-            tf.extract(member, dest, filter='data')
+            if use_filter:
+                tf.extract(member, dest, filter='data')
+            else:
+                member.mode = 0o755 if member.isdir() else 0o644
+                member.uid = member.gid = 0
+                tf.extract(member, dest)
 
 
 def _extract(path: Path, dest: Path, max_bytes: int, max_members: int) -> None:

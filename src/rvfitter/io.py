@@ -34,7 +34,8 @@ exptime     ``EXPTIME``, ``EXPOSURE`` or ``ITIME`` [s]
 airmass     ``AIRMASS``, else the mean of ``AMSTART`` and ``AMEND``
 medium_in   'air' or 'vacuum': the medium of the file as read (before conversion)
 frame_in    ``VEL_TYPE`` (e.g. 'barycentric', 'heliocentric') if present, else None
-vel_corr    ``VEL_CORR`` if present (PypeIt: the multiplicative factor already applied to the wavelengths)
+vel_corr    ``VEL_CORR`` if present (PypeIt: the multiplicative factor already applied to the wavelengths);
+            ``vel_corr_kms`` is the same as a velocity, c(f²-1)/(f²+1)
 ========== =============================================================================================
 
 ``meta['velocity_keywords']`` additionally holds any of the velocity-correction keywords found in the headers
@@ -52,6 +53,7 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 
+from .constants import C_KMS
 from .medium import to_vacuum
 from .types import Spectrum
 
@@ -372,7 +374,10 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     meta['airmass'] = airmass
     frame = _first(header, ('VEL_TYPE',))[0]
     meta['frame_in'] = None if frame is None else str(frame).strip().lower()
-    meta['vel_corr'] = _as_float(header.get('VEL_CORR'))
+    f = _as_float(header.get('VEL_CORR'))
+    meta['vel_corr'] = f
+    # PypeIt's factor f = sqrt((1+β)/(1-β)) expressed as a velocity: c (f²-1)/(f²+1)
+    meta['vel_corr_kms'] = None if f is None else C_KMS * (f * f - 1.) / (f * f + 1.)
     meta['velocity_keywords'] = {k: header[k] for k in _VEL_KEYS if k in header}
     return meta
 

@@ -171,3 +171,13 @@ def test_default_for_unknown_resolution_warns(caplog):
         cfg = default_for(_spec(7300., 10150., None))
     assert 'unknown' in caplog.text and cfg.input.resolution is None
     assert 'resolution' not in cfg.to_dict()['input']  # None is omitted from the TOML
+
+
+def test_hash_ignores_paths_and_output():
+    a, b = Config(), Config()
+    b.input.paths = ['x.fits']
+    b.output.path = 'other.csv'
+    b.output.formats = ['json']
+    assert a.hash() == b.hash()
+    b.input.medium = 'air'
+    assert a.hash() != b.hash()

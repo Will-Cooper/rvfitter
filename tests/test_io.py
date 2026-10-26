@@ -43,6 +43,8 @@ def test_pypeit_spec1d(tmp_path):
     assert m['ra'] == pytest.approx(266.43) and m['dec'] == pytest.approx(-16.64)
     assert m['mjd_mid'] == pytest.approx(57238.0 + 375. / 86400.)
     assert m['frame_in'] == 'barycentric' and m['vel_corr'] == pytest.approx(0.99993)
+    f2 = 0.99993 ** 2
+    assert m['vel_corr_kms'] == pytest.approx(299792.458 * (f2 - 1) / (f2 + 1))
     assert m['medium_in'] == 'vacuum' and m['medium_source'] == 'default:pypeit_spec1d'
     assert spec.resolution is None
 

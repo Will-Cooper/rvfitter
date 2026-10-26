@@ -29,7 +29,7 @@
 ## config.py
 - Sections: input, velocity_frame, templates, methods, regions, combine, parallel, output (+ `seed`, `schema_version`).
   Unknown keys are errors with "did you mean" hints; all semantic errors are listed together.
-- `Config.hash()` hashes the whole canonical JSON, **including** `input.paths` and `output`. If the orchestrator wants hashes that ignore where data and outputs live, exclude those two sections in `hash()`.
+- `Config.hash()` hashes the canonical JSON of the analysis, excluding `input.paths` and `output` (P2 records input checksums).
 - `VelocityFrameConfig.overrides()` returns keys `ra, dec, mjd (mid-exposure), site, site_lat, site_lon`.
 - Option keys invented in `default_for` for the Opus package to honour or rename: `template_fit.telluric_model`, `forward_mcmc.fit_vsini`, `telluric_model`, `fit_wave_offset`, `per_order`. Region thresholds `min_snr`, `telluric_threshold`, `max_regions`, `continuum_fwhm` are for P3.
 - Regime edges: R < 4500 low, 4500–20000 mid, > 20000 high. Bands: optical (ends below 11000 Å), nir (starts at or above 9000 Å), else mixed. These only select default methods, not regions.

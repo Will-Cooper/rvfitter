@@ -169,8 +169,16 @@ class Config:
         return _to_plain(self, drop_none)
 
     def hash(self) -> str:
-        """SHA-256 (hex) of the canonical JSON dump of the whole configuration, with sorted keys"""
-        canonical = json.dumps(self.to_dict(drop_none=False), sort_keys=True, separators=(',', ':'), allow_nan=False)
+        """
+        SHA-256 (hex) of the canonical JSON dump (sorted keys) of the analysis.
+
+        ``input.paths`` and the whole ``output`` section are excluded: they say where data come from and where
+        results go, not how the analysis is done (the results record input-file checksums separately).
+        """
+        plain = self.to_dict(drop_none=False)
+        plain['input'].pop('paths')
+        plain.pop('output')
+        canonical = json.dumps(plain, sort_keys=True, separators=(',', ':'), allow_nan=False)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
     def validate(self) -> None:
