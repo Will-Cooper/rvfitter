@@ -46,14 +46,18 @@ class TemplatesCfg:
 
 @dataclass
 class RegionsCfg:
-    overrides: dict = field(default_factory=dict)
+    overrides: dict[str, list[dict]] = field(default_factory=dict)
 
 
 @dataclass
-class RunCfg:
+class ParallelCfg:
     n_procs: int = 1
     seed: int = 42
-    output_dir: str = ''
+
+
+@dataclass
+class OutputCfg:
+    path: str = ''
     formats: list[str] = field(default_factory=lambda: ['csv'])
 
 
@@ -64,7 +68,8 @@ class FakeConfig:
     methods: MethodsCfg = field(default_factory=MethodsCfg)
     templates: TemplatesCfg = field(default_factory=TemplatesCfg)
     regions: RegionsCfg = field(default_factory=RegionsCfg)
-    run: RunCfg = field(default_factory=RunCfg)
+    parallel: ParallelCfg = field(default_factory=ParallelCfg)
+    output: OutputCfg = field(default_factory=OutputCfg)
 
 
 def _from_dict(d: dict) -> FakeConfig:
@@ -123,9 +128,19 @@ class FakeBackend:
                                 rng=np.random.default_rng(1))
         return spec
 
-    def select_regions(self, spectrum, cfg):
-        return [Region('K I 7701', 'line', 7695., 7707., 7701.084, (), 'test'),
-                Region('K I 7667', 'line', 7660., 7672., 7667.009, (), 'test')]
+    def select_regions(self, spectrum, cfg, with_overrides=False):
+        regs = {'linecentre': [Region('K I 7701', 'line', 7695., 7707., 7701.084, (), 'test'),
+                               Region('K I 7667', 'line', 7660., 7672., 7667.009, (), 'test')]}
+        if with_overrides:
+            for method, edits in cfg.regions.overrides.items():
+                cur = {r.name: r for r in regs.get(method, [])}
+                for e in edits:
+                    if e.get('remove'):
+                        cur.pop(e['name'], None)
+                    else:
+                        cur[e['name']] = Region(e['name'], e['kind'], e['wmin'], e['wmax'], e.get('centre'))
+                regs[method] = list(cur.values())
+        return regs
 
     def run(self, cfg, groups, n_procs, on_result, should_cancel):
         self.runs.append({'cfg': cfg, 'groups': dict(groups), 'n_procs': n_procs})

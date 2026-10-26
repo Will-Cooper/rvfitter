@@ -64,10 +64,10 @@ def test_settings_round_trip(win):
     cfg.methods.linecentre = False
     cfg.templates.local_dir = '/data/templates'
     cfg.templates.teff_prior = (1800.0, 2400.0)
-    cfg.run.n_procs = 3
-    cfg.run.seed = 7
-    cfg.run.formats = ['csv', 'html']
-    cfg.regions.overrides = {'K I 7701': {'remove': True}}
+    cfg.parallel.n_procs = 3
+    cfg.parallel.seed = 7
+    cfg.output.formats = ['csv', 'html']
+    cfg.regions.overrides = {'ccf': [{'name': 'K I 7701', 'remove': True}]}
     win.set_config(cfg)
     assert win.current_config() == cfg
 
@@ -86,7 +86,7 @@ def test_every_setting_has_a_tooltip(win):
 def test_save_and_load_config(win, tmp_path):
     cfg = FakeConfig()
     cfg.methods.ccf = False
-    cfg.run.seed = 99
+    cfg.parallel.seed = 99
     win.set_config(cfg)
     path = tmp_path / 'analysis.toml'
     assert win.save_config(path)
@@ -97,7 +97,7 @@ def test_save_and_load_config(win, tmp_path):
 
 def test_run_fills_table(qtbot, win, backend, spectra_dir):
     _load(qtbot, win, spectra_dir)
-    win.form.set_value('run.n_procs', 2)
+    win.form.set_value('parallel.n_procs', 2)
     win.run()
     qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
     assert win.model.rowCount() == 2
@@ -154,16 +154,18 @@ def test_region_edits_land_in_overrides(qtbot, win, spectra_dir):
     win.tabs.setCurrentWidget(win.region_editor)
     win.select_object('alpha')
     ed = win.region_editor
-    assert set(ed.spans) == {'K I 7701', 'K I 7667'}
+    k1, k2 = ('linecentre', 'K I 7701'), ('linecentre', 'K I 7667')
+    assert set(ed.spans) == {k1, k2}
     assert win.current_config().regions.overrides == {}
-    ed.move_span('K I 7701', 7696.0, 7706.0)
-    ed.remove_span('K I 7667')
-    name = ed.add_span(7800.0, 7810.0)
+    ed.move_span(k1, 7696.0, 7706.0)
+    ed.remove_span(k2)
+    key = ed.add_span(7800.0, 7810.0)
     ov = win.current_config().regions.overrides
-    assert ov['K I 7701'] == {'wmin': 7696.0, 'wmax': 7706.0}
-    assert ov['K I 7667'] == {'remove': True}
-    assert ov[name]['wmin'] == 7800.0
-    # reloading the editor from the config reproduces the same edits
+    assert {'name': 'K I 7667', 'remove': True} in ov['linecentre']
+    moved = next(e for e in ov['linecentre'] if e['name'] == 'K I 7701')
+    assert (moved['wmin'], moved['wmax']) == (7696.0, 7706.0)
+    assert next(e for e in ov['linecentre'] if e['name'] == key[1])['wmin'] == 7800.0
+    # reloading the editor from the config (via regions.select with overrides) reproduces the same edits
     win.load_regions_for('alpha')
     assert win.region_editor.overrides() == ov
     ed.reset()
@@ -185,9 +187,9 @@ def test_region_mouse_drag(qtbot, win, spectra_dir):
     ev('button_press_event', 7701.0)
     ev('motion_notify_event', 7721.0)
     ev('button_release_event', 7721.0)
-    span = ed.spans['K I 7701']
+    span = ed.spans[('linecentre', 'K I 7701')]
     assert span.wmin == pytest.approx(7695 + 20, abs=1.0)
-    assert win.current_config().regions.overrides['K I 7701']['wmin'] == pytest.approx(span.wmin)
+    assert win.current_config().regions.overrides['linecentre'][0]['wmin'] == pytest.approx(span.wmin)
 
 
 def test_missing_pyside_message(monkeypatch, capsys):
@@ -206,3 +208,23 @@ def test_help_and_about(win, monkeypatch):
     win.show_about()
     assert 'Quick start' in shown[0]
     assert '0.0-test' in shown[1]
+
+
+def test_lazy_backend_uses_on_object_and_cancel(monkeypatch):
+    from rvfitter import pipeline
+    from rvfitter.gui.backend import LazyBackend
+    seen = {}
+
+    def fake_run(cfg, inputs, *, n_procs, on_object=None, cancel=None):
+        seen['cancel'] = cancel
+        seen['n'] = len(inputs)
+        for name in ('a', 'b'):
+            on_object(name)
+        return ['a', 'b']
+
+    monkeypatch.setattr(pipeline, 'run', fake_run, raising=False)
+    got = []
+    out = LazyBackend().run(FakeConfig(), {'x': ['f1', 'f2'], 'y': ['f3']}, 1, got.append, lambda: False)
+    assert out == got == ['a', 'b']
+    assert seen['n'] == 3
+    assert not seen['cancel'].is_set()

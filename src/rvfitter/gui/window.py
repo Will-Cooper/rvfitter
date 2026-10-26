@@ -365,13 +365,14 @@ class MainWindow(QMainWindow):
         cfg = self.current_config()
         try:
             spec = self.backend.read_spectrum(files[0], cfg)
-            regions = self.backend.select_regions(spec, cfg)
+            auto = self.backend.select_regions(spec, cfg, False)
+            overrides = get_path(cfg, OVERRIDES_PATH) or {}
+            effective = self.backend.select_regions(spec, cfg, True) if overrides else auto
         except Exception as exc:
             log.warning('Could not select regions for %s: %s', name, exc)
             self.region_editor.info.setText(f'Regions unavailable for {name}: {exc}')
             return
-        overrides = get_path(cfg, OVERRIDES_PATH) or {}
-        self.region_editor.set_data(spec.wave, spec.flux, regions, overrides)
+        self.region_editor.set_data(spec.wave, spec.flux, auto, effective)
 
     # ---- running -------------------------------------------------------------------------------------------
     def run(self) -> RunWorker | None:
@@ -385,7 +386,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._error('Invalid settings', str(exc))
             return None
-        n_procs = find_field(cfg, 'n_procs', default=None) or max(1, (os.cpu_count() or 2) - 1)
+        n_procs = get_path(cfg, 'parallel.n_procs') or find_field(cfg, 'n_procs') or max(1, (os.cpu_count() or 2) - 1)
         self.results.clear()
         self.model.clear()
         self.count_label.setText('Running…')
@@ -450,13 +451,13 @@ class MainWindow(QMainWindow):
 
     def _autowrite(self) -> None:
         cfg = self._run_cfg
-        out = find_field(cfg, 'output_dir', 'out_dir') if cfg is not None else None
+        out = get_path(cfg, 'output.path') if cfg is not None else None
         if not out or not self.results:
             return
-        formats = find_field(cfg, 'formats') or ['csv']
+        formats = get_path(cfg, 'output.formats') or ['csv']
         try:
-            Path(out).mkdir(parents=True, exist_ok=True)
-            self.backend.write_results(self.results, Path(out) / 'results.csv', list(formats))
+            Path(out).parent.mkdir(parents=True, exist_ok=True)
+            self.backend.write_results(self.results, Path(out), list(formats))
             log.info('Wrote results to %s (%s).', out, ', '.join(formats))
         except Exception as exc:
             log.warning('Could not write results to %s: %s', out, exc)

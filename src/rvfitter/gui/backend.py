@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
+from .cfgutil import get_path
+
 log = logging.getLogger(__name__)
 
 METHODS = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
@@ -41,7 +43,7 @@ class Backend(Protocol):
 
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any: ...
 
-    def select_regions(self, spectrum: Any, cfg: Any) -> list[Any]: ...
+    def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
             on_result: Callable[[Any], None], should_cancel: Callable[[], bool]) -> list[Any]: ...
@@ -92,28 +94,44 @@ class LazyBackend:
         groups = archives.group_by_object(spectra, override) if override else archives.group_by_object(spectra)
         return {name: [s.source for s in specs] for name, specs in groups.items()}
 
-    def select_regions(self, spectrum: Any, cfg: Any) -> list[Any]:
+    def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]:
+        """Regions per method: the automatic ones, or those with ``cfg.regions.overrides`` applied."""
         from rvfitter import regions
 
         from .cfgutil import enabled_methods
-        by_method = regions.select(spectrum, methods=enabled_methods(cfg) or list(METHODS), overrides=None)
-        seen: dict[str, Any] = {}
-        for lst in by_method.values():
-            for reg in lst:
-                seen.setdefault(reg.name, reg)
-        return list(seen.values())
+        overrides = get_path(cfg, 'regions.overrides') if with_overrides else None
+        return regions.select(spectrum, methods=enabled_methods(cfg) or list(METHODS), overrides=overrides or None)
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
             on_result: Callable[[Any], None], should_cancel: Callable[[], bool]) -> list[Any]:
-        """Run ``pipeline.run`` one object at a time so each result can be reported as it finishes."""
+        """Run ``pipeline.run`` with ``on_object``/``cancel`` if it has them, else one object at a time."""
+        import threading
+
         from rvfitter import pipeline
+        files = [Path(f) for fs in groups.values() for f in fs]
+        params = inspect.signature(pipeline.run).parameters
+        if 'on_object' in params and 'cancel' in params:
+            event = threading.Event()
+            stop = threading.Event()
+
+            def watch() -> None:
+                while not stop.wait(0.1):
+                    if should_cancel():
+                        event.set()
+                        return
+
+            threading.Thread(target=watch, daemon=True).start()
+            try:
+                return list(pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, cancel=event))
+            finally:
+                stop.set()
         out: list[Any] = []
-        for name, files in groups.items():
+        for name, fs in groups.items():
             if should_cancel():
                 log.info('Cancelled before %s', name)
                 break
-            log.info('Measuring %s (%d file%s)', name, len(files), '' if len(files) == 1 else 's')
-            for res in pipeline.run(cfg, [Path(f) for f in files], n_procs=n_procs):
+            log.info('Measuring %s (%d file%s)', name, len(fs), '' if len(fs) == 1 else 's')
+            for res in pipeline.run(cfg, [Path(f) for f in fs], n_procs=n_procs):
                 out.append(res)
                 on_result(res)
         return out

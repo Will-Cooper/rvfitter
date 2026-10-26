@@ -53,6 +53,7 @@ TIPS = {
     'teff': 'Effective-temperature prior [K] used to select features and templates.',
     'n_procs': 'Number of worker processes used within each object (1 = serial). Results do not depend on it.',
     'seed': 'Random seed. The same seed always gives the same results, for any number of processes.',
+    'path': 'Where the results are written (a file name or folder; the format extensions are added).',
     'output_dir': 'Folder where the results tables are written.',
     'out_dir': 'Folder where the results tables are written.',
     'formats': 'Results file formats to write.',
