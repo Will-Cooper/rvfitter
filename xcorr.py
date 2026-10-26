@@ -229,9 +229,17 @@ b - Go back to previous line
         """
         if self.tempchanged:
             try:
-                fname = self.templatedf.loc[(self.templatedf.teff == self.teff.value) &
-                                            (self.templatedf.logg == self.grav.value) &
-                                            (self.templatedf.met == self.met.value)].iloc[0].name
+                match = nearest_template(self.templatedf, self.teff.value, self.grav.value, self.met.value,
+                                         self.templatedir)
+                if match is None:
+                    raise FileNotFoundError(f'No templates found in {self.templatedir}')
+                fname, teff, grav, met = match
+                if (teff, grav, met) != (self.teff.value, self.grav.value, self.met.value):
+                    logging_rvcalc(f'{self.spec_index}: no template at {self.teff.value:.0f} K, '
+                                   f'{self.grav.value:.1f} log g, {self.met.value:.1f} [Fe/H]; using the nearest, '
+                                   f'{teff:.0f} K, {grav:.1f} log g, {met:.1f} [Fe/H]')
+                    # record the parameters of the template actually used
+                    self.teff, self.grav, self.met = teff, grav, met
                 fname = self.templatedir + fname
                 wave = copy(self.spec.spectral_axis)
                 kwargs = dict(wunit=u.AA)

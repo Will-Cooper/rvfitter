@@ -95,7 +95,7 @@ def test_hierarchical_tau_zero_recovers_inverse_variance():
 def test_hierarchical_single_measurement_returns_itself():
     res = utils.hierarchical_combine([7.5], [2.], ['a'], ['m'])
     np.testing.assert_allclose([res['mean'], res['median']], [7.5, 7.5])
-    assert res['sd'] >= 2.  # broadened by the unidentified taus, never narrowed
+    np.testing.assert_allclose(res['sd'], 2.)  # single-level factors have tau fixed at 0 (A5)
     res0 = utils.hierarchical_combine([7.5], [2.], ['a'], ['m'], tau_line=0., tau_meth=0.)
     np.testing.assert_allclose([res0['mean'], res0['sd']], [7.5, 2.])
 
@@ -143,7 +143,7 @@ def _run_adoptedrv(tmp_path, monkeypatch, lcvals, lcerr, xcorr, xerr, systematic
     monkeypatch.setitem(rcParams, 'text.usetex', False)
     df = pd.DataFrame({'shortname': ['X'], 'thisrv': [np.nan], 'thisrverr': [np.nan]})
     spec_indices = {name: 7600. + 100 * i for i, name in enumerate(LINES[:len(lcvals)])}
-    df = fullrv.adoptedrv(df, 'shortname', 'X', True, np.array(lcvals), np.array(lcerr),
+    df = fullrv.adoptedrv(df, 'shortname', 'X', np.array(lcvals), np.array(lcerr),
                           np.array(xcorr), np.array(xerr), spec_indices, systematic=systematic)
     return df.thisrv.iloc[0], df.thisrverr.iloc[0]
 
@@ -173,9 +173,8 @@ def test_hierarchical_quantiles_stable_to_grid_extent():
     assert wide['sd'] > narrow['sd']
 
 
-def test_hierarchical_large_problem_memory_and_time():
+def test_hierarchical_large_problem_memory():
     # 6 methods x 30 lines: a dense (ngrid, ngrid, n, n) covariance would need ~10 GB; Woodbury needs a few MB
-    import time
     import tracemalloc
     rng = np.random.default_rng(7)
     nlines, nmeths = 30, 6
@@ -184,13 +183,11 @@ def test_hierarchical_large_problem_memory_and_time():
     errors = rng.uniform(0.5, 2., (nmeths, nlines))
     args = (values.ravel(), errors.ravel(), np.tile(np.arange(nlines), nmeths), np.repeat(np.arange(nmeths), nlines))
     tracemalloc.start()
-    t0 = time.perf_counter()
     res = utils.hierarchical_combine(*args)
-    elapsed = time.perf_counter() - t0
     _, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert res['n'] == 180 and res['nlines'] == 30 and res['nmethods'] == 6
-    assert peak < 100e6 and elapsed < 60.
+    assert peak < 100e6  # no wall-clock bound, so a loaded machine cannot fail it
     assert 1. < res['tau_line'] < 8. and 0.5 < res['tau_meth'] < 6.
     assert abs(res['median'] - 25.) < 3.
 

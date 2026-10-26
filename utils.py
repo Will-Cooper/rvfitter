@@ -675,6 +675,8 @@ def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Seque
     posterior of mu is a mixture of Gaussians. There is no random number generation.
     tau_max is the larger of tau_max_factor times the scale and three times the full range of the values, so
     the grid covers the likelihood whatever prior scale is chosen.
+    Identifiability rule: a factor with a single level (one line, or one method) has an offset that cannot be
+    separated from mu, so its tau is fixed at 0 unless given explicitly; that systematic is then not included.
 
     Parameters
     ----------
@@ -730,6 +732,12 @@ def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Seque
                                                  np.log10(tau_max), ngrid - 1)])
         return grid, _half_cauchy_logpdf(grid, tau_scale), _trapezoid_weights(grid)
 
+    # identifiability: with a single line (or method), its offset is indistinguishable from mu, so the
+    # corresponding tau would only broaden mu through its prior; it is fixed at 0 instead
+    if out['nlines'] == 1 and tau_line is None:
+        tau_line = 0.
+    if out['nmethods'] == 1 and tau_meth is None:
+        tau_meth = 0.
     tl, logprior_l, quad_l = taugrid(tau_line)
     tm, logprior_m, quad_m = taugrid(tau_meth)
     # C = D + U S S U^T, with D = diag(sigma^2), U = [line indicators | method indicators] (n x r) and
@@ -823,6 +831,65 @@ def spec_unpack(spec: Spectrum1D) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     flux = copy(spec.flux.value)
     fluxerr = copy(spec.uncertainty.quantity.value)
     return wave, flux, fluxerr
+
+
+def nearest_template(templatedf: pd.DataFrame, teff: float, logg: float, met: float,
+                     templatedir: str = '') -> Optional[Tuple[str, float, float, float]]:
+    """
+    The template closest to the requested parameters, among those whose file exists
+
+    Parameters
+    ----------
+    templatedf
+        The template lookup table, indexed by file name, with columns teff, logg and met
+    teff, logg, met
+        The requested effective temperature, surface gravity and metallicity
+    templatedir
+        The directory holding the template files
+
+    Returns
+    -------
+    _
+        The file name and its (teff, logg, met), choosing the nearest teff first, then the nearest logg, then the
+        nearest metallicity; None if no template file exists
+    """
+    exists = np.array([os.path.exists(os.path.join(templatedir, str(name))) for name in templatedf.index])
+    df = templatedf[exists]
+    if not len(df):
+        return None
+    for col, val in (('teff', teff), ('logg', logg), ('met', met)):
+        dist = np.abs(df[col].astype(float) - float(val))
+        df = df[np.isclose(dist, dist.min())]
+    df = df.sort_index()  # deterministic choice between exact ties (e.g. equidistant grid points)
+    row = df.iloc[0]
+    return str(df.index[0]), float(row.teff), float(row.logg), float(row.met)
+
+
+def expected_teff(teff: float, default: float = 2000., lo: float = 1200., hi: float = 4000.) -> float:
+    """
+    The template effective temperature to start from: the expected value rounded to 100 K, or a default
+
+    Parameters
+    ----------
+    teff
+        The expected effective temperature (may be NaN)
+    default
+        The value used when teff is NaN or outside [lo, hi]
+    lo, hi
+        The allowed range
+
+    Returns
+    -------
+    teff
+        The rounded effective temperature
+    """
+    teff = float(teff)
+    if not np.isfinite(teff):
+        return default
+    teff = 100. * round(teff / 100.)
+    if not lo <= teff <= hi:
+        return default
+    return teff
 
 
 def stephens(s: Union[pd.Series, float]) -> Union[np.ndarray, float]:

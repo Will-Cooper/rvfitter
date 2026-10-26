@@ -109,8 +109,9 @@ def chekres(fname: str) -> bool:
     return hires
 
 
-def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: Sequence[float], lcerr: Sequence[float],
-              xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict, systematic: float = 0) -> pd.DataFrame:
+def adoptedrv(df: pd.DataFrame, colname: str, tname: str, lcvals: Sequence[float], lcerr: Sequence[float],
+              xcorr: Sequence[float], xerr: Sequence[float], spec_indices: dict, systematic: float = 0.,
+              outname: Optional[str] = None, wunit: u.Unit = u.AA) -> pd.DataFrame:
     """
     The method for creating an adopted radial velocity
 
@@ -122,8 +123,6 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
         The column name in the dataframe to find the correct object
     tname
         The name of the object to check in the column
-    hires
-        Switch to be high resolution or not
     lcvals
         The array of line centered RVs
     lcerr
@@ -135,7 +134,11 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     spec_indices
         Dictionary of spectral indices to central wavelength
     systematic
-        Systematic RV error to be appeneded in quadrature
+        Systematic RV error to be appended in quadrature
+    outname
+        The file name of the figure inside adoptedrvplots/ (default: <tname>_adoptedrv.pdf)
+    wunit
+        The unit of the spec_indices wavelengths, used for the line labels
 
     Returns
     -------
@@ -146,8 +149,9 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
+    posfmt = (lambda pos: f'{int(pos)}') if wunit == u.AA else (lambda pos: f'{pos:.2f}')
     indicesplot = np.array([specindex.capitalize().replace('1', '\,\\textsc{i}') + r' $\lambda$'
-                           + f'{int(pos)}\,' + u.AA.to_string(u.format.Latex)
+                           + posfmt(pos) + '\,' + wunit.to_string(u.format.Latex)
                             for specindex, pos in spec_indices.items()])
     ypos = np.arange(len(allindices)) + 1
     if not all(len(arr) == len(allindices) for arr in (lcvals, lcerr, xcorr, xerr)):
@@ -159,7 +163,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     # joint masks, so a value is only ever used together with its own error
     lcgood = np.isfinite(lcplot) & np.isfinite(lcploterr)
     xgood = np.isfinite(xplot) & np.isfinite(xploterr)
-    if not np.any(lcgood) or not np.any(xgood):
+    if not np.any(lcgood) and not np.any(xgood):
         plt.close(5)
         return df
     # each method, for reporting and plotting: weighted mean with the chi^2-inflated error
@@ -182,18 +186,16 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
                    f'mu mean {hier["mean"]:.2f} +/- SD {hier["sd"]:.2f} km/s, median {hier["median"]:.2f} '
                    f'[16%: {hier["q16"]:.2f}, 84%: {hier["q84"]:.2f}]; '
                    f'tau_line = {hier["tau_line"]:.2f} km/s, tau_meth = {hier["tau_meth"]:.2f} km/s')
+    if hier['nmethods'] == 1:
+        logging_rvcalc('WARNING: only one method measured this object, so the between-method systematic is not'
+                       ' estimable (tau_meth fixed at 0)')
     lo = np.concatenate([lcplot - lcploterr, xplot - xploterr, [locpost - 3 * errpost]])
     hi = np.concatenate([lcplot + lcploterr, xplot + xploterr, [locpost + 3 * errpost]])
     minpos = np.floor(np.nanmin(lo) / 5) * 5
     maxpos = np.ceil(np.nanmax(hi) / 5) * 5
     pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1) * 10)
-    xcorrpdf = ss.norm.pdf(pdfxpoints, loc=locx, scale=scalex)
-    lcpdf = ss.norm.pdf(pdfxpoints, loc=loclc, scale=scalelc)
     # the actual posterior of mu (a mixture of Gaussians), broadened by the systematic as in its label
     posteriorpdf = mixture_pdf(pdfxpoints, hier['means'], hier['sds'], hier['weights'], extra_sd=systematic)
-
-    xcorrpdf /= np.max(xcorrpdf)
-    lcpdf /= np.max(lcpdf)
     posteriorpdf /= np.max(posteriorpdf)
 
     axlines.errorbar(xplot, ypos - .1, xerr=xploterr, marker='s', ms=6, color='orange', lw=0, elinewidth=1.5)
@@ -206,12 +208,13 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axlines.set_xlim(minpos, maxpos)
     axlines.set_ylabel('Spectral Feature', fontsize='medium')
 
-    axpdf.plot(pdfxpoints, xcorrpdf, color='orange',
-               label=rf'${locx:.1f}\pm{scalex:.1f}$\,km\,s$^{{-1}}$')
-    [ax.axvline(locx, color='orange', ls='--', lw=0.75) for ax in (axpdf, axlines)]
-    axpdf.plot(pdfxpoints, lcpdf, color='blue',
-               label=rf'${loclc:.1f}\pm{scalelc:.1f}$\,km\,s$^{{-1}}$')
-    [ax.axvline(loclc, color='blue', ls='--', lw=0.75) for ax in (axpdf, axlines)]
+    for loc, scale, colour in ((locx, scalex, 'orange'), (loclc, scalelc, 'blue')):
+        if not np.isfinite(loc):  # this method measured no line
+            continue
+        methodpdf = ss.norm.pdf(pdfxpoints, loc=loc, scale=scale)
+        axpdf.plot(pdfxpoints, methodpdf / np.max(methodpdf), color=colour,
+                   label=rf'${loc:.1f}\pm{scale:.1f}$\,km\,s$^{{-1}}$')
+        [ax.axvline(loc, color=colour, ls='--', lw=0.75) for ax in (axpdf, axlines)]
     axpdf.plot(pdfxpoints, posteriorpdf, color='black',
                label=rf'${locpost:.1f}\pm{errpost:.1f}$\,km\,s$^{{-1}}$')
     [ax.axvline(locpost, color='black', ls='--', lw=0.75) for ax in (axpdf, axlines)]
@@ -221,14 +224,15 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axpdf.set_xlabel(f'RV\,[km\,s$^{{-1}}$]', fontsize='medium')
     axpdf.set_ylabel('PDF', fontsize='medium')
 
-    if hires:
-        fig.savefig(f'adoptedrvplots/{tname}_R2500I_adoptedrv.pdf', bbox_inches='tight')
-    else:
-        fig.savefig(f'adoptedrvplots/{tname}_R300R_adoptedrv.pdf', bbox_inches='tight')
+    os.makedirs('adoptedrvplots', exist_ok=True)
+    fig.savefig(f'adoptedrvplots/{outname or f"{tname}_adoptedrv.pdf"}', bbox_inches='tight')
 
     df.loc[df[colname] == tname, 'thisrv'] = locpost
     df.loc[df[colname] == tname, 'thisrverr'] = errpost
-    logging_rvcalc(f'Adopted RV {locpost:.1f} +/- {errpost:.1f} km/s')
+    df.loc[df[colname] == tname, 'rv_adopted_nmethods'] = hier['nmethods']
+    df.loc[df[colname] == tname, 'rv_adopted_nlines'] = hier['nlines']
+    logging_rvcalc(f'Adopted RV {locpost:.1f} +/- {errpost:.1f} km/s from {hier["nmethods"]} method(s)'
+                   f' and {hier["nlines"]} line(s)')
     return df
 
 
@@ -318,13 +322,7 @@ def main(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame, dflines: 
         return df, dflines
     colname = 'shortname'
     tname = df.loc[df['index'] == ind, colname].iloc[0]
-    expectedteff = stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60)  # expected teff
-    if np.isnan(expectedteff):
-        expectedteff = 2000
-    else:
-        expectedteff = 100 * round(expectedteff / 100)
-        if 1200 > expectedteff > 4000:
-            expectedteff = 2000
+    expectedteff = expected_teff(stephens(df.loc[df['index'] == ind].kasttypenum.iloc[0] - 60))
     logging_rvcalc(f'\n{tname}')
     dfout = df
     waverms = getwaverms(fname)
@@ -336,9 +334,26 @@ def main(fname: str, spec_indices: Dict[str, float], df: pd.DataFrame, dflines: 
     dfout, xcorr, xerr = crosscorrelate(fname, spec_indices, dfout, repeat, tname, colname, fappend,
                                         teff=expectedteff, dorv=hires, waverms=waverms)  # cross correlation
     dfout = errorappend(dfout, tname, colname)
-    dfout = adoptedrv(dfout, colname, tname, hires, lcvals, lcerr, xcorr, xerr, spec_indices, systematic=systematic)
+    dfout = adoptedrv(dfout, colname, tname, lcvals, lcerr, xcorr, xerr, spec_indices, systematic=systematic,
+                      outname=f'{tname}_{fappend}_adoptedrv.pdf')
     dflines = get_indices(tname, colname, fname, dflines)
     return dfout, dflines
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """
+    The command line parser
+
+    Returns
+    -------
+    myargs
+        The argument parser
+    """
+    myargs = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    myargs.add_argument('-f', '--file-name', required=True, help='File to be plotted')
+    myargs.add_argument('-r', '--repeat', action='store_true', default=False, help='Repeat manual measurements?')
+    myargs.add_argument('-s', '--systematic', type=float, default=0., help='Systematic RV uncertainty [km/s]')
+    return myargs
 
 
 if __name__ == '__main__':
@@ -349,11 +364,7 @@ if __name__ == '__main__':
     allinds = list(_spec_indices.keys())
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore
     tabname = 'gtc_fullinfo.csv'
-    myargs = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    myargs.add_argument('-f', '--file-name', required=True, help='File to be plotted')
-    myargs.add_argument('-r', '--repeat', action='store_true', default=False, help='Repeat manual measurements?')
-    myargs.add_argument('-s', '--systematic', default=0, help='Systematic RV uncertainty')
-    sysargs = myargs.parse_args()
+    sysargs = build_parser().parse_args()
     _fname: str = sysargs.file_name
     _repeat: bool = sysargs.repeat
     _systematic: float = sysargs.systematic

@@ -86,7 +86,7 @@ def test_adoptedrv_pairs_and_plots_by_line(workdir, monkeypatch):
         return original(values, errors, line_ids, method_ids, **kwargs)
 
     monkeypatch.setattr(fullrv, 'hierarchical_combine', spy)
-    fullrv.adoptedrv(_df(), 'shortname', 'X', True, lc, lce, xc, xce, SPEC_INDICES)
+    fullrv.adoptedrv(_df(), 'shortname', 'X', lc, lce, xc, xce, SPEC_INDICES)
 
     # every finite value reaches the model labelled with its own line and method
     for value, line, method in zip(captured['values'], captured['line_ids'], captured['method_ids']):
