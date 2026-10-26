@@ -154,47 +154,40 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     lcploterr = copy(lcerr)
     xplot = copy(xcorr)
     xploterr = copy(xerr)
-    xcorr = xcorr[~np.isnan(xcorr)]
-    xerr = xerr[~np.isnan(xerr)]
-    lcvals = lcvals[~np.isnan(lcvals)]
-    lcerr = lcerr[~np.isnan(lcerr)]
-    if not len(lcvals) or not len(xcorr):
+    # joint masks, so a value is only ever used together with its own error
+    lcgood = np.isfinite(lcplot) & np.isfinite(lcploterr)
+    xgood = np.isfinite(xplot) & np.isfinite(xploterr)
+    if not np.any(lcgood) or not np.any(xgood):
         plt.close(5)
         return df
-    weights = 1.0 / lcerr ** 2
-    loclc = np.average(lcvals, weights=weights)
-    scalelc = np.sqrt(np.average((lcvals - loclc) ** 2, weights=weights))
-    weights = 1.0 / xerr ** 2
-    locx = np.average(xcorr, weights=weights)
-    scalex = np.sqrt(np.average((xcorr - locx) ** 2, weights=weights))
-    if len(lcvals) == 1:
-        scalelc = lcerr[0]
-    if len(xcorr) == 1:
-        scalex = xerr[0]
-    # if scalex < scalelc:
-    #     locpost = locx
-    #     scalepost = scalex
-    #     errpost = scalex / np.sqrt(len(xcorr))
-    # else:
-    #     locpost = loclc
-    #     scalepost = scalelc
-    #     errpost = scalelc / np.sqrt(len(lcvals))
-    weights_lc = 1.0 / scalelc ** 2
-    weights_x = 1.0 / scalex ** 2
-
-    locpost = (weights_lc * loclc + weights_x * locx) / (weights_lc + weights_x)
-    scalepost = np.sqrt(1.0 / (weights_lc + weights_x))
-    errpost = scalepost / np.sqrt(2)
-    errpost = np.sqrt(errpost ** 2 + systematic ** 2)
-    minlc, maxlc = np.min(lcvals - lcerr), np.max(lcvals + lcerr)
-    minxc, maxxc = np.min(xcorr - xerr), np.max(xcorr + xerr)
-    minboth, maxboth = np.min([minlc, minxc]), np.max([maxlc, maxxc])
-    minpos = np.floor(minboth / 5) * 5
-    maxpos = np.ceil(maxboth / 5) * 5
+    # each method, for reporting and plotting: weighted mean with the chi^2-inflated error
+    loclc, scalelc = combine_rvs(lcplot, lcploterr)
+    locx, scalex = combine_rvs(xplot, xploterr)
+    # adopted: hierarchical line x method model over every finite (method, line) measurement, marginalising
+    # offsets shared by both methods on one line (tau_line) and offsets of a whole method (tau_meth).
+    # Lines are identified by name, taken from the array slot of each value (see A4 for the slot bookkeeping)
+    hier = hierarchical_combine(np.concatenate([lcplot, xplot]), np.concatenate([lcploterr, xploterr]),
+                                np.concatenate([allindices[:len(lcplot)], allindices[:len(xplot)]]),
+                                ['lc'] * len(lcplot) + ['xcorr'] * len(xplot))
+    # the posterior of mu has power-law tails when few methods (or lines) constrain a tau under its half-Cauchy
+    # prior, so its SD grows without limit with the tau grid; the median and the central 68 per cent interval
+    # are stable, so they define the adopted value and its error
+    locpost, scalepost = hier['median'], (hier['q84'] - hier['q16']) / 2
+    errpost = np.sqrt(scalepost ** 2 + systematic ** 2)
+    logging_rvcalc(f'Hierarchical model ({hier["n"]} measurements, {hier["nlines"]} lines, '
+                   f'{hier["nmethods"]} methods; half-Cauchy tau scale {hier["tau_scale"]:.2f} km/s): '
+                   f'mu mean {hier["mean"]:.2f} +/- SD {hier["sd"]:.2f} km/s, median {hier["median"]:.2f} '
+                   f'[16%: {hier["q16"]:.2f}, 84%: {hier["q84"]:.2f}]; '
+                   f'tau_line = {hier["tau_line"]:.2f} km/s, tau_meth = {hier["tau_meth"]:.2f} km/s')
+    lo = np.concatenate([lcplot - lcploterr, xplot - xploterr, [locpost - 3 * errpost]])
+    hi = np.concatenate([lcplot + lcploterr, xplot + xploterr, [locpost + 3 * errpost]])
+    minpos = np.floor(np.nanmin(lo) / 5) * 5
+    maxpos = np.ceil(np.nanmax(hi) / 5) * 5
     pdfxpoints = np.linspace(minpos, maxpos, int(maxpos - minpos + 1) * 10)
     xcorrpdf = ss.norm.pdf(pdfxpoints, loc=locx, scale=scalex)
     lcpdf = ss.norm.pdf(pdfxpoints, loc=loclc, scale=scalelc)
-    posteriorpdf = ss.norm.pdf(pdfxpoints, loc=locpost, scale=scalepost)
+    # the actual posterior of mu (a mixture of Gaussians), broadened by the systematic as in its label
+    posteriorpdf = mixture_pdf(pdfxpoints, hier['means'], hier['sds'], hier['weights'], extra_sd=systematic)
 
     xcorrpdf /= np.max(xcorrpdf)
     lcpdf /= np.max(lcpdf)
@@ -211,10 +204,10 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     axlines.set_ylabel('Spectral Feature', fontsize='medium')
 
     axpdf.plot(pdfxpoints, xcorrpdf, color='orange',
-               label=rf'${locx:.1f}\pm{scalex / np.sqrt(len(xcorr)):.1f}$\,km\,s$^{{-1}}$')
+               label=rf'${locx:.1f}\pm{scalex:.1f}$\,km\,s$^{{-1}}$')
     [ax.axvline(locx, color='orange', ls='--', lw=0.75) for ax in (axpdf, axlines)]
     axpdf.plot(pdfxpoints, lcpdf, color='blue',
-               label=rf'${loclc:.1f}\pm{scalelc / np.sqrt(len(lcvals)):.1f}$\,km\,s$^{{-1}}$')
+               label=rf'${loclc:.1f}\pm{scalelc:.1f}$\,km\,s$^{{-1}}$')
     [ax.axvline(loclc, color='blue', ls='--', lw=0.75) for ax in (axpdf, axlines)]
     axpdf.plot(pdfxpoints, posteriorpdf, color='black',
                label=rf'${locpost:.1f}\pm{errpost:.1f}$\,km\,s$^{{-1}}$')

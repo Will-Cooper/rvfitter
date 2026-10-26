@@ -192,14 +192,9 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     grav_list_cut = grav_list[~np.isnan(grav_list)]
     met_list_cut = met_list[~np.isnan(met_list)]
     if len(rv_list_cut):  # if there is at least a line used in the cross correlation
-        weights = 1.0 / err_list_cut ** 2
-        rv = np.average(rv_list_cut, weights=weights)
-        std = np.sqrt(np.average((rv_list_cut - rv) ** 2, weights=weights))
-        if len(rv_list_cut) > 1:
-            err = std / np.sqrt(len(rv_list_cut))
-        else:
-            err = err_list_cut[0]
-        df.loc[df[colname] == tname, 'thisrvxcorrerr'] = round(err, 1)
+        # weighted mean; error is max(formal, scatter / sqrt(N)), or the line's own error for a single line
+        rv, err = combine_rvs(rv_list, err_list)
+        df.loc[df[colname] == tname, 'thisrvxcorrerr'] = err  # stored unrounded; round only for display
     else:
         logging_rvcalc('Empty RV list for cross correlation calculation!')
     if len(teff_list_cut):
@@ -209,7 +204,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     else:
         teffstd, gravstd, metstd = np.nan, np.nan, np.nan
     logging_rvcalc(f'RV Cross Correlation = {rv:.1f} +/- {err:.1f}km/s')
-    df.loc[df[colname] == tname, 'thisrvxcorr'] = round(rv, 1)
+    df.loc[df[colname] == tname, 'thisrvxcorr'] = rv  # stored unrounded; round only for display
     df.loc[df[colname] == tname, 'xcorrteff'] = teff
     df.loc[df[colname] == tname, 'xcorrgrav'] = grav
     df.loc[df[colname] == tname, 'xcorrmet'] = met

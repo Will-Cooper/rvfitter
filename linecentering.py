@@ -183,18 +183,13 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
     rv_list_cut = rv_list[~np.isnan(rv_list)]
     err_list_cut = err_list[~np.isnan(err_list)]
     if len(rv_list_cut):
-        weights = 1.0 / err_list_cut ** 2
-        rv = np.average(rv_list_cut, weights=weights)
-        std = np.sqrt(np.average((rv_list_cut - rv) ** 2, weights=weights))
-        if len(rv_list_cut) > 1:
-            err = std / np.sqrt(len(rv_list_cut))
-        else:
-            err = err_list_cut[0]
-        df.loc[df[colname] == tname, 'thisrvlcerr'] = round(err, 1)
+        # weighted mean; error is max(formal, scatter / sqrt(N)), or the line's own error for a single line
+        rv, err = combine_rvs(rv_list, err_list)
+        df.loc[df[colname] == tname, 'thisrvlcerr'] = err  # stored unrounded; round only for display
     else:
         logging_rvcalc('Empty RV list for line centre calculation!')
     logging_rvcalc(f'RV Line Centre = {rv:.1f} +/- {err:.1f}km/s')
-    df.loc[df[colname] == tname, 'thisrvlc'] = round(rv, 1)
+    df.loc[df[colname] == tname, 'thisrvlc'] = rv  # stored unrounded; round only for display
     fig.supxlabel(fr'Wavelength\,[{wunit.to_string(u.format.Latex)}]')
     fig.supylabel(r'Normalised Flux\,[$F_{\lambda}$]')
     fig.subplots_adjust(hspace=1.15, wspace=0.15)

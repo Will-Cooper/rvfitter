@@ -146,6 +146,20 @@ b - Go back to previous line
             std = 0
         return std * (2 * np.sqrt(2 * np.log(2)))
 
+    def working_fwhm(self) -> u.Quantity:
+        """
+        The full width half maximum of the profile actually fitted
+
+        Returns
+        -------
+        _
+            fwhm_G for a Gaussian, fwhm_L for a Lorentzian and fwhm_V for a Voigt profile
+        """
+        fwhm = {'gaussian': self.fwhm_G, 'lorentzian': self.fwhm_L, 'voigt': self.fwhm_V}.get(self.working_profile)
+        if fwhm is None:
+            fwhm = self.__stdtofwhm__()
+        return fwhm
+
     @staticmethod
     def __fwhmtostd__(fwhm: u.Quantity) -> u.Quantity:
         """
@@ -193,7 +207,8 @@ b - Go back to previous line
         self.shift: u.Quantity = self.x_0 - self.labline
         self.cov = self.fitter.fit_info['param_cov']
         errs = np.sqrt(np.diag(self.cov))
-        self.shifterr: u.Quantity = errs[ind] * self.wunit + self.waverms
+        # the fit error and the wavelength-solution rms are independent, so add them in quadrature
+        self.shifterr: u.Quantity = np.sqrt((errs[ind] * self.wunit) ** 2 + self.waverms.to(self.wunit) ** 2)
 
     def __rvcalc__(self, shift: u.Quantity) -> u.Quantity:
         """
@@ -434,9 +449,9 @@ b - Go back to previous line
             sigcol = 'green'
         else:
             sigcol = 'red'
-        self.snr, _ = get_snr_and_rvunc(self.sub_spec, SpectralRegion([[self.c1, self.c2],
-                                                                       [self.c3, self.c4]]),
-                                        SpectralRegion(self.r1, self.r2), self.fwhm_G)
+        self.snr, self.rvunc_min = get_snr_and_rvunc(self.sub_spec, SpectralRegion([[self.c1, self.c2],
+                                                                                    [self.c3, self.c4]]),
+                                                     SpectralRegion(self.r1, self.r2), self.working_fwhm())
         self.ax.text(0.05, 0.95, f'RMSDIQR = {rmsdiqr:.2f}', transform=self.ax.transAxes, zorder=6,
                      verticalalignment='top', c=sigcol, bbox=dict(facecolor='white', alpha=1.0, edgecolor='none'))
         mesline = self.ax.axvline(self.x_0.value, color='black', ls='-')

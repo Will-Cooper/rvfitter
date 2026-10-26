@@ -28,6 +28,7 @@ def test_inv_rv_calc_uses_vacuum_c():
 
 
 def test_rvcalc_and_inv_rv_calc_round_trip():
+    """Consistency check between the two functions, not an A2 regression test."""
     labline = 8521.13165 * u.AA
     shift = utils.inv_rv_calc(-12.5, labline.value) * u.AA
     rv = Splot.__rvcalc__(SimpleNamespace(rvunit=u.km / u.s, labline=labline), shift)

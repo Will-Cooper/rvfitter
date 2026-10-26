@@ -271,8 +271,18 @@ b - Go back to previous line
         fluxerrsmooth = np.interp(wavearr, wavetemp, fluxtemperr)
         temp_spec = Spectrum1D(fluxsmooth * self.funit, wavearr * self.wunit,
                                uncertainty=StdDevUncertainty(fluxerrsmooth, unit=self.funit))
-        self.rverr = self.rvstep / 2 + inv_rv_calc(self.waverms.to(self.wunit).value, self.labline.value) * self.rvunit
+        self.getrverr()
         return temp_spec
+
+    def getrverr(self):
+        """
+        The per-line RV uncertainty: the by-eye quantisation term and the wavelength-solution rms converted to a
+        velocity (c * rms / labline), added in quadrature.
+        The RV is chosen by eye on a grid of step rvstep, so its quantisation error is uniform over one step,
+        with standard deviation rvstep / sqrt(12) (Cooper et al. 2024 used rvstep / 2)
+        """
+        rvwave = wave_to_rv(self.waverms.to(self.wunit).value, self.labline.to(self.wunit).value) * self.rvunit
+        self.rverr = np.sqrt((self.rvstep / np.sqrt(12)) ** 2 + rvwave ** 2)
 
     def __updatewindows__(self):
         """

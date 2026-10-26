@@ -14,7 +14,7 @@ import os
 from specutils import Spectrum1D, SpectralRegion
 from specutils.manipulation import extract_region
 from specutils.utils.wcs_utils import vac_to_air
-from typing import Union, Optional, List, Dict, Tuple
+from typing import Union, Optional, List, Dict, Tuple, Sequence
 
 
 class Quantiser:
@@ -50,6 +50,7 @@ class Quantiser:
         self.rescale = True
         self.best_rmsdiqr = np.inf
         self.snr = 0
+        self.rvunc_min = np.nan
         self.spec = spec
         self.sub_spec = self.spec
         self.cont = None
@@ -305,6 +306,26 @@ def inv_rv_calc(shift: float, wave: Union[float, np.ndarray]) -> Union[float, np
     return shift * wave / c
 
 
+def wave_to_rv(shift: Union[float, np.ndarray], wave: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    """
+    Converting a wavelength shift (or uncertainty) into a velocity, c * shift / wave
+
+    Parameters
+    ----------
+    shift
+        The wavelength shift
+    wave
+        The wavelength at which the shift is measured, in the same unit as shift
+
+    Returns
+    -------
+    _
+        The velocity in km/s
+    """
+    c = 299792458 / 1e3  # vacuum speed of light in km/s
+    return c * shift / wave
+
+
 def json_handle(jf: Union[os.PathLike, str, bytes],
                 d: Dict[str, Dict[str, List[Union[float, str, bool]]]] = None) \
         -> Dict[str, Dict[str, List[Union[float, str, bool]]]]:
@@ -528,23 +549,219 @@ def get_snr_and_rvunc(spec: Spectrum1D, continuum_region: SpectralRegion,
     fitting_region
         The region used in line fitting
     fwhm
-        FWHM of the fit
+        FWHM of the fitted (working) profile, in the same unit as the spectral axis
 
     Returns
     -------
     snr_value
         Signal to noise ratio
     rvunc_min
-        Minimum rv uncertainty from resolution
+        Minimum rv uncertainty from resolution, sigma = c / (R * SNR * sqrt(Npix)) with R = lambda / FWHM;
+        NaN if the FWHM is not positive and finite
     """
     line_reg: Spectrum1D = extract_region(spec, fitting_region)
     n_pix = len(line_reg.spectral_axis.value)
     cont_reg: Spectrum1D = extract_region(spec, continuum_region, return_single_spectrum=True)
-    fwhm_value = fwhm.value
-    resolution = np.nanmean(line_reg.spectral_axis.value) / fwhm_value
+    if getattr(fwhm, 'unit', None) is not None and hasattr(fwhm, 'quantity'):  # astropy model Parameter
+        fwhm = fwhm.quantity
+    fwhm_value = fwhm.to(spec.spectral_axis.unit).value if isinstance(fwhm, u.Quantity) else float(fwhm)
     snr_value = np.mean(cont_reg.flux.value) / np.std(cont_reg.flux.value)
-    rvunc_min = 3e5 / (resolution * np.sqrt(n_pix * snr_value))
+    if not np.isfinite(fwhm_value) or fwhm_value <= 0 or n_pix < 1:
+        return snr_value, np.nan
+    resolution = np.nanmean(line_reg.spectral_axis.value) / fwhm_value
+    c = 299792458 / 1e3  # km/s
+    rvunc_min = c / (resolution * snr_value * np.sqrt(n_pix))
     return snr_value, rvunc_min
+
+
+def combine_rvs(rvs: np.ndarray, errs: np.ndarray) -> Tuple[float, float]:
+    """
+    Combining several RV measurements into an inverse-variance weighted mean and its uncertainty
+
+    Parameters
+    ----------
+    rvs
+        The radial velocities (NaN entries are ignored)
+    errs
+        The uncertainties on those radial velocities
+
+    Returns
+    -------
+    rv, err
+        The weighted mean RV
+        Its uncertainty: the measurement's own error for a single value, otherwise the formal error
+        1 / sqrt(sum(w)) inflated by sqrt(chi^2 / (N - 1)) when the values scatter more than their errors allow
+        (chi^2 = sum(w * (v - mean)^2)), and never deflated below the formal error
+    """
+    rvs, errs = np.asarray(rvs, dtype=float), np.asarray(errs, dtype=float)
+    good = np.isfinite(rvs) & np.isfinite(errs) & (errs > 0)
+    rvs, errs = rvs[good], errs[good]
+    if not len(rvs):
+        return np.nan, np.nan
+    if len(rvs) == 1:
+        return float(rvs[0]), float(errs[0])
+    weights = 1.0 / errs ** 2
+    rv = np.average(rvs, weights=weights)
+    formal = 1.0 / np.sqrt(np.sum(weights))
+    chisq = np.sum(weights * (rvs - rv) ** 2)
+    return float(rv), float(formal * max(1., np.sqrt(chisq / (len(rvs) - 1))))
+
+
+def _half_cauchy_logpdf(tau: np.ndarray, scale: float) -> np.ndarray:
+    """
+    The log probability density of a half-Cauchy distribution of the given scale, for tau >= 0
+    """
+    return np.log(2. / (np.pi * scale)) - np.log1p((tau / scale) ** 2)
+
+
+def _trapezoid_weights(x: np.ndarray) -> np.ndarray:
+    """
+    Trapezoidal quadrature weights for an increasing, possibly non-uniform, grid
+    """
+    w = np.zeros_like(x)
+    dx = np.diff(x)
+    w[:-1] += dx / 2
+    w[1:] += dx / 2
+    return w
+
+
+def mixture_pdf(x: np.ndarray, means: np.ndarray, sds: np.ndarray, weights: np.ndarray,
+                extra_sd: float = 0.) -> np.ndarray:
+    """
+    The probability density of a mixture of Gaussians
+
+    Parameters
+    ----------
+    x
+        Where to evaluate the density
+    means, sds, weights
+        The component means, standard deviations and (normalised) weights
+    extra_sd
+        An extra standard deviation added in quadrature to every component (e.g. a systematic)
+
+    Returns
+    -------
+    _
+        The density at x
+    """
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    sds = np.sqrt(sds ** 2 + extra_sd ** 2)
+    keep = weights > 1e-12 * np.max(weights)
+    m, s, w = means[keep], sds[keep], weights[keep]
+    z = (x[:, None] - m[None, :]) / s[None, :]
+    return np.sum(w * np.exp(-0.5 * z ** 2) / (np.sqrt(2 * np.pi) * s), axis=1)
+
+
+def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Sequence, method_ids: Sequence,
+                         tau_scale: Optional[float] = None, ngrid: int = 200, tau_max_factor: float = 10.,
+                         tau_line: Optional[float] = None, tau_meth: Optional[float] = None) -> dict:
+    """
+    Combining RV measurements of several lines by several methods with a hierarchical line x method model
+
+    The model is v_{m,i} = mu + delta_i + beta_m + eps_{m,i}, with delta_i ~ N(0, tau_line^2) shared by all
+    methods measuring line i, beta_m ~ N(0, tau_meth^2) shared by all lines measured by method m, and
+    eps_{m,i} ~ N(0, sigma_{m,i}^2).
+    Marginalising delta and beta analytically gives v ~ N(mu 1, C), with
+    C = diag(sigma^2) + tau_line^2 [same line] + tau_meth^2 [same method].
+    For fixed (tau_line, tau_meth) and a flat prior on mu, the posterior of mu is Gaussian with mean
+    1^T C^-1 v / 1^T C^-1 1 and variance 1 / 1^T C^-1 1, and the marginal likelihood of the taus is
+    p(v | tau) ∝ |C|^-1/2 (1^T C^-1 1)^-1/2 exp(-(v^T C^-1 v - (1^T C^-1 v)^2 / 1^T C^-1 1) / 2).
+    Both taus have half-Cauchy priors and are integrated deterministically on a fixed grid (tau = 0 plus
+    ngrid - 1 log-spaced points from 1e-3 times the scale up to tau_max, trapezoidal weights), so the
+    posterior of mu is a mixture of Gaussians. There is no random number generation.
+    tau_max is the larger of tau_max_factor times the scale and three times the full range of the values, so
+    the grid covers the likelihood whatever prior scale is chosen.
+
+    Parameters
+    ----------
+    values
+        The RV measurements (non-finite entries, or those with non-finite or non-positive errors, are dropped)
+    errors
+        Their uncertainties
+    line_ids
+        The line each measurement belongs to (any hashable labels)
+    method_ids
+        The method each measurement comes from (any hashable labels)
+    tau_scale
+        The scale of the half-Cauchy priors on both taus; by default the median measurement uncertainty
+    ngrid
+        The number of grid points per tau axis (including tau = 0)
+    tau_max_factor
+        The upper end of the tau grid is at least this many times tau_scale (the prior is truncated there)
+    tau_line, tau_meth
+        If given, that tau is fixed at this value instead of being integrated over
+
+    Returns
+    -------
+    result
+        A dictionary with the posterior mean and sd of mu ('mean', 'sd'), its 'median', 'q16' and 'q84',
+        the posterior medians of the taus ('tau_line', 'tau_meth'), 'tau_scale', the number of measurements,
+        lines and methods ('n', 'nlines', 'nmethods') and the mixture components ('means', 'sds', 'weights')
+    """
+    from scipy.optimize import brentq
+    from scipy.special import ndtr
+
+    values, errors = np.asarray(values, dtype=float), np.asarray(errors, dtype=float)
+    line_ids, method_ids = np.asarray(line_ids, dtype=object), np.asarray(method_ids, dtype=object)
+    good = np.isfinite(values) & np.isfinite(errors) & (errors > 0)
+    values, errors, line_ids, method_ids = values[good], errors[good], line_ids[good], method_ids[good]
+    n = len(values)
+    out = dict(mean=np.nan, sd=np.nan, median=np.nan, q16=np.nan, q84=np.nan, tau_line=np.nan,
+               tau_meth=np.nan, tau_scale=np.nan, n=n, nlines=len(set(line_ids)),
+               nmethods=len(set(method_ids)), means=np.array([]), sds=np.array([]), weights=np.array([]))
+    if not n:
+        return out
+    if tau_scale is None:
+        tau_scale = float(np.median(errors))
+    out['tau_scale'] = tau_scale
+    tau_max = max(tau_max_factor * tau_scale, 3. * float(np.ptp(values)))
+
+    def taugrid(fixed):
+        if fixed is not None:
+            return np.array([float(fixed)]), np.zeros(1), np.ones(1)
+        grid = np.concatenate([[0.], np.logspace(np.log10(1e-3 * tau_scale),
+                                                 np.log10(tau_max), ngrid - 1)])
+        return grid, _half_cauchy_logpdf(grid, tau_scale), _trapezoid_weights(grid)
+
+    tl, logprior_l, quad_l = taugrid(tau_line)
+    tm, logprior_m, quad_m = taugrid(tau_meth)
+    sameline = (line_ids[:, None] == line_ids[None, :]).astype(float)
+    samemeth = (method_ids[:, None] == method_ids[None, :]).astype(float)
+    cov = (np.diag(errors ** 2)[None, None] + (tl ** 2)[:, None, None, None] * sameline[None, None]
+           + (tm ** 2)[None, :, None, None] * samemeth[None, None])  # (nl, nm, n, n)
+    rhs = np.broadcast_to(np.stack([np.ones(n), values], axis=1), cov.shape[:2] + (n, 2))
+    sol = np.linalg.solve(cov, rhs)  # columns: C^-1 1, C^-1 v
+    a = sol[..., 0].sum(axis=-1)  # 1^T C^-1 1
+    b = sol[..., 1].sum(axis=-1)  # 1^T C^-1 v
+    vcv = np.einsum('i,...i->...', values, sol[..., 1])  # v^T C^-1 v
+    _, logdet = np.linalg.slogdet(cov)
+    loglike = -0.5 * (logdet + np.log(a) + vcv - b ** 2 / a)
+    with np.errstate(divide='ignore'):  # zero quadrature weight at the end of a grid
+        logpost = (loglike + (logprior_l + np.log(quad_l))[:, None] + (logprior_m + np.log(quad_m))[None, :])
+    weights = np.exp(logpost - np.max(logpost))
+    weights /= weights.sum()
+    means, sds = b / a, np.sqrt(1. / a)
+
+    mean = float(np.sum(weights * means))
+    sd = float(np.sqrt(np.sum(weights * (sds ** 2 + means ** 2)) - mean ** 2))
+    keep = weights > 1e-12 * weights.max()
+    km, ks, kw = means[keep], sds[keep], weights[keep] / weights[keep].sum()
+
+    def quantile(q):
+        lo, hi = np.min(km - 10 * ks), np.max(km + 10 * ks)
+        return brentq(lambda x: np.sum(kw * ndtr((x - km) / ks)) - q, lo, hi, xtol=1e-8)
+
+    def tau_median(grid, marginal):
+        if len(grid) == 1:
+            return float(grid[0])
+        cdf = np.cumsum(marginal)
+        return float(np.interp(0.5, cdf, grid))
+
+    out.update(mean=mean, sd=sd, median=quantile(0.5), q16=quantile(0.15865525393145707),
+               q84=quantile(0.8413447460685429), tau_line=tau_median(tl, weights.sum(axis=1)),
+               tau_meth=tau_median(tm, weights.sum(axis=0)), means=means.ravel(), sds=sds.ravel(),
+               weights=weights.ravel())
+    return out
 
 
 def logging_rvcalc(s: str = '', perm: str = 'a'):
