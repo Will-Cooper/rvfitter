@@ -109,7 +109,8 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         sysd = res.systematics or {}
         row['sys_template'] = _num(sysd.get('template_spread'))
         row['sys_wavezp'] = _num(sysd.get('wavelength_zero_point'))
-        row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'])
+        row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'],
+                                       _num(sysd.get('floor')))
                                if np.isfinite(row['rv_adopted_err']) else _NAN)
         bary = res.barycentric or {}
         row['bary_kms'] = _num(bary.get('applied_kms'))
@@ -180,7 +181,7 @@ rows.forEach(function(r){b.appendChild(r);});});});
 
 def _to_html(df: pd.DataFrame, plots: Mapping[str, Any] | None) -> str:
     plots = plots or {}
-    left = {c: df[c].dtype == object for c in df.columns}
+    left = {c: not (pd.api.types.is_numeric_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c])) for c in df.columns}
     head = ''.join(f'<th class="{"l" if left[c] else ""}">{html.escape(c)}</th>' for c in df.columns)
     if plots:
         head += '<th class="l">plots</th>'
@@ -205,7 +206,7 @@ def _resolve_formats(path: Path, formats: str | Sequence[str] | None) -> list[tu
     if formats is None:
         fmt = _FORMATS.get(path.suffix.lower())
         if fmt is None:
-            return [('csv', path.with_suffix('.csv'))]
+            return [('csv', path.with_name(path.name + '.csv'))]
         return [(fmt, path)]
     if isinstance(formats, str):
         formats = [f for f in formats.split(',') if f]
@@ -216,7 +217,7 @@ def _resolve_formats(path: Path, formats: str | Sequence[str] | None) -> list[tu
             f = 'html'
         if f not in ('csv', 'json', 'tsv', 'html'):
             raise ValueError(f'unknown output format {f!r}')
-        out.append((f, path.with_suffix(f'.{f}')))
+        out.append((f, path.with_name((path.stem if path.suffix.lower() in _FORMATS else path.name) + f'.{f}')))
     return out
 
 
@@ -257,7 +258,7 @@ def write(results: Sequence[ObjectResult], path: str | Path, formats: str | Sequ
         else:
             out.write_text(_to_html(df, plots))
         written.append(out)
-    stem = path.with_suffix('')
+    stem = path.with_suffix('') if path.suffix.lower() in _FORMATS else path
     det = Path(f'{stem}_details.csv')
     details_table(results).to_csv(det, index=False)
     written.append(det)

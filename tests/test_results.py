@@ -106,3 +106,13 @@ def test_empty_results(tmp_path):
 def test_summary_lines():
     lines = results.summary_lines([make_result(), make_result('longer_name')])
     assert len(lines) == 3 and len({len(x) for x in lines}) == 1
+
+
+def test_dotted_stem_and_floor(tmp_path):
+    res = make_result()
+    res.systematics['floor'] = 0.5
+    w = results.write([res], tmp_path / 'run.v2.csv')
+    assert (tmp_path / 'run.v2_details.csv') in w
+    assert results.to_table([res]).loc[0, 'rv_total_err'] == pytest.approx(np.sqrt(1.5**2 + 0.8**2 + 0.6**2 + 0.5**2))
+    w = results.write([res], tmp_path / 'run.v2', formats='json')
+    assert (tmp_path / 'run.v2.json') in w

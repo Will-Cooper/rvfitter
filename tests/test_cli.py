@@ -64,3 +64,42 @@ def test_doctor_failure(monkeypatch, capsys):
     monkeypatch.setattr(cli, '_doctor_checks', lambda offline: [('thing', False, 'broken', True)])
     assert cli.main(['doctor', '--offline']) == 1
     assert '✗' in capsys.readouterr().out
+
+
+def test_missing_optional_dependency_exit_1(monkeypatch, capsys):
+    mod = types.ModuleType('rvfitter.fake_gui')
+
+    def main():
+        raise ModuleNotFoundError("No module named 'PySide6'", name='PySide6')
+
+    mod.main = main
+    monkeypatch.setitem(sys.modules, 'rvfitter.fake_gui', mod)
+    monkeypatch.setitem(cli.LAZY, 'gui', ('rvfitter.fake_gui', 'main', False))
+    assert cli.main(['gui']) == 1
+    assert 'rvfitter[gui]' in capsys.readouterr().out
+
+
+def test_lazy_systemexit_propagates(monkeypatch):
+    mod = types.ModuleType('rvfitter.fake_exit')
+
+    def main(argv):
+        raise SystemExit(4)
+
+    mod.main = main
+    monkeypatch.setitem(sys.modules, 'rvfitter.fake_exit', mod)
+    monkeypatch.setitem(cli.LAZY, 'forecast', ('rvfitter.fake_exit', 'main', True))
+    assert cli.main(['forecast']) == 4
+
+
+def test_measure_defaults_do_not_override_config():
+    args = cli.build_parser().parse_args(['measure', 'a.fits'])
+    assert args.medium is None and args.bary is None and args.n_procs is None
+
+
+def test_run_no_objects_exit_1(monkeypatch, tmp_path):
+    from rvfitter import config, pipeline
+    ns = types.SimpleNamespace
+    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=[]))
+    monkeypatch.setattr(config, 'load', lambda p: cfg, raising=False)
+    monkeypatch.setattr(pipeline, 'run', lambda *a, **k: [])
+    assert cli.main(['run', 'c.toml']) == 1

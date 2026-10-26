@@ -7,7 +7,9 @@ The configuration attributes follow the interface addendum in ``docs/architectur
 """
 import importlib
 import logging
-from collections.abc import Iterable, Sequence
+import multiprocessing
+import threading
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Executor, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,10 @@ def _config_hash(cfg: Any) -> str:
         return ''
 
 
+class _Cancelled(Exception):
+    """Raised inside measure_object when the cancel event is set"""
+
+
 def _failed(method: str, region: str = '') -> MethodResult:
     meas = Measurement(method, region, float('nan'), float('nan'), FLAG_FIT_FAILED)
     return MethodResult(method, float('nan'), float('nan'), 0, [meas])
@@ -49,12 +55,13 @@ def _failed(method: str, region: str = '') -> MethodResult:
 
 def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | None, rng: np.random.Generator, *,
                    name: str | None = None, methods: Sequence[str] | None = None,
-                   bary: str | None = None) -> ObjectResult:
+                   bary: str | None = None, cancel: threading.Event | None = None) -> ObjectResult:
     """
     Measure one object (one or more spectra)
 
     Runs barycentric.correction, regions.select, each enabled method, combine.hierarchical and systematics.
     A method that raises is logged and recorded as a failed measurement (flag 1); the object carries on.
+    If ``cancel`` is set between methods, ``_Cancelled`` is raised (handled by ``run``).
     """
     from . import barycentric, combine, regions, systematics
 
@@ -65,19 +72,26 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     frame = cfg.velocity_frame.frame
     overrides = cfg.velocity_frame.overrides
 
-    corrected, bary_info = [], {'applied_kms': 0.0, 'source': 'skipped', 'frame': frame}
+    corrected, kmss, sources = [], [], []
     for spec in spectra:
         kms, source = barycentric.correction(spec, mode=mode, frame=frame, overrides=overrides)
         log.info('%s: barycentric correction %.3f km/s (%s)', name, kms, source)
         corrected.append(barycentric.apply(spec, kms) if source != 'skipped' and kms else spec)
-        bary_info = {'applied_kms': float(kms), 'source': source, 'frame': frame}
+        kmss.append(float(kms))
+        sources.append(source)
+    # several epochs: report the mean correction applied, and the source of the first
+    bary_info = {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
-    sel: dict[str, list] = {}
+    sel0: dict[str, list] = {}
     for spec in corrected:
-        sel = regions.select(spec, teff=cfg.templates.teff_prior, methods=names)
+        sel = regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=cfg.regions.overrides)
+        if not sel0:
+            sel0 = sel
         for m in names:
+            if cancel is not None and cancel.is_set():
+                raise _Cancelled
             if m not in registry:
                 log.error('%s: unknown method %r', name, m)
                 per_method[m].append(_failed(m))
@@ -120,7 +134,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                         errs.append(x.rv_err)
                         lines.append(x.region)
                         meths.append(r.method)
-            adopted = combine.hierarchical(np.array(vals), np.array(errs), lines, meths)
+            adopted = combine.hierarchical(np.array(vals), np.array(errs), lines, meths,
+                                           tau_scale=cfg.combine.tau_scale)
         except Exception as exc:  # noqa: BLE001
             log.error('%s: hierarchical combination failed: %s', name, exc)
             log.debug('traceback', exc_info=True)
@@ -136,11 +151,12 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     except Exception as exc:  # noqa: BLE001
         log.debug('wavelength zero-point unavailable: %s', exc)
     try:
-        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sel, cfg, executor=executor,
+        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sel0, cfg, executor=executor,
                                                                     rng=rng.spawn(1)[0]))
     except Exception as exc:  # noqa: BLE001
         log.debug('template spread unavailable: %s', exc)
 
+    sysd['floor'] = float(cfg.combine.systematic_floor)
     return ObjectResult(object=name, files=[s.source for s in spectra], methods=results, adopted=adopted,
                         systematics=sysd, barycentric=bary_info, binary={}, config_hash=_config_hash(cfg),
                         version=__version__)
@@ -161,14 +177,18 @@ def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str) -> list[Spect
 
 
 def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_procs: int | None = None,
-        medium: str | None = None, methods: Sequence[str] | None = None, bary: str | None = None
+        medium: str | None = None, methods: Sequence[str] | None = None, bary: str | None = None,
+        on_object: Callable[[ObjectResult], None] | None = None, cancel: threading.Event | None = None
         ) -> list[ObjectResult]:
     """
     Run the analysis on all spectra found in ``inputs`` (default ``cfg.input.paths``)
 
     Objects are processed one after another (``[i/N] name``); within each object a
-    ``ProcessPoolExecutor(n_procs)`` is created (none if ``n_procs`` is 1) and passed to the methods.
+    ``ProcessPoolExecutor`` (spawn context, safe with Qt threads) is created (none if ``n_procs`` is 1) and
+    passed to the methods.
     The keywords ``n_procs``, ``medium``, ``methods`` and ``bary`` override the config.
+    ``on_object`` is called with each finished object; if ``cancel`` is set (checked between objects and between
+    methods) the results so far are returned and the interrupted object is dropped.
     """
     from . import archives
 
@@ -181,13 +201,25 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     names = sorted(groups)
     log.info('Read %d spectra of %d objects', len(spectra), len(names))
     seeds = np.random.SeedSequence(cfg.seed).spawn(len(names))
-    out = []
+    out: list[ObjectResult] = []
     for i, (name, seed) in enumerate(zip(names, seeds, strict=True), start=1):
+        if cancel is not None and cancel.is_set():
+            log.warning('Cancelled after %d of %d objects', len(out), len(names))
+            break
         log.info('[%d/%d] %s', i, len(names), name)
         rng = np.random.default_rng(seed)
-        if n_procs and n_procs > 1:
-            with ProcessPoolExecutor(n_procs) as ex:
-                out.append(measure_object(groups[name], cfg, ex, rng, name=name, methods=methods, bary=bary))
-        else:
-            out.append(measure_object(groups[name], cfg, None, rng, name=name, methods=methods, bary=bary))
+        try:
+            if n_procs and n_procs > 1:
+                with ProcessPoolExecutor(n_procs, mp_context=multiprocessing.get_context('spawn')) as ex:
+                    res = measure_object(groups[name], cfg, ex, rng, name=name, methods=methods, bary=bary,
+                                         cancel=cancel)
+            else:
+                res = measure_object(groups[name], cfg, None, rng, name=name, methods=methods, bary=bary,
+                                     cancel=cancel)
+        except _Cancelled:
+            log.warning('Cancelled during %s', name)
+            break
+        out.append(res)
+        if on_object is not None:
+            on_object(res)
     return out

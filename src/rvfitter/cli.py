@@ -103,6 +103,9 @@ def _cmd_run(args) -> int:
     out = Path(cfg.output.path or 'results.csv')
     logging_setup.configure(_verbosity(args), out.parent / 'rvfitter.log')
     res = pipeline.run(cfg, inputs, n_procs=args.n_procs)
+    if not res:
+        log.error('No objects were measured')
+        return 1
     for line in results.summary_lines(res):
         log.info(line)
     results.write(res, out, cfg.output.formats or None, config=cfg, dump=config.dump)
@@ -181,16 +184,37 @@ def _cmd_doctor(args) -> int:
     return 0
 
 
+_EXTRAS = {'PySide6': 'gui', 'emcee': 'mcmc', 'corner': 'mcmc'}
+
+
+def _import_failure(exc: BaseException, command: str) -> int:
+    """Log an ImportError: a missing optional dependency is a runtime error (1), an absent rvfitter module is
+    "not yet available" (2)"""
+    name = getattr(exc, 'name', None) or ''
+    root = name.split('.')[0]
+    if root in _EXTRAS:
+        log.error('rvfitter %s needs %s: install it with  pip install "rvfitter[%s]"', command, root, _EXTRAS[root])
+        return 1
+    if root == 'rvfitter' or isinstance(exc, (AttributeError, NotImplementedError)):
+        log.error('rvfitter %s is not yet available', command)
+        return 2
+    log.error('rvfitter %s: missing dependency %s', command, name or exc)
+    return 1
+
+
 def _cmd_lazy(args) -> int:
     modname, func, takes_argv = LAZY[args.command]
+    logging_setup.configure(_verbosity(args))
     try:
         fn = getattr(importlib.import_module(modname), func)
-    except (ImportError, AttributeError):
-        logging_setup.configure(_verbosity(args))
-        log.error('rvfitter %s is not yet available', args.command)
-        return 2
+    except (ImportError, AttributeError) as exc:
+        return _import_failure(exc, args.command)
     rest = [a for a in args.rest if a != '--']
-    out = fn(rest) if takes_argv else fn()
+    try:
+        out = fn(rest) if takes_argv else fn()
+    except SystemExit as exc:
+        code = exc.code
+        return code if isinstance(code, int) else (0 if code is None else 1)
     return int(out or 0)
 
 
@@ -212,8 +236,7 @@ def main(argv=None) -> int:
         return 1
     except (ImportError, NotImplementedError) as exc:
         logging_setup.configure(_verbosity(args))
-        log.error('rvfitter %s is not yet available: %s', args.command, exc)
-        return 2
+        return _import_failure(exc, args.command)
     except Exception as exc:  # noqa: BLE001
         logging_setup.configure(_verbosity(args))
         log.error('%s: %s', type(exc).__name__, exc)
