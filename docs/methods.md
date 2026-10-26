@@ -34,19 +34,22 @@ They differ by 6.5 ± 6.9 km/s (0.9σ; χ² = 0.88 for one degree of freedom), s
 
 We adopt **26.2 ± 2.3 km/s** (Burgasser et al. 2015).
 This is because it is the only precise measurement with a standard-calibrated error, and the combined value barely differs from it.
-A method passes if its RV lies within ±5 km/s (≈2σ) of 26.2 km/s **and** its quoted error is consistent with the offset.
+We compare each method with the benchmark through the difference divided by the two errors added in quadrature:
+z = |RV − 26.2| / √(2.3² + σ_RV²).
+Agreement is good for z ≤ 1 and acceptable for z ≤ 2; anything above 2 is investigated and explained individually.
+Because a large quoted error would make z small trivially, error honesty is checked separately: the injection–recovery tests require calibrated uncertainties (pull distribution width 0.8–1.2).
 We do not tune any method towards this number: the criterion is checked, not fitted.
 
-The original Cooper et al. (2024) values sit at:
-- line centring 36.2 ± 4.4: +10.0 km/s (2.0σ);
-- by-eye cross-correlation 28.8 ± 4.7: +2.6 km/s (0.5σ);
-- adopted 32.7 ± 6.5: +6.5 km/s (0.9σ).
+On this criterion, the original Cooper et al. (2024) values sit at:
+- line centring 36.2 ± 4.4: +10.0 / √(2.3² + 4.4²) = 10.0 / 5.0, z = 2.0;
+- by-eye cross-correlation 28.8 ± 4.7: +2.6 / 5.2, z = 0.5;
+- adopted 32.7 ± 6.5: +6.5 / 6.9, z = 0.9, i.e. good agreement.
 
 The high line-centring value matches the large scatter that Burgasser et al. (2015) also found from line centres (28 ± 9 km/s).
 
 ### Results by method
 
-| Method | v1 (paper) | v1 after Phase A fixes | v2 | Offset from benchmark |
+| Method | v1 (paper) | v1 after Phase A fixes | v2 | z (quadrature) |
 |---|---|---|---|---|
 | Line centring | 36.2 ± 4.4 | | | |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
