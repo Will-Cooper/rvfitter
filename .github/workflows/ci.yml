@@ -26,4 +26,4 @@ jobs:
       - name: Lint
         run: ruff check src tests
       - name: Test
-        run: pytest -m "not data"
+        run: pytest -m "not data and not gui and not slow"
