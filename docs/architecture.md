@@ -110,3 +110,36 @@ class ObjectResult:
 - Tests that need the local test data use `@pytest.mark.data` and the `RVFITTER_TESTDATA` environment variable, and are skipped if it is unset.
 - GUI tests use `@pytest.mark.gui` and pytest-qt with `QT_QPA_PLATFORM=offscreen`.
 - Synthetic spectra come from `tests/synth.py`: `make_spectrum(rv, R, snr, vsini, wave_range, medium, rng)`, which builds a toy line forest. It is owned by P0.
+
+## Interface addendum (agreed after P2, binding for P1, P2 and M)
+
+**Config attribute names** (P1 provides; P2 and P4 read):
+- `cfg.seed: int`
+- `cfg.input`: `.paths: list[str]`, `.medium` ("auto" | "air" | "vacuum"), `.medium_method`, `.hdu`, `.resolution: float | None`
+- `cfg.grouping.override: dict[str, str] | None` (file → object)
+- `cfg.velocity_frame`: `.correction` ("auto" | "apply" | "skip"), `.frame`, `.overrides: dict`
+- `cfg.templates`: `.grid`, `.local_dir`, `.medium`, `.teff_prior: float | None`, `.logg_prior`, `.met_prior`, `.teff_range`, `.logg_range`, `.met_range`
+- `cfg.methods`: `.enabled: list[str]`, `.options: dict[str, dict]`
+- `cfg.regions`: `.overrides: dict[str, list[dict]]`, `.min_snr`, `.telluric_strictness`
+- `cfg.combine`: `.tau_scale: float | None`, `.systematic_floor: float`
+- `cfg.parallel.n_procs: int`
+- `cfg.output`: `.path`, `.formats: list[str]`, `.plots: bool`, `.medium`
+- `cfg.hash() -> str`
+
+**Functions:**
+- `combine.hierarchical(values, errors, line_ids, method_ids, *, tau_scale=None, ngrid=200) -> dict`, with keys `median`, `err`, `q16`, `q84`, `mean`, `sd`, `tau_line`, `tau_method`, `n_methods`, `n_lines`.
+- `systematics.wavelength_zero_point(spectrum, cfg) -> float`: km/s, NaN if unknown.
+- `systematics.template_spread(spectrum, regions, cfg, *, executor=None, rng) -> float`: km/s.
+- `pipeline.run(cfg, inputs, *, n_procs, medium=None, methods=None, bary=None)`. The keywords override the config (CLI use).
+
+**CLI entry points:** `rvfitter.inject.main(argv)` and `rvfitter.forecast.main(argv)` (new modules, owned by M), `rvfitter.templates.cli_main(argv)`, `rvfitter.gui.app.main()`.
+
+### Addendum 2 (after P2 review and P4)
+- **Region overrides:** `cfg.regions.overrides: dict[str, list[dict]]`, keyed by **method name**. Each entry is one of:
+  - `{"name", "kind", "wmin", "wmax"[, "centre", "continuum"]}`, which adds or replaces the region of that name;
+  - `{"name", "remove": true}`, which drops it.
+
+  `regions.select(..., overrides=cfg.regions.overrides)` applies them. The GUI region editor writes this structure and never re-implements the selection.
+- **pipeline.run** gains `on_object: Callable[[ObjectResult], None] | None = None` (called after each object) and `cancel: threading.Event | None = None` (checked between objects and between methods; on cancel, return the results so far). Pass `cfg.regions.overrides` to `regions.select` and `cfg.combine.tau_scale` to `combine.hierarchical`. Add `cfg.combine.systematic_floor` in quadrature to `rv_total_err`.
+- **Plotting:** `plotting.plot_line_fits`, `plot_ccf`, `plot_corner` and `plot_adopted` have the signature `fn(result: ObjectResult) -> matplotlib.figure.Figure`. Methods must therefore store in `Measurement.diagnostics` what their plots need (arrays as lists or ndarrays).
+- **Output:** the GUI uses `cfg.output.path` and `cfg.output.formats`, as named in the first addendum.

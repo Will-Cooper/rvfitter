@@ -34,7 +34,8 @@ dependencies = [
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
 mcmc = ["emcee>=3.1", "corner>=2.2"]
-dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5"]
+gui-test = ["rvfitter[gui]", "pytest-qt>=4.4"]
 all = ["rvfitter[gui,mcmc]"]
 
 [project.urls]
@@ -63,4 +64,5 @@ addopts = "--ignore=tests/legacy"
 markers = [
     "data: needs local test data (not available in CI)",
     "gui: needs PySide6 and a (possibly offscreen) Qt platform",
+    "slow: long-running injection-recovery or MCMC tests (excluded from default CI)",
 ]
