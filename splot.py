@@ -7,7 +7,6 @@ from typing import Sequence
 
 from utils import *
 
-curr_pos = 0
 
 
 class Splot(Quantiser):
@@ -267,7 +266,7 @@ b - Go back to previous line
             fitted = fit_lines(*args, **kwargs)
             if self.fitter.fit_info['param_cov'] is None:
                 raise ValueError('Could not solve')
-        except Exception as e:
+        except FIT_ERRORS as e:  # a failed fit is reported on the plot; anything else is a bug and propagates
             print(f'Fit failed: {repr(e)}')
             if self.ax is not None:
                 self.ax.text(0.5, 0.75, f'Fit failed: {repr(e)}', transform=self.ax.transAxes,
@@ -492,7 +491,7 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
         The list of all of the fits
     """
     def keypress(e):
-        global curr_pos
+        nonlocal curr_pos
         obj = objlist[curr_pos]
         if e.key == 'y':
             goodinds[curr_pos] = True
@@ -529,34 +528,31 @@ def manual_lc_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs) ->
         elif e.key == '?':
             print(obj)
         elif e.key == 'q':
-            plt.close(1)
+            plt.close(fig)
             return
         else:
             return
         if curr_pos == len(useset):
-            plt.close(1)
+            plt.close(fig)
             return
-        for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts + plt.gca().patches:
+        for artist in ax.lines + ax.collections + ax.texts + ax.patches:
             artist.remove()
         if e.key != 'q':
             try:
                 objlist[curr_pos].plotter()
-            except Exception as e:
-                print(e)
+            except FIT_ERRORS as err:  # keep the session alive on a failed fit
+                print(f'Fit failed: {repr(err)}')
         fig.canvas.draw()
         return
 
-    global curr_pos
-    curr_pos = 0
-
-    fig, ax = plt.subplots(figsize=(8, 5), num=1)
+    curr_pos = 0  # the line being fitted, shared with keypress through its closure
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig: plt.Figure = fig
     ax: plt.Axes = ax
     fig.canvas.mpl_connect('key_press_event', keypress)
     useset = np.fromiter(spec_indices.keys(), dtype='<U8')
     ax.set_xlabel(f'Wavelength\,[{spec.spectral_axis.unit.to_string()}]')
     ax.set_ylabel('Normalised Flux [$F_{\lambda}$]')
-    curr_pos = 0
     goodinds = np.zeros(len(useset), dtype=bool)
     objlist = np.empty_like(goodinds, dtype=object)
     for i, (spec_index, labline) in enumerate(spec_indices.items()):

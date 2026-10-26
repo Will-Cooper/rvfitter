@@ -73,7 +73,7 @@ def test_auto_xcorr_fit_keeps_line_slots(workdir):
             assert rvs[i] == XC[name]
 
 
-def test_adoptedrv_pairs_and_plots_by_line(workdir, monkeypatch):
+def test_adoptedrv_pairs_and_plots_by_line(workdir, monkeypatch, last_figure):
     import fullrv
     lc = np.array([np.nan if n in LC_REJECT else LC[n] for n in NAMES])
     xc = np.array([np.nan if n in XC_REJECT else XC[n] for n in NAMES])
@@ -94,7 +94,7 @@ def test_adoptedrv_pairs_and_plots_by_line(workdir, monkeypatch):
             assert value == (LC if method == 'lc' else XC)[line]
 
     # plotted positions: the marker at row y belongs to the line whose tick label is at row y
-    fig = plt.figure(5)
+    fig = last_figure()
     axlines = fig.axes[0]
     ticklabels = [t.get_text() for t in axlines.get_yticklabels()]
     assert len(ticklabels) == len(NAMES)

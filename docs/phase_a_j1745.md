@@ -19,6 +19,34 @@ Agreement is good for z ≤ 1 and acceptable for z ≤ 2.
 | A3 error propagation | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 (hierarchical median and central 68 per cent half-width) | 0.46 | Per-line errors, per-method errors and the adopted combination are all redone; see "A3 in detail" below. |
 | A4 per-line bookkeeping | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 | Bit-identical to A3, as expected: all eight lines are accepted by both methods and the cached fits are stored in `spec_indices` order, so neither the compressed slots nor the list-position matching affected J1745−1640. Rejected lines now stay NaN in their own slot, each fit is matched to its line by name, and `adoptedrv` checks that every per-line array has one slot per line. The Reviewer's A3 follow-ups are folded in here: `hierarchical_combine` now uses the Woodbury identity and the matrix determinant lemma (memory ∝ ngrid × r², with r = number of lines + methods, instead of ngrid² × n²), which reproduces μ, its SD and quantiles to ≤1e-8 km/s; the τ medians now use the mid-point cumulative distribution, which moves them by about half a grid cell (τ_line 12.55 → 12.89 km/s, τ_meth 1.72 → 1.76 km/s) without changing μ. |
 | A5 driver fixes | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 | Bit-identical to A4. The Teff range check now works (`utils.expected_teff`: rounded to 100 K, 2000 K if NaN or outside 1200–4000 K); for this object `stephens` already gives a valid value. `--systematic` is parsed as a float in both drivers (`build_parser`). The SpeX target name removes the `.fits` suffix rather than any of its characters. Templates are chosen by nearest Teff, then log g, then [M/H] among the files that exist (`utils.nearest_template`), and any substitution is logged and recorded; J1745−1640 uses exact grid points, so nothing changed. `fullrv_spex` now calls the shared `fullrv.adoptedrv` (new `outname` and `wunit` arguments; `hires` removed), so SpeX objects also get the A3 hierarchical combination. An object measured by only one method now gets an adopted RV: a factor with a single level (one method or one line) has its τ fixed at 0 because its offset cannot be separated from μ, a warning says that the between-method systematic is not estimable, and the table records `rv_adopted_nmethods` and `rv_adopted_nlines`. |
+| A6 import side-effects | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 | Bit-identical to A5. Importing the legacy modules no longer changes rcParams: the figure style is applied by `utils.set_plot_style()` from the drivers, with `text.usetex` only if a `latex` binary is found. The arrow-key keymaps are freed only for the interactive cross-correlation session (`plt.rc_context(keymaps_without_arrows())`), the module-level `curr_pos` is replaced by closure state, figures are closed by object rather than by number, and the broad `except Exception` handlers now catch only the errors a failed fit can raise (`utils.FIT_ERRORS`), so programming errors propagate. |
+
+## Phase A summary
+
+In this Section, we summarise how the legacy fixes moved the J1745−1640 radial velocities.
+All values are in km/s, and z = |RV − 26.2| / √(2.3² + σ²) against the Burgasser et al. (2015) benchmark.
+
+| Unit | Line centring | z_LC | Cross-correlation | z_XC | Adopted | z_adopted |
+|---|---|---|---|---|---|---|
+| A0 before fixes (paper) | 36.16 ± 4.40 | 2.01 | 28.75 ± 4.70 | 0.49 | 32.71 ± 6.47 | 0.95 |
+| A1 flux errors | 36.16 ± 4.40 | 2.01 | 28.75 ± 4.70 | 0.49 | 32.71 ± 6.47 | 0.95 |
+| A2 Doppler constant | 36.17 ± 4.40 | 2.01 | 28.75 ± 4.70 | 0.49 | 32.71 ± 6.47 | 0.95 |
+| A3 error propagation | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 |
+| A4 per-line bookkeeping | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 |
+| A5 driver fixes | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 |
+| A6 import side-effects | 36.71 ± 4.65 | 2.02 | 28.66 ± 5.21 | 0.43 | 28.95 ± 5.45 | 0.46 |
+
+**What moved and why.**
+Only A2 and A3 changed any number for this object.
+A1, A4, A5 and A6 were bit-identical, as expected: the flux errors weight no fit, all eight lines are accepted by both methods, the templates are exact grid points, and the remaining fixes do not touch the arithmetic.
+A2 (c instead of c/n_air) raised every line-centring velocity by a factor of 1.000276, i.e. by ≈0.01 km/s.
+A3 made three changes that matter.
+First, adding the 0.077 Å wavelength rms in quadrature rather than linearly shrank the line-centring errors, which shifted weight to the Cs I a and Na I b lines and moved the line-centring mean up by 0.54 km/s.
+Second, the cross-correlation errors became √((Δv/√12)² + (c·0.077 Å/λ)²) ≈ 4 km/s instead of a flat 5 km/s, and both method errors are now the formal error inflated by √(χ²/(N−1)).
+Third, and most important, the adopted value now comes from the hierarchical line × method model instead of the two method means combined with their line scatter and divided by √2.
+Both methods share large line-to-line offsets (τ_line ≈ 13 km/s; e.g. Cs I a high and Cs I b low in both), so the model weights the lines almost equally, and the adopted RV fell from 32.7 ± 6.5 to 29.0 ± 5.5 km/s, which agrees better with the benchmark (z = 0.46 rather than 0.95).
+The line-centring mean remains 2σ high (z = 2.02).
+This is probably a consequence of weighting by the per-line fit errors, which favour the high Cs I a and Na I b lines, rather than of the line-centring method itself.
 
 ## A3 in detail
 

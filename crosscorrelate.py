@@ -144,7 +144,7 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     nrows = kwargs.get('nrows', 4)
     ncols = kwargs.get('ncols', 2)
     dorv = kwargs.get('dorv', True)
-    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4), num=4)
+    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4))
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
@@ -221,8 +221,8 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         fname = f'xcorrplots/{tname}{"_" + fappend}_xcorr.pdf'
     else:
         fname = f'xcorrplots/{tname}_xcorr.pdf'
-    plt.savefig(fname, bbox_inches='tight')
-    plt.close(4)
+    fig.savefig(fname, bbox_inches='tight')
+    plt.close(fig)
     return df, rv_list, err_list
 
 

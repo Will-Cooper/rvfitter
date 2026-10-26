@@ -54,7 +54,7 @@ def test_nearest_template(template_grid):
     assert utils.nearest_template(df, 2000, 5.0, 0., tdir + 'empty/') is None
 
 
-def test_spex_uses_shared_adoptedrv(tmp_path, monkeypatch):
+def test_spex_uses_shared_adoptedrv(tmp_path, monkeypatch, last_figure):
     import astropy.units as u
     import fullrv
     import fullrv_spex
@@ -66,7 +66,7 @@ def test_spex_uses_shared_adoptedrv(tmp_path, monkeypatch):
     df = fullrv.adoptedrv(df, 'Short Name', 'X', np.array([10., 12.]), np.array([2., 2.]),
                           np.array([11., 14.]), np.array([3., 3.]), spec_indices, outname='X_adoptedrv.pdf',
                           wunit=u.um)
-    labels = [t.get_text() for t in plt.figure(5).axes[0].get_yticklabels()]
+    labels = [t.get_text() for t in last_figure().axes[0].get_yticklabels()]
     plt.close('all')
     assert '1.17' in labels[0] and '1.18' in labels[1]
     assert (tmp_path / 'adoptedrvplots' / 'X_adoptedrv.pdf').exists()

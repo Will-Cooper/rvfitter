@@ -145,7 +145,7 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
     """
     nrows = kwargs.get('nrows', 4)
     ncols = kwargs.get('ncols', 2)
-    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4), num=3)
+    fig, axs = plt.subplots(nrows, ncols, figsize=(8, 4))
     fig: plt.Figure = fig
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
@@ -200,8 +200,8 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         fname = f'lcplots/{tname}{"_" + fappend}_lc.pdf'
     else:
         fname = f'lcplots/{tname}_lc.pdf'
-    plt.savefig(fname, bbox_inches='tight')
-    plt.close(3)
+    fig.savefig(fname, bbox_inches='tight')
+    plt.close(fig)
     return df, rv_list, err_list
 
 

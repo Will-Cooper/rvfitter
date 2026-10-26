@@ -19,3 +19,16 @@ except ImportError:
     _splat.Spectrum = lambda *a, **k: None
     _splat.measureIndexSet = lambda *a, **k: {}
     sys.modules['splat'] = _splat
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def last_figure(monkeypatch):
+    """Keep the figures the code under test closes, and return a getter for the most recent one."""
+    import matplotlib.pyplot as plt
+    close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda *args, **kwargs: None)
+    yield plt.gcf
+    close('all')

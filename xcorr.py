@@ -6,9 +6,19 @@ from typing import Sequence
 
 from utils import *
 
-curr_pos = 0
-rcParams['keymap.back'].remove('left')
-rcParams['keymap.forward'].remove('right')
+
+
+def keymaps_without_arrows() -> Dict[str, List[str]]:
+    """
+    The matplotlib back/forward keymaps with the left and right arrow keys removed (they step the RV instead)
+
+    Returns
+    -------
+    _
+        rcParams entries for use with plt.rc_context; rcParams itself is not modified
+    """
+    return {name: [k for k in rcParams[name] if k != key]
+            for name, key in (('keymap.back', 'left'), ('keymap.forward', 'right'))}
 
 
 class Xcorr(Quantiser):
@@ -240,7 +250,7 @@ b - Go back to previous line
                                    f'{teff:.0f} K, {grav:.1f} log g, {met:.1f} [Fe/H]')
                     # record the parameters of the template actually used
                     self.teff, self.grav, self.met = teff, grav, met
-                fname = self.templatedir + fname
+                fname = os.path.join(self.templatedir, fname)  # as in nearest_template, with or without a trailing slash
                 wave = copy(self.spec.spectral_axis)
                 kwargs = dict(wunit=u.AA)
                 kwargs['wavearr'] = wave.to(u.AA).value
@@ -328,7 +338,7 @@ b - Go back to previous line
             self.__updatewindows__()
             self.sub_temp_spec = self.shiftsmooth(self.sub_temp_spec, self.sub_spec.wavelength.to(self.wunit).value)
             self.normalise()
-        except Exception as e:
+        except FIT_ERRORS as e:  # a failed template match is reported on the plot; anything else propagates
             print(f'Fit failed: {repr(e)}')
             if self.ax is not None:
                 self.ax.text(0.5, 0.5, f'Fit failed: {repr(e)}', transform=self.ax.transAxes,
@@ -414,7 +424,7 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
         The list of all of the fits
     """
     def keypress(e):
-        global curr_pos
+        nonlocal curr_pos
         obj = objlist[curr_pos]
         if e.key == 'y':
             goodinds[curr_pos] = True
@@ -479,44 +489,43 @@ def manual_xcorr_fit(spec: Spectrum1D, spec_indices: Dict[str, float], **kwargs)
         elif e.key == '?':
             print(obj)
         elif e.key == 'q':
-            plt.close(2)
+            plt.close(fig)
             return
         else:
             return
         if curr_pos == len(useset):
-            plt.close(2)
+            plt.close(fig)
             return
         if e.key in ('up', 'down', '-', '+', '=', '5', '6'):
             obj.tempchanged = True
         else:
             obj.tempchanged = False
-        for artist in plt.gca().lines + plt.gca().collections + plt.gca().texts:
+        for artist in ax.lines + ax.collections + ax.texts:
             artist.remove()
         if e.key != 'q':
             try:
                 objlist[curr_pos].plotter()
-            except Exception as e:
-                print(e)
+            except FIT_ERRORS as err:  # keep the session alive on a failed fit
+                print(f'Fit failed: {repr(err)}')
         fig.canvas.draw()
         return
 
-    global curr_pos
-    curr_pos = 0
+    curr_pos = 0  # the line being fitted, shared with keypress through its closure
     rvunit = kwargs.get('rvunit', u.km / u.s)
-    fig, ax = plt.subplots(figsize=(8, 5), num=2)
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig: plt.Figure = fig
     ax: plt.Axes = ax
     fig.canvas.mpl_connect('key_press_event', keypress)
     useset = np.fromiter(spec_indices.keys(), dtype='<U8')
     ax.set_xlabel(f'Wavelength\,[{spec.spectral_axis.unit.to_string()}]')
     ax.set_ylabel('Normalised Flux [$F_{\lambda}$]')
-    curr_pos = 0
     goodinds = np.zeros(len(useset), dtype=bool)
     objlist = np.empty_like(goodinds, dtype=object)
     for i, (spec_index, labline) in tqdm(enumerate(spec_indices.items()), total=len(spec_indices),
                                          desc='Prepping Cross Correlation', leave=False):
         objlist[i] = Xcorr(copy(spec), labline, spec_index, ax, **kwargs)
     objlist[0].plotter()
-    plt.show()
+    with plt.rc_context(keymaps_without_arrows()):  # free the arrow keys for this session only
+        plt.show()
     outset: list = useset[goodinds].tolist()
     return outset, objlist

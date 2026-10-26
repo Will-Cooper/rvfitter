@@ -232,6 +232,7 @@ if __name__ == '__main__':
     tabname = 'CandidateInfo.csv'
     waverms = 0.075 * u.Angstrom
     sysargs = build_parser().parse_args()
+    set_plot_style()
     _fname: str = sysargs.file_name
     _repeat: bool = sysargs.repeat
     _systematic: float = sysargs.systematic

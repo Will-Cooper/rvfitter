@@ -145,7 +145,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, lcvals: Sequence[float
     df
         The dataframe to enter the adopted RV
     """
-    fig: plt.Figure = plt.figure(figsize=(4, 3), num=5)
+    fig: plt.Figure = plt.figure(figsize=(4, 3))
     axlines: plt.Axes = fig.add_axes([0.1, 0.4, 0.8, 0.5])
     axpdf: plt.Axes = fig.add_axes([0.1, 0.1, 0.8, 0.3])
     allindices = np.array(list(spec_indices.keys()))
@@ -164,7 +164,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, lcvals: Sequence[float
     lcgood = np.isfinite(lcplot) & np.isfinite(lcploterr)
     xgood = np.isfinite(xplot) & np.isfinite(xploterr)
     if not np.any(lcgood) and not np.any(xgood):
-        plt.close(5)
+        plt.close(fig)
         return df
     # each method, for reporting and plotting: weighted mean with the chi^2-inflated error
     loclc, scalelc = combine_rvs(lcplot, lcploterr)
@@ -226,6 +226,7 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, lcvals: Sequence[float
 
     os.makedirs('adoptedrvplots', exist_ok=True)
     fig.savefig(f'adoptedrvplots/{outname or f"{tname}_adoptedrv.pdf"}', bbox_inches='tight')
+    plt.close(fig)
 
     df.loc[df[colname] == tname, 'thisrv'] = locpost
     df.loc[df[colname] == tname, 'thisrverr'] = errpost
@@ -365,6 +366,7 @@ if __name__ == '__main__':
     simplefilter('ignore', np.RankWarning)  # a warning about poorly fitting polynomial, ignore
     tabname = 'gtc_fullinfo.csv'
     sysargs = build_parser().parse_args()
+    set_plot_style()
     _fname: str = sysargs.file_name
     _repeat: bool = sysargs.repeat
     _systematic: float = sysargs.systematic
