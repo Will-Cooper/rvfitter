@@ -13,7 +13,7 @@ from matplotlib import rcParams
 
 import utils
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'legacy'))
 
 IMPORT_CHECK = '''
 import sys, types
