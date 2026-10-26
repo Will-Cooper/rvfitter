@@ -150,13 +150,14 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
     allindices = np.array(list(spec_indices.keys()))
+    objdict = {obj.spec_index: obj for obj in objlist}
+    # results are kept at the fixed slot of each line (NaN if rejected), never compressed
     rv_list, err_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
     rv, err = np.nan, np.nan
-    j = -1
     for i, spec_index in tqdm(enumerate(spec_indices), total=len(spec_indices.keys()),
                               desc='Fitting Line Centers', leave=False):
         ax: plt.Axes = axs[i]
-        obj = objlist[i]
+        obj = objdict[spec_index]  # match the fit by line name, not by list position
         obj.ax = ax
         obj.plotter()
         yroundpoint = 0.5
@@ -172,18 +173,18 @@ def auto_lc_fit(useset: list, spec_indices: Dict[str, float], objlist: List[Splo
         ax.legend([], [])
         if spec_index not in useset:
             continue
-        j += 1
         logging_rvcalc(f'{spec_index.capitalize()} -- {obj.line_profile.capitalize()} Profile'
                        f' with {(obj.std.value * wunit).to(u.AA).value:.1f}A sigma;'
                        f' {obj.rv.value:.1f} +- {obj.rverr.value:.1f} km/s; RMSDIQR = {obj.best_rmsdiqr:.2f};'
                        f' SNR estimate {obj.snr:.1f}')
-        rv_list[j] = obj.rv.value
-        err_list[j] = obj.rverr.value
+        rv_list[i] = obj.rv.value
+        err_list[i] = obj.rverr.value
 
     rv_list_cut = rv_list[~np.isnan(rv_list)]
     err_list_cut = err_list[~np.isnan(err_list)]
     if len(rv_list_cut):
-        # weighted mean; error is max(formal, scatter / sqrt(N)), or the line's own error for a single line
+        # weighted mean; error is the formal error inflated by sqrt(chi^2 / (N - 1)) when the lines scatter more
+        # than their errors allow, or the line's own error for a single line
         rv, err = combine_rvs(rv_list, err_list)
         df.loc[df[colname] == tname, 'thisrvlcerr'] = err  # stored unrounded; round only for display
     else:

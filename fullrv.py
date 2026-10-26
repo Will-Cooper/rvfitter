@@ -150,6 +150,8 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
                            + f'{int(pos)}\,' + u.AA.to_string(u.format.Latex)
                             for specindex, pos in spec_indices.items()])
     ypos = np.arange(len(allindices)) + 1
+    if not all(len(arr) == len(allindices) for arr in (lcvals, lcerr, xcorr, xerr)):
+        raise IndexError('the per-line arrays must hold one slot per spectral index, in spec_indices order')
     lcplot = copy(lcvals)
     lcploterr = copy(lcerr)
     xplot = copy(xcorr)
@@ -165,10 +167,11 @@ def adoptedrv(df: pd.DataFrame, colname: str, tname: str, hires: bool, lcvals: S
     locx, scalex = combine_rvs(xplot, xploterr)
     # adopted: hierarchical line x method model over every finite (method, line) measurement, marginalising
     # offsets shared by both methods on one line (tau_line) and offsets of a whole method (tau_meth).
-    # Lines are identified by name, taken from the array slot of each value (see A4 for the slot bookkeeping)
+    # The per-line arrays hold one fixed slot per line of spec_indices (NaN if rejected), so the line names
+    # pair the two methods' measurements of the same line
     hier = hierarchical_combine(np.concatenate([lcplot, xplot]), np.concatenate([lcploterr, xploterr]),
-                                np.concatenate([allindices[:len(lcplot)], allindices[:len(xplot)]]),
-                                ['lc'] * len(lcplot) + ['xcorr'] * len(xplot))
+                                np.concatenate([allindices, allindices]),
+                                ['lc'] * len(allindices) + ['xcorr'] * len(allindices))
     # the posterior of mu has power-law tails when few methods (or lines) constrain a tau under its half-Cauchy
     # prior, so its SD grows without limit with the tau grid; the median and the central 68 per cent interval
     # are stable, so they define the adopted value and its error

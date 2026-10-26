@@ -648,8 +648,12 @@ def mixture_pdf(x: np.ndarray, means: np.ndarray, sds: np.ndarray, weights: np.n
     sds = np.sqrt(sds ** 2 + extra_sd ** 2)
     keep = weights > 1e-12 * np.max(weights)
     m, s, w = means[keep], sds[keep], weights[keep]
-    z = (x[:, None] - m[None, :]) / s[None, :]
-    return np.sum(w * np.exp(-0.5 * z ** 2) / (np.sqrt(2 * np.pi) * s), axis=1)
+    norm = w / (np.sqrt(2 * np.pi) * s)
+    pdf = np.empty(len(x))
+    for start in range(0, len(x), 256):  # chunk over x to bound the memory at 256 x ncomponents
+        z = (x[start:start + 256, None] - m[None, :]) / s[None, :]
+        pdf[start:start + 256] = np.sum(norm * np.exp(-0.5 * z ** 2), axis=1)
+    return pdf
 
 
 def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Sequence, method_ids: Sequence,
@@ -683,7 +687,8 @@ def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Seque
     method_ids
         The method each measurement comes from (any hashable labels)
     tau_scale
-        The scale of the half-Cauchy priors on both taus; by default the median measurement uncertainty
+        The scale of the half-Cauchy priors on both taus; by default the median measurement uncertainty.
+        This default depends on the data, so the prior is a mild form of empirical Bayes
     ngrid
         The number of grid points per tau axis (including tau = 0)
     tau_max_factor
@@ -713,6 +718,8 @@ def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Seque
         return out
     if tau_scale is None:
         tau_scale = float(np.median(errors))
+    if not np.isfinite(tau_scale) or tau_scale <= 0:
+        raise ValueError(f'tau_scale must be positive and finite, not {tau_scale}')
     out['tau_scale'] = tau_scale
     tau_max = max(tau_max_factor * tau_scale, 3. * float(np.ptp(values)))
 
@@ -725,16 +732,32 @@ def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Seque
 
     tl, logprior_l, quad_l = taugrid(tau_line)
     tm, logprior_m, quad_m = taugrid(tau_meth)
-    sameline = (line_ids[:, None] == line_ids[None, :]).astype(float)
-    samemeth = (method_ids[:, None] == method_ids[None, :]).astype(float)
-    cov = (np.diag(errors ** 2)[None, None] + (tl ** 2)[:, None, None, None] * sameline[None, None]
-           + (tm ** 2)[None, :, None, None] * samemeth[None, None])  # (nl, nm, n, n)
-    rhs = np.broadcast_to(np.stack([np.ones(n), values], axis=1), cov.shape[:2] + (n, 2))
-    sol = np.linalg.solve(cov, rhs)  # columns: C^-1 1, C^-1 v
-    a = sol[..., 0].sum(axis=-1)  # 1^T C^-1 1
-    b = sol[..., 1].sum(axis=-1)  # 1^T C^-1 v
-    vcv = np.einsum('i,...i->...', values, sol[..., 1])  # v^T C^-1 v
-    _, logdet = np.linalg.slogdet(cov)
+    # C = D + U S S U^T, with D = diag(sigma^2), U = [line indicators | method indicators] (n x r) and
+    # S = diag(tau_line, ..., tau_meth, ...). With W = I + S U^T D^-1 U S (r x r, symmetric positive definite)
+    # the Woodbury identity and the matrix determinant lemma give, without ever forming an n x n matrix,
+    # x^T C^-1 y = x^T D^-1 y - (S U^T D^-1 x)^T W^-1 (S U^T D^-1 y) and |C| = |D| |W|; tau = 0 is allowed
+    _, linv = np.unique(line_ids.astype(str), return_inverse=True)
+    _, minv = np.unique(method_ids.astype(str), return_inverse=True)
+    nl, nm = linv.max() + 1, minv.max() + 1
+    umat = np.zeros((n, nl + nm))
+    umat[np.arange(n), linv] = 1.
+    umat[np.arange(n), nl + minv] = 1.
+    dinv = 1. / errors ** 2
+    amat = umat.T @ (dinv[:, None] * umat)  # U^T D^-1 U
+    p1, pv = umat.T @ dinv, umat.T @ (dinv * values)  # U^T D^-1 1, U^T D^-1 v
+    a0, b0, c0 = np.sum(dinv), np.sum(dinv * values), np.sum(dinv * values ** 2)
+    logdet_d = np.sum(np.log(errors ** 2))
+    a, b, vcv, logdet = (np.empty((len(tl), len(tm))) for _ in range(4))
+    eye = np.eye(nl + nm)
+    for k, tline in enumerate(tl):  # one tau_line at a time keeps the memory at len(tm) x r x r
+        smat = np.concatenate([np.full((len(tm), nl), tline), np.repeat(tm[:, None], nm, axis=1)], axis=1)
+        wmat = eye[None] + smat[:, :, None] * amat[None] * smat[:, None, :]
+        rhs = np.stack([smat * p1, smat * pv], axis=-1)  # (len(tm), r, 2)
+        sol = np.linalg.solve(wmat, rhs)
+        a[k] = a0 - np.sum(rhs[..., 0] * sol[..., 0], axis=-1)  # 1^T C^-1 1
+        b[k] = b0 - np.sum(rhs[..., 0] * sol[..., 1], axis=-1)  # 1^T C^-1 v
+        vcv[k] = c0 - np.sum(rhs[..., 1] * sol[..., 1], axis=-1)  # v^T C^-1 v
+        logdet[k] = logdet_d + np.linalg.slogdet(wmat)[1]
     loglike = -0.5 * (logdet + np.log(a) + vcv - b ** 2 / a)
     with np.errstate(divide='ignore'):  # zero quadrature weight at the end of a grid
         logpost = (loglike + (logprior_l + np.log(quad_l))[:, None] + (logprior_m + np.log(quad_m))[None, :])
@@ -749,12 +772,12 @@ def hierarchical_combine(values: np.ndarray, errors: np.ndarray, line_ids: Seque
 
     def quantile(q):
         lo, hi = np.min(km - 10 * ks), np.max(km + 10 * ks)
-        return brentq(lambda x: np.sum(kw * ndtr((x - km) / ks)) - q, lo, hi, xtol=1e-8)
+        return brentq(lambda x: np.sum(kw * ndtr((x - km) / ks)) - q, lo, hi, xtol=1e-10)
 
     def tau_median(grid, marginal):
         if len(grid) == 1:
             return float(grid[0])
-        cdf = np.cumsum(marginal)
+        cdf = np.cumsum(marginal) - marginal / 2  # mid-point rule: each grid point holds the centre of its mass
         return float(np.interp(0.5, cdf, grid))
 
     out.update(mean=mean, sd=sd, median=quantile(0.5), q16=quantile(0.15865525393145707),

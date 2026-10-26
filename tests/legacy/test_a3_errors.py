@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import astropy.units as u
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib import rcParams
 from specutils import Spectrum1D, SpectralRegion
 
@@ -170,3 +171,31 @@ def test_hierarchical_quantiles_stable_to_grid_extent():
     for key in ('median', 'q16', 'q84'):
         np.testing.assert_allclose(wide[key], narrow[key], atol=0.05)
     assert wide['sd'] > narrow['sd']
+
+
+def test_hierarchical_large_problem_memory_and_time():
+    # 6 methods x 30 lines: a dense (ngrid, ngrid, n, n) covariance would need ~10 GB; Woodbury needs a few MB
+    import time
+    import tracemalloc
+    rng = np.random.default_rng(7)
+    nlines, nmeths = 30, 6
+    values = (25. + rng.normal(0., 4., nlines)[None, :] + rng.normal(0., 2., nmeths)[:, None]
+              + rng.normal(0., 1., (nmeths, nlines)))
+    errors = rng.uniform(0.5, 2., (nmeths, nlines))
+    args = (values.ravel(), errors.ravel(), np.tile(np.arange(nlines), nmeths), np.repeat(np.arange(nmeths), nlines))
+    tracemalloc.start()
+    t0 = time.perf_counter()
+    res = utils.hierarchical_combine(*args)
+    elapsed = time.perf_counter() - t0
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert res['n'] == 180 and res['nlines'] == 30 and res['nmethods'] == 6
+    assert peak < 100e6 and elapsed < 60.
+    assert 1. < res['tau_line'] < 8. and 0.5 < res['tau_meth'] < 6.
+    assert abs(res['median'] - 25.) < 3.
+
+
+def test_hierarchical_rejects_bad_tau_scale():
+    for bad in (0., -1., np.nan):
+        with pytest.raises(ValueError):
+            utils.hierarchical_combine([1., 2.], [1., 1.], ['a', 'b'], ['m', 'm'], tau_scale=bad)

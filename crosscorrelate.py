@@ -149,16 +149,17 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     axs: np.ndarray = axs.flatten()
     wunit: u.Unit = kwargs.get('wunit', u.AA)
     allindices = np.array(list(spec_indices.keys()))
+    objdict = {obj.spec_index: obj for obj in objlist}
+    # results are kept at the fixed slot of each line (NaN if rejected), never compressed
     rv_list, err_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan)
     teff_list, grav_list, met_list = np.full(len(allindices), np.nan), np.full(len(allindices), np.nan), \
         np.full(len(allindices), np.nan)
     rv, err = np.nan, np.nan
     teff, grav, met = np.nan, np.nan, np.nan
-    j = -1
     for i, spec_index in tqdm(enumerate(spec_indices), total=len(spec_indices.keys()),
                               desc='Fitting Cross Correlation', leave=False):  # every spectral index
         ax: plt.Axes = axs[i]
-        obj = objlist[i]
+        obj = objdict[spec_index]  # match the fit by line name, not by list position
         obj.ax = ax
         obj.plotter()
         yroundpoint = 0.5
@@ -174,17 +175,16 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
         ax.legend([], [])
         if spec_index not in useset:
             continue
-        j += 1
         teffobj = int(obj.teff.value)
         logging_rvcalc(f'{spec_index.capitalize()} -- {teffobj}K, {obj.grav.value:.1f} log g,'
                        f' {obj.met.value:.1f} [Fe/H]; {obj.rv.value:.1f} +- {obj.rverr.value:.1f} km/s;'
                        f' RMSDIQR = {obj.best_rmsdiqr:.2f}')
         if dorv:
-            rv_list[j] = obj.rv.value
-            err_list[j] = obj.rverr.value
-        teff_list[j] = teffobj
-        grav_list[j] = obj.grav.value
-        met_list[j] = obj.met.value
+            rv_list[i] = obj.rv.value
+            err_list[i] = obj.rverr.value
+        teff_list[i] = teffobj
+        grav_list[i] = obj.grav.value
+        met_list[i] = obj.met.value
 
     rv_list_cut = rv_list[~np.isnan(rv_list)]
     err_list_cut = err_list[~np.isnan(err_list)]
@@ -192,7 +192,8 @@ def auto_xcorr_fit(useset: list, spec_indices: Dict[str, float], objlist: List[X
     grav_list_cut = grav_list[~np.isnan(grav_list)]
     met_list_cut = met_list[~np.isnan(met_list)]
     if len(rv_list_cut):  # if there is at least a line used in the cross correlation
-        # weighted mean; error is max(formal, scatter / sqrt(N)), or the line's own error for a single line
+        # weighted mean; error is the formal error inflated by sqrt(chi^2 / (N - 1)) when the lines scatter more
+        # than their errors allow, or the line's own error for a single line
         rv, err = combine_rvs(rv_list, err_list)
         df.loc[df[colname] == tname, 'thisrvxcorrerr'] = err  # stored unrounded; round only for display
     else:
