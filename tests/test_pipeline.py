@@ -46,15 +46,19 @@ def fakes(monkeypatch):
     monkeypatch.setattr(combine, 'hierarchical', lambda v, e, ln, m: {
         'median': float(np.median(v)), 'err': 1.0, 'q16': 0.0, 'q84': 1.0, 'n_methods': len(set(m)),
         'n_lines': len(v)}, raising=False)
-    monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s: 0.5, raising=False)
-    monkeypatch.setattr(systematics, 'template_spread', lambda r: 0.4, raising=False)
+    monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, c: 0.5, raising=False)
+    monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4, raising=False)
     monkeypatch.setattr(methods_pkg, 'REGISTRY', {
         'ccf': FakeMethod('ccf'), 'linecentre': FakeMethod('linecentre'), 'lsd': FakeMethod('lsd', fail=True)},
         raising=False)
     return spectra
 
 
-CFG = types.SimpleNamespace(seed=7, methods=['linecentre', 'ccf', 'lsd'], hash=lambda: 'h')
+NS = types.SimpleNamespace
+CFG = NS(seed=7, methods=NS(enabled=['linecentre', 'ccf', 'lsd'], options={}), hash=lambda: 'h',
+         input=NS(medium='auto', hdu=None, resolution=None, paths=['p1']), grouping=NS(override=None),
+         velocity_frame=NS(correction='auto', frame='barycentric', overrides={}), templates=NS(teff_prior=None),
+         parallel=NS(n_procs=1))
 INPUTS = ['p1', 'p2', 'p3', 'p4']
 
 

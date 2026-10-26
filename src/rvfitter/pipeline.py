@@ -3,8 +3,7 @@
 Objects are processed sequentially; parallelism is used inside an object (a process pool passed
 down to the methods), so results do not depend on ``n_procs``.
 
-The configuration is accessed defensively (``getattr`` with defaults) so that the skeleton works with whatever
-``config.Config`` provides; see ``docs/dev_notes_cli_results.md`` for the attributes used.
+The configuration attributes follow the interface addendum in ``docs/architecture.md``.
 """
 import importlib
 import logging
@@ -22,23 +21,14 @@ __all__ = ['run', 'measure_object', 'enabled_methods']
 
 log = logging.getLogger(__name__)
 
-DEFAULT_METHODS = ('linecentre', 'ccf', 'template_fit')
 FLAG_FIT_FAILED = 1
 
 
 def enabled_methods(cfg: Any, override: Sequence[str] | None = None) -> list[str]:
-    """Names of the methods to run, from ``override`` or ``cfg.methods`` (list of names or name -> options)"""
+    """Names of the methods to run, from ``override`` or ``cfg.methods.enabled``"""
     if override:
         return list(override)
-    methods = getattr(cfg, 'methods', None)
-    if methods is None:
-        return list(DEFAULT_METHODS)
-    if isinstance(methods, dict):
-        return [k for k, v in methods.items()
-                if (v.get('enabled', True) if isinstance(v, dict) else getattr(v, 'enabled', True))]
-    if isinstance(methods, str):
-        return [m for m in methods.split(',') if m]
-    return [getattr(m, 'name', m) for m in methods if getattr(m, 'enabled', True)]
+    return list(cfg.methods.enabled)
 
 
 def _registry() -> dict[str, Any]:
@@ -71,20 +61,22 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     names = enabled_methods(cfg, methods)
     registry = _registry()
     name = name or str(spectra[0].meta.get('object', Path(spectra[0].source).stem))
-    mode = bary or getattr(cfg, 'bary', None) or getattr(getattr(cfg, 'barycentric', None), 'mode', None) or 'auto'
-    frame = getattr(getattr(cfg, 'barycentric', None), 'frame', 'barycentric')
+    mode = bary or cfg.velocity_frame.correction
+    frame = cfg.velocity_frame.frame
+    overrides = cfg.velocity_frame.overrides
 
     corrected, bary_info = [], {'applied_kms': 0.0, 'source': 'skipped', 'frame': frame}
     for spec in spectra:
-        kms, source = barycentric.correction(spec, mode=mode, frame=frame)
+        kms, source = barycentric.correction(spec, mode=mode, frame=frame, overrides=overrides)
         log.info('%s: barycentric correction %.3f km/s (%s)', name, kms, source)
         corrected.append(barycentric.apply(spec, kms) if source != 'skipped' and kms else spec)
         bary_info = {'applied_kms': float(kms), 'source': source, 'frame': frame}
 
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
+    sel: dict[str, list] = {}
     for spec in corrected:
-        sel = regions.select(spec, teff=getattr(cfg, 'teff', None), methods=names)
+        sel = regions.select(spec, teff=cfg.templates.teff_prior, methods=names)
         for m in names:
             if m not in registry:
                 log.error('%s: unknown method %r', name, m)
@@ -140,11 +132,12 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     sysd: dict[str, float] = {}
     try:
-        sysd['wavelength_zero_point'] = float(systematics.wavelength_zero_point(corrected[0]))
+        sysd['wavelength_zero_point'] = float(systematics.wavelength_zero_point(corrected[0], cfg))
     except Exception as exc:  # noqa: BLE001
         log.debug('wavelength zero-point unavailable: %s', exc)
     try:
-        sysd['template_spread'] = float(systematics.template_spread(results))
+        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sel, cfg, executor=executor,
+                                                                    rng=rng.spawn(1)[0]))
     except Exception as exc:  # noqa: BLE001
         log.debug('template spread unavailable: %s', exc)
 
@@ -160,27 +153,34 @@ def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str) -> list[Spect
     for inp in ([inputs] if isinstance(inputs, (str, Path)) else inputs):
         for path in archives.collect_inputs(Path(inp)):
             try:
-                spectra.append(io.read_spectrum(path, medium=medium, resolution=getattr(cfg, 'resolution', None)))
+                spectra.append(io.read_spectrum(path, medium=medium, hdu=cfg.input.hdu,
+                                                resolution=cfg.input.resolution))
             except Exception as exc:  # noqa: BLE001
                 log.warning('Skipping %s: %s', path, exc)
     return spectra
 
 
-def run(cfg: Any, inputs: str | Path | Iterable[str | Path], *, n_procs: int = 1, medium: str = 'auto',
-        methods: Sequence[str] | None = None, bary: str | None = None) -> list[ObjectResult]:
+def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_procs: int | None = None,
+        medium: str | None = None, methods: Sequence[str] | None = None, bary: str | None = None
+        ) -> list[ObjectResult]:
     """
-    Run the analysis on all spectra found in ``inputs``
+    Run the analysis on all spectra found in ``inputs`` (default ``cfg.input.paths``)
 
     Objects are processed one after another (``[i/N] name``); within each object a
     ``ProcessPoolExecutor(n_procs)`` is created (none if ``n_procs`` is 1) and passed to the methods.
+    The keywords ``n_procs``, ``medium``, ``methods`` and ``bary`` override the config.
     """
     from . import archives
 
-    spectra = _read_all(cfg, inputs, medium)
-    groups = archives.group_by_object(spectra, getattr(cfg, 'objects', None))
+    if inputs is None:
+        inputs = cfg.input.paths
+    if n_procs is None:
+        n_procs = cfg.parallel.n_procs
+    spectra = _read_all(cfg, inputs, medium or cfg.input.medium)
+    groups = archives.group_by_object(spectra, cfg.grouping.override)
     names = sorted(groups)
     log.info('Read %d spectra of %d objects', len(spectra), len(names))
-    seeds = np.random.SeedSequence(getattr(cfg, 'seed', 0)).spawn(len(names))
+    seeds = np.random.SeedSequence(cfg.seed).spawn(len(names))
     out = []
     for i, (name, seed) in enumerate(zip(names, seeds, strict=True), start=1):
         log.info('[%d/%d] %s', i, len(names), name)

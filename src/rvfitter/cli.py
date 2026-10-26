@@ -42,13 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--methods', help='comma-separated list of methods (default: from the config)')
     p.add_argument('--out', default='results.csv', help='output table (default: results.csv)')
     p.add_argument('--format', dest='formats', help='comma-separated output formats: csv,json,tsv,html')
-    p.add_argument('--n-procs', type=int, default=1, help='processes used within each object')
-    p.add_argument('--medium', choices=('auto', 'air', 'vacuum'), default='auto', help='wavelength medium of the input')
-    p.add_argument('--bary', choices=('auto', 'apply', 'skip'), default='auto', help='barycentric correction mode')
+    p.add_argument('--n-procs', type=int, default=None, help='processes used within each object')
+    p.add_argument('--medium', choices=('auto', 'air', 'vacuum'), default=None, help='wavelength medium of the input')
+    p.add_argument('--bary', choices=('auto', 'apply', 'skip'), default=None, help='barycentric correction mode')
 
     p = sub.add_parser('run', parents=[common], help='run an analysis described by a TOML config')
     p.add_argument('config', help='TOML configuration file')
-    p.add_argument('--n-procs', type=int, default=1)
+    p.add_argument('--n-procs', type=int, default=None, help='processes per object (default: from the config)')
 
     p = sub.add_parser('init', parents=[common], help='write a default config for a spectrum')
     p.add_argument('spectrum', help='spectrum file the defaults are derived from')
@@ -80,7 +80,7 @@ def _cmd_measure(args) -> int:
         if not first:
             log.error('No spectra found in %s', args.path)
             return 1
-        cfg = config.default_for(io.read_spectrum(first[0], medium=args.medium))
+        cfg = config.default_for(io.read_spectrum(first[0], medium=args.medium or 'auto'))
     methods = [m for m in args.methods.split(',') if m] if args.methods else None
     res = pipeline.run(cfg, args.path, n_procs=args.n_procs, medium=args.medium, methods=methods, bary=args.bary)
     if not res:
@@ -96,17 +96,16 @@ def _cmd_run(args) -> int:
     from . import config, pipeline, results
 
     cfg = config.load(args.config)
-    inputs = getattr(cfg, 'inputs', None) or getattr(getattr(cfg, 'input', None), 'path', None)
+    inputs = cfg.input.paths
     if not inputs:
-        log.error('The config %s names no input path', args.config)
+        log.error('The config %s names no input paths', args.config)
         return 2
-    output = getattr(cfg, 'output', None)
-    out = Path(getattr(output, 'path', output) or 'results.csv')
+    out = Path(cfg.output.path or 'results.csv')
     logging_setup.configure(_verbosity(args), out.parent / 'rvfitter.log')
     res = pipeline.run(cfg, inputs, n_procs=args.n_procs)
     for line in results.summary_lines(res):
         log.info(line)
-    results.write(res, out, None, config=cfg, dump=config.dump)
+    results.write(res, out, cfg.output.formats or None, config=cfg, dump=config.dump)
     return 0
 
 
