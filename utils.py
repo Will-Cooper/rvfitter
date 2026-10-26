@@ -301,9 +301,8 @@ def inv_rv_calc(shift: float, wave: Union[float, np.ndarray]) -> Union[float, np
     _
         The shifted wavelengths
     """
-    c = 299792458 / 1e3
-    cair = c / 1.000276
-    return shift * wave / cair
+    c = 299792458 / 1e3  # vacuum speed of light in km/s, valid for air or vacuum wavelengths
+    return shift * wave / c
 
 
 def json_handle(jf: Union[os.PathLike, str, bytes],

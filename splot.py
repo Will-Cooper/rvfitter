@@ -209,9 +209,10 @@ b - Go back to previous line
         _
             The radial velocity shift
         """
+        # the Doppler formula uses the vacuum speed of light, whatever the wavelength medium: the
+        # ratio shift / labline is the same in air and vacuum (to first order), so c / n_air was wrong
         c = 299792458 / 1e3 * self.rvunit
-        cair = c / 1.000276
-        return cair * shift / self.labline
+        return c * shift / self.labline
 
     def getrv(self):
         """
