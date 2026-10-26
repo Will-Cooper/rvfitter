@@ -391,17 +391,41 @@ def normaliser(x: np.ndarray, *args, xmin: float = 8100, xmax: float = 8200):
     Returns
     -------
     out
-        The list of arrays starting with wavelength
+        The list of arrays starting with wavelength (the inputs are not modified)
+
+    Notes
+    -----
+    The arguments are treated as plain numpy arrays: ``np.asarray`` strips any astropy Quantity units,
+    so the normalised arrays are returned as unitless ndarrays.
     """
     boolcut: np.ndarray = (x > xmin) & (x < xmax)
-    args = list(args)
     if np.any([len(x) != len(arg) for arg in args]):
         raise IndexError('check input shapes')
-    normval = np.nanmedian(args[0][boolcut])
-    for i, val in enumerate(args):
-        args[i] /= normval
-    out = [x, ] + args
+    normval = np.nanmedian(np.asarray(args[0])[boolcut])
+    # build new arrays rather than dividing in place, so the caller's arrays are left untouched
+    out = [x, ] + [np.asarray(arg) / normval for arg in args]
     return out
+
+
+def ivar_to_sigma(ivar: np.ndarray) -> np.ndarray:
+    """
+    Converting an inverse variance array into a standard deviation array
+
+    Parameters
+    ----------
+    ivar
+        The inverse variance array
+
+    Returns
+    -------
+    sigma
+        The standard deviation, 1 / sqrt(ivar), with NaN wherever ivar is not finite and positive
+    """
+    ivar = np.asarray(ivar, dtype=float)
+    good = np.isfinite(ivar) & (ivar > 0)
+    sigma = np.full_like(ivar, np.nan)
+    np.divide(1., np.sqrt(ivar, out=np.zeros_like(ivar), where=good), out=sigma, where=good)
+    return sigma
 
 
 def freader(f: str, **kwargs) -> Spectrum1D:
@@ -427,7 +451,7 @@ def freader(f: str, **kwargs) -> Spectrum1D:
         try:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1))  # load file
         except (OSError, FileNotFoundError) as e:
-            raise (e, 'Cannot find given file in: ', f)
+            raise FileNotFoundError(f'Cannot find given file in: {f}') from e
         except ValueError:
             wave, flux = np.loadtxt(f, unpack=True, usecols=(0, 1), skiprows=1)  # load file
         if wavearr is not None:
@@ -442,16 +466,17 @@ def freader(f: str, **kwargs) -> Spectrum1D:
             wave = np.array(vac_to_air(wave * wunit, method='Edlen1953') / wunit)
             flux = target.flux[uniquebool]
             fluxivar = target.ivar[uniquebool]
-            fluxerr = np.divide(1., fluxivar, where=~np.isclose(fluxivar, 0))
+            fluxerr = ivar_to_sigma(fluxivar)  # sigma = 1 / sqrt(ivar); NaN where ivar <= 0
         except AttributeError:
             wave = target[0]
             wave: np.ndarray = np.array(vac_to_air(wave * wunit, method='Edlen1953') / wunit)
             flux = target[1]
             fluxerr = target[2]
-            boolcut = (~np.isnan(wave)) & (~np.isnan(flux)) & (~np.isnan(fluxerr))
-            wave = wave[boolcut]
-            flux = flux[boolcut]
-            fluxerr = fluxerr[boolcut]
+    # remove pixels without a usable flux or error (e.g. ivar <= 0, masked by the pipeline), for every input type
+    boolcut = np.isfinite(wave) & np.isfinite(flux) & np.isfinite(fluxerr)
+    wave = wave[boolcut]
+    flux = flux[boolcut]
+    fluxerr = fluxerr[boolcut]
     wave, flux, fluxerr = sigma_clipper(wave, flux, fluxerr, sigma=5)
     wave, flux, fluxerr = normaliser(wave, flux, fluxerr, xmin=np.min(wave), xmax=np.max(wave))
     unc = StdDevUncertainty(fluxerr, unit=funit)
