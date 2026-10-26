@@ -225,7 +225,7 @@ def hierarchical(values: Sequence[float], errors: Sequence[float], line_ids: Seq
         vcv[k] = c0 - np.sum(rhs[..., 1] * sol[..., 1], axis=-1)  # v^T C^-1 v
         logdet[k] = logdet_d + np.linalg.slogdet(wmat)[1]
     loglike = -0.5 * (logdet + np.log(a) + vcv - b ** 2 / a)
-    with np.errstate(divide='ignore'):  # zero quadrature weight at the end of a grid
+    with np.errstate(divide='ignore'):  # guards log(0) (e.g. a fixed tau's weight array)
         logpost = loglike + (logprior_l + np.log(quad_l))[:, None] + (logprior_m + np.log(quad_m))[None, :]
     weights = np.exp(logpost - np.max(logpost))
     weights /= weights.sum()

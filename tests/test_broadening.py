@@ -151,3 +151,54 @@ def test_convolve_keeps_edges_flat():
     flux = np.ones(100)
     out = br.convolve(flux, br.gaussian_kernel(5.))
     np.testing.assert_allclose(out, 1., rtol=1e-12)
+
+
+def _fit_fwhm_kms(wave, flux, centre):
+    from scipy.optimize import curve_fit
+    v = C_KMS * np.log(wave / centre)
+    sel = np.abs(v) < 600
+    popt, _ = curve_fit(lambda x, a, mu, s: 1 - a * np.exp(-0.5 * ((x - mu) / s) ** 2), v[sel], flux[sel],
+                        p0=(0.3, 0., 50.))
+    return abs(popt[2]) / br.FWHM_TO_SIGMA
+
+
+@pytest.mark.parametrize('pix_per_fwhm', [3., 5., 10.])
+def test_instrumental_fwhm_on_coarse_grids(pix_per_fwhm):
+    resolution, centre = 3000., 8000.
+    fwhm_lsf = C_KMS / resolution
+    fwhm_in = fwhm_lsf  # a resolved input line, three or more pixels per FWHM
+    wave = br.log_wave_grid(7800., 8200., fwhm_lsf / pix_per_fwhm)
+    v = C_KMS * np.log(wave / centre)
+    flux = 1 - 0.5 * np.exp(-0.5 * (v / (fwhm_in * br.FWHM_TO_SIGMA)) ** 2)
+    out = br.instrumental(Spectrum(wave, flux, np.full_like(wave, 0.01)), resolution)
+    np.testing.assert_allclose(_fit_fwhm_kms(out.wave, out.flux, centre), np.hypot(fwhm_in, fwhm_lsf), rtol=0.01)
+
+
+def test_instrumental_uses_spectrum_resolution():
+    spec = _line_spectrum(width_kms=0.5, dv=0.5)
+    at_10k = br.instrumental(spec, 10000.)
+    assert at_10k.resolution == 10000.
+    np.testing.assert_allclose(br.instrumental(at_10k, 3000.).flux, br.instrumental(spec, 3000.).flux, atol=2e-4)
+    assert br.instrumental(at_10k, 10000.).flux is at_10k.flux  # already at the target
+    with pytest.raises(ValueError):
+        br.instrumental(at_10k, 12000.)
+    # np.inf treats the input as unresolved
+    double = br.instrumental(at_10k, 3000., resolution_native=np.inf)
+    assert double.flux[np.argmin(np.abs(double.wave - 8000))] > br.instrumental(at_10k, 3000.).flux[
+        np.argmin(np.abs(double.wave - 8000))]
+
+
+def test_convolve_nan_mask_dilated():
+    flux = np.ones(200)
+    flux[100] = np.nan
+    kernel = br.gaussian_kernel(3.)
+    half = len(kernel) // 2
+    out = br.convolve(flux, kernel)
+    assert np.isnan(out[100 - half:100 + half + 1]).all()
+    assert np.isfinite(out[:100 - half]).all() and np.isfinite(out[100 + half + 1:]).all()
+    assert np.isnan(br.convolve(np.full(10, np.nan), kernel)).all()
+
+
+def test_gaussian_kernel_narrow_still_smooths():
+    k = br.gaussian_kernel(0.4)
+    assert k.max() < 0.9 and np.isclose(k.sum(), 1.)

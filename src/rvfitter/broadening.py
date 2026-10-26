@@ -9,17 +9,23 @@ fixed width in pixels:
 - a wavelength-dependent R(λ) on a uniform grid in u(λ) = ∫ R(λ)/λ dλ, on which a Gaussian of
   FWHM λ/R(λ) always has FWHM 1.
 
-Spectra are moved between grids with `rebin`, which returns the mean of the piecewise-linear interpolant
-over each output pixel, so the integral of the flux is conserved (to the extent the input grid covers the
-output pixel).
-The broadened flux is returned on the input wavelength grid.
+Internal grids sample the kernel FWHM with at least ten pixels. Spectra are moved onto them with `rebin`
+(the flux-conserving mean of the piecewise-linear interpolant over each pixel) when the input is at least as
+finely sampled, e.g. a model, or by cubic-spline interpolation when the internal grid is finer, e.g. observed
+data at 2–5 pixels per resolution element. The result is point-sampled back onto the input grid, so a
+coarsely sampled input is not broadened by the round trip.
+
+Velocities are relativistic radial velocities (λ_obs/λ_rest = √((1 + β)/(1 − β))), not cz.
 """
 import logging
 from collections.abc import Callable
 from dataclasses import replace
 
 import numpy as np
+from scipy.interpolate import CubicSpline
+from scipy.ndimage import binary_dilation
 from scipy.signal import fftconvolve
+from scipy.special import ndtr
 
 from .constants import C_KMS
 from .types import Spectrum
@@ -31,7 +37,8 @@ __all__ = ['doppler_factor', 'shift_wave', 'doppler_shift', 'log_wave_grid', 're
 log = logging.getLogger(__name__)
 
 FWHM_TO_SIGMA = 1. / (2. * np.sqrt(2. * np.log(2.)))
-_MIN_PIX_PER_FWHM = 5.  # sampling of the internal grids per resolution element
+_MIN_PIX_PER_FWHM = 10.  # minimum sampling of the internal grids per kernel FWHM
+_UPSAMPLE_RATIO = 1.5  # internal grid this much finer than the input: cubic interpolation instead of rebin
 
 ResolutionLike = float | Callable[[np.ndarray], np.ndarray] | tuple[np.ndarray, np.ndarray]
 
@@ -97,6 +104,7 @@ def doppler_shift(spec: Spectrum, v: float, *, onto_original_grid: bool = False)
         The shifted spectrum; meta['doppler_shift_kms'] records the cumulative shift
     """
     meta = dict(spec.meta)
+    # successive shifts compose relativistically; the record adds them linearly (exact to ≲1 m/s for |v| < 100 km/s)
     meta['doppler_shift_kms'] = float(meta.get('doppler_shift_kms', 0.)) + float(v)
     wave_new = shift_wave(spec.wave, v)
     if not onto_original_grid:
@@ -234,12 +242,15 @@ def resample(spec: Spectrum, new_wave: np.ndarray) -> Spectrum:
 # ---------------------------------------------------------------------------------------------------------------
 def gaussian_kernel(sigma_pix: float, nsigma: float = 5.) -> np.ndarray:
     """
-    A normalised, sampled Gaussian kernel
+    A normalised Gaussian kernel
+
+    For σ ≥ 1 pixel the Gaussian is point-sampled (so the kernel variance is σ²); for narrower kernels it is
+    integrated over each pixel (erf differences), so it still smooths rather than collapsing to a delta.
 
     Parameters
     ----------
     sigma_pix
-        Standard deviation [pixels]; should be ≳1 for the sampling to be accurate
+        Standard deviation [pixels]
     nsigma
         Half-width of the kernel in standard deviations
 
@@ -252,7 +263,10 @@ def gaussian_kernel(sigma_pix: float, nsigma: float = 5.) -> np.ndarray:
         return np.ones(1)
     n = max(1, int(np.ceil(nsigma * sigma_pix)))
     x = np.arange(-n, n + 1)
-    k = np.exp(-0.5 * (x / sigma_pix) ** 2)
+    if sigma_pix >= 1:
+        k = np.exp(-0.5 * (x / sigma_pix) ** 2)
+    else:
+        k = ndtr((x + 0.5) / sigma_pix) - ndtr((x - 0.5) / sigma_pix)
     return k / k.sum()
 
 
@@ -298,17 +312,21 @@ def convolve(flux: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     """
     Convolve with an odd-length, normalised kernel, padding with the edge values so the ends do not droop
 
-    Non-finite flux is linearly interpolated over before convolving and set back to NaN afterwards.
+    Non-finite flux is linearly interpolated over before convolving; afterwards every pixel within the kernel
+    half-width of a non-finite input is set to NaN, so the filled values never reach a returned pixel.
     """
     flux = np.asarray(flux, dtype=float)
     if len(kernel) == 1:
         return flux.copy()
     bad = ~np.isfinite(flux)
+    if bad.all():
+        return np.full(len(flux), np.nan)
+    half = len(kernel) // 2
     if bad.any():
         idx = np.arange(len(flux))
         flux = flux.copy()
         flux[bad] = np.interp(idx[bad], idx[~bad], flux[~bad])
-    half = len(kernel) // 2
+        bad = binary_dilation(bad, structure=np.ones(2 * half + 1, dtype=bool))
     padded = np.pad(flux, half, mode='edge')
     out = fftconvolve(padded, kernel, mode='valid')
     out[bad] = np.nan
@@ -347,8 +365,6 @@ def broaden_loglam(flux: np.ndarray, dv: float, resolution: float | None = None,
         inv2 = 1. / resolution ** 2 - (0. if resolution_native is None else 1. / resolution_native ** 2)
         if inv2 > 0:
             sigma_pix = C_KMS * np.sqrt(inv2) * FWHM_TO_SIGMA / dv
-            if sigma_pix < 1:
-                log.debug('Gaussian LSF of %.2f pixels is undersampled', sigma_pix)
             out = convolve(out, gaussian_kernel(sigma_pix))
     return out
 
@@ -373,24 +389,55 @@ def _velocity_step(wave: np.ndarray) -> float:
     return float(np.median(np.diff(np.log(wave)))) * C_KMS
 
 
+def _onto_internal(wave: np.ndarray, flux: np.ndarray, fine: np.ndarray, upsampling: bool) -> np.ndarray:
+    """Move flux onto an internal grid: cubic spline when upsampling, flux-conserving rebin otherwise"""
+    if not upsampling:
+        return rebin(wave, flux, fine)
+    good = np.isfinite(flux)
+    if good.sum() < 4:
+        return np.full(len(fine), np.nan)
+    out = CubicSpline(wave[good], flux[good])(fine)
+    if not good.all():  # any internal pixel next to a bad input pixel is bad
+        badfrac = np.interp(fine, wave, (~good).astype(float))
+        out[badfrac > 0] = np.nan
+    out[(fine < wave[0]) | (fine > wave[-1])] = np.nan
+    return out
+
+
+def _check_native(spec: Spectrum, resolution_native: float | None) -> float | None:
+    """Native resolution: the argument, else spec.resolution; np.inf means unresolved"""
+    native = spec.resolution if resolution_native is None else resolution_native
+    if native is None or not np.isfinite(native):
+        return None
+    return float(native)
+
+
 def instrumental(spec: Spectrum, resolution: ResolutionLike, *, resolution_native: float | None = None) -> Spectrum:
     """
-    Convolve a spectrum with a Gaussian line-spread function of FWHM λ / R
+    Convolve a spectrum with a Gaussian line-spread function so that its resolution becomes R
+
+    The kernel FWHM is λ/R_eff with R_eff⁻² = R⁻² − R_native⁻², so a spectrum that already has a finite
+    resolution is only broadened by the quadrature difference.
 
     Parameters
     ----------
     spec
         The spectrum
     resolution
-        A constant R; a callable λ → R(λ); or a (wave, R) table, linearly interpolated
+        The target: a constant R; a callable λ → R(λ); or a (wave, R) table, linearly interpolated
     resolution_native
-        Constant resolving power already present in the spectrum (e.g. a model's), removed in quadrature;
-        None treats the input as infinitely resolved
+        Constant resolving power already present in the spectrum. Default: `spec.resolution`; pass np.inf to
+        treat the input as infinitely resolved
 
     Returns
     -------
     broadened
         The broadened spectrum on the input grid (resolution set to R for a constant R, else to the median R)
+
+    Raises
+    ------
+    ValueError
+        If the target R is not positive and finite, or exceeds the native resolution anywhere
     """
     wave = spec.wave
     rfunc = _resolution_callable(resolution)
@@ -398,26 +445,29 @@ def instrumental(spec: Spectrum, resolution: ResolutionLike, *, resolution_nativ
         r_at = np.full(len(wave), float(resolution))
     else:
         r_at = np.asarray(rfunc(wave), dtype=float)
-    r_out = float(np.median(r_at))
     if np.any(~np.isfinite(r_at)) or np.any(r_at <= 0):
         raise ValueError('R(λ) must be positive and finite over the spectrum')
-    if resolution_native is not None:
-        inv2 = 1. / r_at ** 2 - 1. / resolution_native ** 2
-        if np.any(inv2 <= 0):
-            raise ValueError('target resolution must be lower than the native resolution everywhere')
-        r_at = 1. / np.sqrt(inv2)
-    # u(λ) = ∫ R/λ dλ, on which the LSF has FWHM = 1 everywhere
-    u_nodes = np.concatenate([[0.], np.cumsum(0.5 * (r_at[1:] / wave[1:] + r_at[:-1] / wave[:-1]) * np.diff(wave))])
-    du_native = float(np.median(np.diff(u_nodes)))
-    nu = int(np.ceil(u_nodes[-1] / min(1. / _MIN_PIX_PER_FWHM, du_native))) + 1
-    u_grid = np.linspace(0., u_nodes[-1], nu)  # includes both ends, so every input pixel stays covered
-    du = u_grid[1] - u_grid[0]
-    wave_u = np.interp(u_grid, u_nodes, wave)
-    flux_u = rebin(wave, spec.flux, wave_u)
-    flux_u = convolve(flux_u, gaussian_kernel(FWHM_TO_SIGMA / du))
-    flux = rebin(wave_u, flux_u, wave)
+    r_out = float(np.median(r_at))
+    native = _check_native(spec, resolution_native)
     meta = dict(spec.meta)
     meta['lsf_resolution'] = r_out
+    if native is not None:
+        if np.any(r_at > native * (1 + 1e-12)):
+            raise ValueError(f'target resolution (up to {r_at.max():.0f}) is sharper than the native {native:.0f}')
+        inv2 = 1. / r_at ** 2 - 1. / native ** 2
+        if np.all(inv2 <= 1e-12 / r_at ** 2):  # already at the target
+            return replace(spec, resolution=r_out, meta=meta)
+        r_at = 1. / np.sqrt(np.maximum(inv2, 1e-24))
+    # u(λ) = ∫ R_eff/λ dλ, on which the kernel has FWHM = 1 everywhere
+    u_nodes = np.concatenate([[0.], np.cumsum(0.5 * (r_at[1:] / wave[1:] + r_at[:-1] / wave[:-1]) * np.diff(wave))])
+    du_native = float(np.median(np.diff(u_nodes)))
+    du_target = min(1. / _MIN_PIX_PER_FWHM, du_native)
+    u_grid = np.linspace(0., u_nodes[-1], int(np.ceil(u_nodes[-1] / du_target)) + 1)  # both ends included
+    du = u_grid[1] - u_grid[0]
+    wave_u = np.interp(u_grid, u_nodes, wave)
+    flux_u = _onto_internal(wave, spec.flux, wave_u, du_native > _UPSAMPLE_RATIO * du)
+    flux_u = convolve(flux_u, gaussian_kernel(FWHM_TO_SIGMA / du))
+    flux = np.interp(wave, wave_u, flux_u)
     return replace(spec, flux=flux, resolution=r_out, meta=meta)
 
 
@@ -443,12 +493,13 @@ def rotational(spec: Spectrum, vsini: float, epsilon: float = 0.6) -> Spectrum:
         raise ValueError(f'vsini must be non-negative, not {vsini}')
     if vsini == 0:
         return spec
-    dv0 = min(_velocity_step(spec.wave), vsini / 10.)
+    dv_native = _velocity_step(spec.wave)
+    dv0 = min(dv_native, 2. * vsini / _MIN_PIX_PER_FWHM)  # the kernel's full width is 2 vsini
     n = int(np.ceil(np.log(spec.wmax / spec.wmin) * C_KMS / dv0)) + 1
     grid = np.geomspace(spec.wmin, spec.wmax, n)  # includes both ends
     dv = float(np.log(grid[1] / grid[0])) * C_KMS
-    flux = rebin(spec.wave, spec.flux, grid)
+    flux = _onto_internal(spec.wave, spec.flux, grid, dv_native > _UPSAMPLE_RATIO * dv)
     flux = convolve(flux, rotation_kernel(dv, vsini, epsilon))
     meta = dict(spec.meta)
     meta['vsini'] = float(vsini)
-    return replace(spec, flux=rebin(grid, flux, spec.wave), meta=meta)
+    return replace(spec, flux=np.interp(spec.wave, grid, flux), meta=meta)

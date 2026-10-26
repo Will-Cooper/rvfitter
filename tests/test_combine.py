@@ -191,3 +191,42 @@ def test_weighted_mean_matches_legacy():
         if n > 2:
             rvs[0] = np.nan
         np.testing.assert_allclose(combine.weighted_mean(rvs, errs), legacy['combine_rvs'](rvs, errs), atol=1e-12)
+
+
+def _brute(values, errors, lines, methods, tau_scale, ngrid=200, tau_max_factor=10.):
+    """Independent dense-covariance evaluation of the same model on the same τ grid"""
+    values, errors = np.asarray(values, float), np.asarray(errors, float)
+    lines, methods = np.asarray(lines).astype(str), np.asarray(methods).astype(str)
+    same_l = (lines[:, None] == lines[None]).astype(float)
+    same_m = (methods[:, None] == methods[None]).astype(float)
+    tau_max = max(tau_max_factor * tau_scale, 3 * np.ptp(values))
+    grid = np.concatenate([[0.], np.logspace(np.log10(1e-3 * tau_scale), np.log10(tau_max), ngrid - 1)])
+    quad = np.zeros_like(grid)
+    quad[:-1] += np.diff(grid) / 2
+    quad[1:] += np.diff(grid) / 2
+    prior = 2 / (np.pi * tau_scale) / (1 + (grid / tau_scale) ** 2) * quad
+    one = np.ones(len(values))
+    logw, means, sds = [], [], []
+    for i, tl in enumerate(grid):
+        for j, tm in enumerate(grid):
+            cov = np.diag(errors ** 2) + tl ** 2 * same_l + tm ** 2 * same_m
+            ci = np.linalg.inv(cov)
+            a, b = one @ ci @ one, one @ ci @ values
+            ll = -0.5 * (np.linalg.slogdet(cov)[1] + np.log(a) + values @ ci @ values - b ** 2 / a)
+            logw.append(ll + np.log(prior[i]) + np.log(prior[j]))
+            means.append(b / a)
+            sds.append(1 / np.sqrt(a))
+    w = np.exp(np.array(logw) - max(logw))
+    w /= w.sum()
+    means, sds = np.array(means), np.array(sds)
+    mean = np.sum(w * means)
+    return mean, np.sqrt(np.sum(w * (sds ** 2 + means ** 2)) - mean ** 2)
+
+
+def test_hierarchical_matches_dense_brute_force():
+    values = np.array([25., 31., 22., 27., 33., 20.])
+    errors = np.array([2., 3., 2.5, 2., 3., 2.5])
+    lines, methods = ['a', 'b', 'c'] * 2, ['x'] * 3 + ['y'] * 3
+    res = combine.hierarchical(values, errors, lines, methods, ngrid=40)
+    mean, sd = _brute(values, errors, lines, methods, res['tau_scale'], ngrid=40)
+    np.testing.assert_allclose([res['mean'], res['sd']], [mean, sd], atol=1e-9)
