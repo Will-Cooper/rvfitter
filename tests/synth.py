@@ -13,8 +13,8 @@ from rvfitter.medium import vac_to_air
 from rvfitter.types import Spectrum
 
 # a few real vacuum alkali lines so feature-catalogue tests find something, plus random lines
-ANCHOR_LINES = (7667.009, 7701.084, 7802.411, 7949.789, 8185.505, 8197.077, 8523.473, 8945.894,
-                11693.4, 11776.2, 12435.7, 12525.6)
+ANCHOR_LINES = (7667.0089, 7701.0835, 7802.4148, 7949.7891, 8185.5053, 8197.0769, 8523.4728, 8945.9296,
+                11693.4415, 11776.0885, 12435.6992, 12525.5914)  # NIST ASD vacuum (Ritz)
 
 
 def _rotation_kernel(dv: float, vsini: float, epsilon: float = 0.6) -> np.ndarray:
