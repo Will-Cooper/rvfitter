@@ -21,7 +21,7 @@ from .calibration import sky_zeropoint
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
 __all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem',
-           'refit_object', 'suggested_refits', 'apply_patch']
+           'refit_object', 'suggested_refits', 'apply_patch', 'config_for_object', 'object_seed']
 
 log = logging.getLogger(__name__)
 
@@ -307,21 +307,21 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     groups = archives.group_by_object(spectra, cfg.grouping.override)
     names = sorted(groups)
     log.info('Read %d spectra of %d objects', len(spectra), len(names))
-    seeds = np.random.SeedSequence(cfg.seed).spawn(len(names))
     out: list[ObjectResult] = []
-    for i, (name, seed) in enumerate(zip(names, seeds, strict=True), start=1):
+    for i, name in enumerate(names, start=1):
         if cancel is not None and cancel.is_set():
             log.warning('Cancelled after %d of %d objects', len(out), len(names))
             break
         log.info('[%d/%d] %s', i, len(names), name)
-        rng = np.random.default_rng(seed)
+        obj_cfg = config_for_object(cfg, name)
+        rng = np.random.default_rng(object_seed(cfg.seed, name))
         try:
             if n_procs and n_procs > 1:
                 with ProcessPoolExecutor(n_procs, mp_context=multiprocessing.get_context('spawn')) as ex:
-                    res = measure_object(groups[name], cfg, ex, rng, name=name, methods=methods, bary=bary,
+                    res = measure_object(groups[name], obj_cfg, ex, rng, name=name, methods=methods, bary=bary,
                                          cancel=cancel)
             else:
-                res = measure_object(groups[name], cfg, None, rng, name=name, methods=methods, bary=bary,
+                res = measure_object(groups[name], obj_cfg, None, rng, name=name, methods=methods, bary=bary,
                                      cancel=cancel)
         except _Cancelled:
             log.warning('Cancelled during %s', name)
@@ -367,6 +367,32 @@ def apply_patch(cfg: Any, cfg_patch: dict) -> Any:
     return config.from_dict(_deep_merge(cfg.to_dict(), _plain(cfg_patch)))
 
 
+def object_seed(seed: int, name: str) -> np.random.SeedSequence:
+    """
+    The seed sequence of one object: from the run seed and a stable hash of the object name
+
+    It does not depend on the other objects in the input or their order, so a run on any set of inputs and
+    `refit_object` give the same random numbers for the same object.
+    """
+    import hashlib
+    h = int.from_bytes(hashlib.blake2b(str(name).encode('utf-8'), digest_size=8).digest(), 'little')
+    return np.random.SeedSequence([int(seed), h])
+
+
+def config_for_object(cfg: Any, name: str) -> Any:
+    """
+    The configuration for one object: ``cfg`` with the patches of its ``[[refits]]`` entries applied, in order
+
+    Entries recorded for other objects are ignored, so a refit changes only its own object when the written TOML
+    is run again.
+    """
+    patches = [r.get('patch', {}) for r in (getattr(cfg, 'refits', None) or []) if r.get('object') == name]
+    out = cfg
+    for patch in patches:
+        out = apply_patch(out, patch)
+    return out
+
+
 def suggested_refits(result: ObjectResult) -> list[dict]:
     """
     Actions suggested by the template-edge guidance of an object (for the CLI log or a GUI button)
@@ -399,9 +425,10 @@ def refit_object(result: ObjectResult, cfg: Any, cfg_patch: dict, *, inputs: Seq
     """
     Rerun one object with an updated configuration, recording the change
 
-    Nothing changes mid-run: the patch (e.g. a suggestion from `suggested_refits`, applied after downloading
-    any grid it needs) gives a new Config, which is validated, recorded in ``new_cfg.refits`` and so in any TOML
-    written from it, and the object is measured again from its files.
+    Nothing changes mid-run. The patch (e.g. a suggestion from `suggested_refits`, applied after downloading
+    any grid it needs) is recorded as ``{'object': name, 'patch': ...}`` in ``new_cfg.refits`` (and so in any TOML
+    written from it); the global values are unchanged, and `run` applies the patch to that object only
+    (`config_for_object`). The object is measured again from its files with the patched configuration.
 
     Parameters
     ----------
@@ -417,20 +444,21 @@ def refit_object(result: ObjectResult, cfg: Any, cfg_patch: dict, *, inputs: Seq
     Returns
     -------
     result, new_cfg
-        The new ObjectResult and the Config that produced it. The random seed is
-        ``SeedSequence(new_cfg.seed).spawn(1)[0]``, i.e. that of a run on this object alone, so ``rvfitter run``
-        with the written TOML on the same files reproduces it exactly
+        The new ObjectResult, and the Config with the refit recorded. The object's seed is `object_seed`, so
+        running the written TOML on the same inputs (any set containing this object) reproduces it exactly
     """
-    new_cfg = apply_patch(cfg, cfg_patch)
+    new_cfg = apply_patch(cfg, {})
     new_cfg.refits.append({'object': result.object, 'patch': _plain(cfg_patch)})
+    obj_cfg = config_for_object(new_cfg, result.object)
+    obj_cfg.validate()
     log.info('Refitting %s with %s', result.object, _plain(cfg_patch))
-    spectra = _read_all(new_cfg, list(inputs or result.files), medium or new_cfg.input.medium)
+    spectra = _read_all(obj_cfg, list(inputs or result.files), medium or obj_cfg.input.medium)
     if not spectra:
         raise FileNotFoundError(f'none of the files of {result.object} could be read: {result.files}')
-    rng = np.random.default_rng(np.random.SeedSequence(new_cfg.seed).spawn(1)[0])
+    rng = np.random.default_rng(object_seed(new_cfg.seed, result.object))
     if n_procs and n_procs > 1:
         with ProcessPoolExecutor(n_procs, mp_context=multiprocessing.get_context('spawn')) as ex:
-            res = measure_object(spectra, new_cfg, ex, rng, name=result.object, methods=methods, bary=bary)
+            res = measure_object(spectra, obj_cfg, ex, rng, name=result.object, methods=methods, bary=bary)
     else:
-        res = measure_object(spectra, new_cfg, None, rng, name=result.object, methods=methods, bary=bary)
+        res = measure_object(spectra, obj_cfg, None, rng, name=result.object, methods=methods, bary=bary)
     return res, new_cfg

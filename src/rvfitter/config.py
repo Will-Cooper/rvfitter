@@ -177,8 +177,8 @@ class Config:
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
-    # configuration patches applied by pipeline.refit_object, in order ({'object': ..., 'patch': {...}}); the
-    # values above already include them, this list records how they came about
+    # per-object configuration patches from pipeline.refit_object, in order ({'object': ..., 'patch': {...}});
+    # pipeline.run applies each only to its object (the values above are the defaults for every object)
     refits: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self, drop_none: bool = True) -> dict[str, Any]:
@@ -195,6 +195,7 @@ class Config:
         plain = self.to_dict(drop_none=False)
         plain['input'].pop('paths')
         plain.pop('output')
+        plain.pop('refits', None)  # the per-object configuration (patches applied) is what is hashed
         canonical = json.dumps(plain, sort_keys=True, separators=(',', ':'), allow_nan=False)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
