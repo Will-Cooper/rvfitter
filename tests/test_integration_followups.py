@@ -21,9 +21,8 @@ def test_telluric_corrected_makes_k_lines_eligible():
     names_on = {r.name for r in on['linecentre']}
     assert not {'K I 7667', 'K I 7701'} & names_off
     assert {'K I 7667', 'K I 7701'} <= names_on
-    # ccf regions keep only opaque bands masked, so they cover more
-    width = lambda rs: sum(r.wmax - r.wmin for r in rs)  # noqa: E731
-    assert width(on['ccf']) > width(off['ccf'])
+    # ccf/fit spans keep every telluric mask (H2O residuals are not noise), so they are unchanged
+    assert [(r.wmin, r.wmax) for r in on['ccf']] == [(r.wmin, r.wmax) for r in off['ccf']]
 
 
 @data

@@ -104,7 +104,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     # None means "use the SelectOptions default"
     knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
-             'telluric_corrected': True if cfg.input.telluric_corrected else None}
+             'telluric_corrected': True if cfg.input.telluric_corrected else None,
+             'template_windows': getattr(cfg.regions, 'template_windows', None)}
     opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
@@ -151,16 +152,10 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     good = [r for r in results.values() if np.isfinite(r.rv)]
     if good:
         try:
-            vals, errs, lines, meths = [], [], [], []
-            for r in good:
-                for x in r.measurements:
-                    if np.isfinite(x.rv):
-                        vals.append(x.rv)
-                        errs.append(x.rv_err)
-                        lines.append(x.region)
-                        meths.append(r.method)
-            adopted = combine.hierarchical(np.array(vals), np.array(errs), lines, meths,
-                                           tau_scale=cfg.combine.tau_scale)
+            # every usable per-region measurement of every method; flagged ones are excluded (and logged)
+            adopted = combine.hierarchical_from_methods({r.method: r for r in good}, tau_scale=cfg.combine.tau_scale)
+            if not np.isfinite(adopted.get('median', float('nan'))):  # nothing usable after the exclusions
+                adopted = {}
         except Exception as exc:  # noqa: BLE001
             log.error('%s: hierarchical combination failed: %s', name, exc)
             log.debug('traceback', exc_info=True)

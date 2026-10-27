@@ -31,11 +31,15 @@ __all__ = ['SelectOptions', 'select', 'der_snr', 'rv_precision', 'LINE_METHODS',
 log = logging.getLogger(__name__)
 
 LINE_METHODS = frozenset({'linecentre'})
+# template-based methods whose windows follow `template_windows`
+TEMPLATE_METHODS = frozenset({'ccf', 'template_fit', 'forward_mcmc'})
+TEMPLATE_WINDOW_MODES = ('features', 'full')
+_EDGE_RESEL = 3.  # a feature within this many resolution elements of a mask-clipped window edge is dropped
 TELLURIC_METHODS = frozenset({'telluric_ref'})
 _FWHM_TO_SIGMA = 1. / (2. * math.sqrt(2. * math.log(2.)))
 # Named telluric strictness levels (aliases for the float scale: 0 = off, larger masks more)
 _STRICTNESS = {'off': 0., 'loose': 0.5, 'standard': 1., 'strict': 2.}
-_OPAQUE_DEPTH = 0.9  # effective depth above which a band is still masked for ccf/fit regions when telluric-corrected
+_RELAXED_SPECIES = ('O2',)  # telluric bands relaxed for line regions when the spectrum is telluric-corrected
 _CORRECTED_SCALE = 0.25  # strictness factor for line regions when the spectrum is already telluric-corrected
 _BASE_DEPTH = 0.15  # effective band depth masked at strictness 1 (airmass-scaled); the threshold is this / strictness
 
@@ -79,7 +83,9 @@ class SelectOptions:
         aliases
     telluric_corrected
         The spectrum has already been telluric-corrected (``input.telluric_corrected``): line regions use
-        ``telluric`` x 0.25, and ccf/fit regions mask only opaque bands (effective depth >= 0.9)
+        ``telluric`` x 0.25 for the O2 bands only. H2O (and every other) band stays masked as usual, for lines
+        and for ccf/fit spans alike, because residuals of a telluric correction are not random noise: on
+        J1745−1640 the unmasked H2O region pulled the template RVs to ≈ −45 km/s (docs/dev_notes_methods.md)
     min_span_resel, max_span_resel
         Minimum and maximum length of a span for ccf/template_fit/forward, in resolution elements
     snr_window_fwhm
@@ -95,6 +101,16 @@ class SelectOptions:
         Keep only the best N lines per method (None = all)
     max_regions
         Keep only the best N automatic regions of any method (None = all); overrides are added afterwards
+    template_windows
+        Windows for the template methods (ccf, template_fit, forward_mcmc): 'features' (default) uses windows of
+        ±``template_window_resel`` resolution elements around catalogue features with ``model_fidelity ==
+        'good'`` (atomic lines, CO bandheads), merged where they overlap, when R <= ``template_windows_r_max``.
+        Synthetic grids reproduce molecular bands (TiO, VO, CrH, FeH, H2O) poorly in late-M/L dwarfs, which
+        shifts template RVs band by band (deep-research-report.md, "Synthetic versus empirical templates").
+        'full' uses every non-telluric span. Above ``template_windows_r_max`` the full spans are always used
+        (at high R the forward model handles mismatch with many resolved lines)
+    template_window_resel, template_windows_r_max
+        Half-width of a feature window in resolution elements, and the R up to which 'features' applies
     """
     snr_min: float = 3.
     k_line: float = 2.5
@@ -114,6 +130,9 @@ class SelectOptions:
     exclude_species: tuple[str, ...] = ('H I',)
     max_lines: int | None = None
     max_regions: int | None = None
+    template_windows: str = 'features'
+    template_window_resel: float = 10.
+    template_windows_r_max: float = 5000.
 
     @classmethod
     def from_config(cls, cfg: Any = None) -> 'SelectOptions':
@@ -531,6 +550,84 @@ def _select_spans(ctx: _Context, feats: Sequence[Feature], masks, teff, method: 
     return [r for _, r in out]
 
 
+def _select_feature_windows(ctx: _Context, feats: Sequence[Feature], masks, teff, method: str,
+                            drops: Counter) -> list[Region]:
+    """Windows around well-modelled catalogue features (model_fidelity 'good'), merged, outside telluric masks"""
+    o = ctx.opts
+    kind = 'ccf' if method == 'ccf' else 'band'
+    wins = []
+    for f in feats:
+        if f.kind == 'telluric' or f.model_fidelity != 'good':
+            continue
+        if f.species in o.exclude_species:
+            drops['excluded species'] += 1
+            continue
+        if not f.teff_ok(teff):
+            drops['Teff prior'] += 1
+            continue
+        if ctx.R < f.r_min:
+            drops['R < r_min'] += 1
+            continue
+        a, b = (f.wave_vac, f.wave_vac) if f.kind in ('line', 'bandhead') and math.isfinite(f.wave_vac) else (
+            f.wmin, f.wmax)
+        if f.kind == 'bandhead' and math.isfinite(f.wmax):
+            b = f.wmax
+        half = o.template_window_resel * ctx.fwhm(0.5 * (a + b))
+        wins.append([a - half, b + half, [f.name], [0.5 * (a + b)]])
+    wins.sort(key=lambda w: w[0])
+    merged: list[list] = []
+    for w in wins:
+        if merged and w[0] <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], w[1])
+            merged[-1][2] += w[2]
+            merged[-1][3] += w[3]
+        else:
+            merged.append(w)
+    spans = _split_spans_any(ctx, masks)
+    out = []
+    for lo0, hi0, names, centres in merged:
+        for slo, shi in spans:
+            lo, hi = max(lo0, slo), min(hi0, shi)
+            if hi <= lo:
+                continue
+            # a feature too close to an edge clipped by a mask cannot be shifted fairly within the window
+            clipped = [e for e, was in ((lo, lo > lo0), (hi, hi < hi0)) if was]
+            if any(abs(c - e) < _EDGE_RESEL * ctx.fwhm(c) for c in centres if lo <= c <= hi for e in clipped):
+                drops['feature at a masked edge'] += 1
+                continue
+            if ctx.R * math.log(hi / lo) < o.template_window_resel:  # less than half a nominal window left
+                drops['window masked'] += 1
+                continue
+            snr = ctx.snr(lo, hi)
+            if math.isnan(snr) or snr < o.snr_min:
+                drops['SNR'] += 1
+                continue
+            sig = ctx.sigma_rv(lo, hi, snr)
+            label = '+'.join(names)
+            reason = (f'feature window {label} (+-{o.template_window_resel:g} resolution elements; model_fidelity '
+                      f'good: atomic/CO features, which synthetic grids reproduce well, unlike molecular bands); '
+                      f'SNR {snr:.1f}, sigma_RV~{sig:.2f} km/s (Bouchy)')
+            out.append((sig, Region(f'{kind.upper() if kind == "ccf" else "BAND"} {label}', kind, float(lo),
+                                    float(hi), None, (), reason)))
+    out.sort(key=lambda t: t[0])
+    return [r for _, r in out]
+
+
+def _split_spans_any(ctx: _Context, masks) -> list[tuple[float, float]]:
+    """Coverage minus masked tellurics, without a minimum length"""
+    pieces = []
+    for lo, hi in ctx.segments:
+        cuts = sorted((max(a, lo), min(b, hi)) for a, b, _ in masks if b > lo and a < hi)
+        start = lo
+        for a, b in cuts:
+            if a > start:
+                pieces.append((start, a))
+            start = max(start, b)
+        if hi > start:
+            pieces.append((start, hi))
+    return pieces
+
+
 def _select_telluric(ctx: _Context, feats: Sequence[Feature], drops: Counter) -> list[Region]:
     out = []
     for f in feats:
@@ -605,13 +702,27 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
     line_strict = None
     span_masks = masks
     if opts.telluric_corrected and masks:
+        # only the O2 bands (stable, well corrected) are relaxed, and only for line regions
         line_strict = _strictness(opts.telluric) * _CORRECTED_SCALE
-        line_masks = _tellurics(ctx, feats, strict=line_strict)
-        span_masks = _tellurics(ctx, feats, min_depth=_OPAQUE_DEPTH)
-        log.info('Spectrum is telluric-corrected: line masking x%.2f (%d band(s)), ccf/fit masking only opaque bands '
-                 '(%d)', _CORRECTED_SCALE, len(line_masks), len(span_masks))
+        o2 = {f.name for f in feats if f.kind == 'telluric' and f.species in _RELAXED_SPECIES}
+        line_masks = ([m for m in masks if m[2] not in o2]
+                      + [m for m in _tellurics(ctx, feats, strict=line_strict) if m[2] in o2])
+        log.info('Spectrum is telluric-corrected: O2 line masking x%.2f (%d band(s) masked for lines); ccf/fit '
+                 'spans keep every telluric mask (%d)', _CORRECTED_SCALE, len(line_masks), len(span_masks))
     else:
         line_masks = masks
+    if opts.template_windows not in TEMPLATE_WINDOW_MODES:
+        raise ValueError(f'template_windows must be one of {TEMPLATE_WINDOW_MODES}, not {opts.template_windows!r}')
+    use_features = opts.template_windows == 'features' and ctx.R <= opts.template_windows_r_max
+    if any(m in TEMPLATE_METHODS for m in methods):
+        if use_features:
+            log.info('Template methods use feature windows (+-%g resolution elements around atomic/CO features): '
+                     'synthetic grids reproduce molecular bands poorly in late-M/L dwarfs at R %.0f <= %.0f '
+                     '(regions.template_windows = "full" to use every non-telluric span)',
+                     opts.template_window_resel, ctx.R, opts.template_windows_r_max)
+        else:
+            log.info('Template methods use the full non-telluric spans (template_windows=%s, R %.0f)',
+                     opts.template_windows, ctx.R)
     cov = ', '.join(f'{a:.0f}-{b:.0f}' for a, b in ctx.segments)
     log.info('Region selection: usable coverage %s A, R=%.0f (%s), telluric=%s (%d band(s) masked), Teff prior %s',
              cov, ctx.R, ctx.r_note, opts.telluric, len(masks), 'none' if teff is None else f'{teff:.0f} K')
@@ -624,7 +735,13 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
         elif method in TELLURIC_METHODS:
             regs = _select_telluric(ctx, feats, drops)
         else:
-            regs = _select_spans(ctx, feats, span_masks, teff, method, drops)
+            regs = []
+            if method in TEMPLATE_METHODS and use_features:
+                regs = _select_feature_windows(ctx, feats, span_masks, teff, method, drops)
+                if not regs:
+                    log.warning('%s: no usable well-modelled feature windows; falling back to the full spans', method)
+            if not regs:
+                regs = _select_spans(ctx, feats, span_masks, teff, method, drops)
         if opts.max_regions is not None:
             regs = regs[:opts.max_regions]
         how = 'auto'

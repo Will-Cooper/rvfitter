@@ -120,6 +120,9 @@ class RegionsConfig:
     telluric_strictness: float = 1.  # scales the airmass-dependent telluric threshold (larger masks more)
     max_regions: int = 12  # keep at most this many, ranked by forecast information content
     continuum_fwhm: float = 5.  # continuum windows extend this many resolution elements around a feature
+    # windows for ccf/template_fit/forward at R <= 5000: 'features' (around well-modelled atomic/CO features; the
+    # default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric span)
+    template_windows: str = 'features'
 
 
 @dataclass
@@ -394,6 +397,7 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f'regions.max_regions = {r.max_regions} must be >= 1')
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
+    _choice(p, 'regions.template_windows', r.template_windows, ('features', 'full'))
     c = cfg.combine
     if c.tau_scale is not None and not c.tau_scale > 0:
         p.append(f'combine.tau_scale = {c.tau_scale} must be > 0')
