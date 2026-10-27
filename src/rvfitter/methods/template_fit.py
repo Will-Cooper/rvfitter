@@ -7,9 +7,10 @@ wavelength x ∈ [−1, 1]. P enters linearly and is solved exactly for every tr
 projection), so only the non-linear parameters are searched: first on a coarse RV grid, then by bounded
 refinement.
 
-Errors come from the curvature of the profiled χ² (covariance = 2H⁻¹), scaled by √(χ²/ν) with ν the degrees of
-freedom, or optionally from a pixel bootstrap (seeded, optionally parallel). Template selection by χ² over the
-grid candidates is as for the CCF. `measure_resolution` profiles χ² over R to estimate the data resolution.
+Errors come from the curvature of the profiled χ² (covariance = 2H⁻¹), scaled by √max(1, χ²/ν) with ν the
+degrees of freedom (as for the CCF), or optionally from a pixel bootstrap (seeded, optionally parallel).
+Template selection by χ² over the grid candidates is as for the CCF.
+`measure_resolution` profiles χ² over R to estimate the data resolution.
 """
 import logging
 from collections.abc import Sequence
@@ -92,7 +93,7 @@ class _Model:
         """χ², polynomial coefficients and model at (v, vsini), optionally on a pixel subset"""
         d = self.data
         sl = slice(None) if idx is None else idx
-        t = self.template(vsini).at(d.wave[sl], v)
+        t = self.template(vsini).at(d.wave, v)[sl]  # on all pixels (pixel edges), then the subset
         if not np.all(np.isfinite(t)):
             return np.inf, None, None
         a = self.vander[sl] * t[:, None]
@@ -280,7 +281,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         dof = max(len(d.wave) - nfree, 1)
         chi2_red = fit['chi2'] / dof if fit['ok'] else np.nan
         errs = _hessian_errors(model, fit, opts['fit_vsini'], resolution) if fit['ok'] else np.array([np.nan] * 2)
-        scale = np.sqrt(chi2_red) if np.isfinite(chi2_red) else np.nan
+        scale = np.sqrt(max(1., chi2_red)) if np.isfinite(chi2_red) else np.nan  # never deflated (as the CCF)
         cov_err = float(errs[0] * scale)
         boot_std, boot = np.nan, np.array([])
         if opts['bootstrap'] > 0 and fit['ok']:

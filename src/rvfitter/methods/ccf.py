@@ -1,11 +1,13 @@
 """
 Cross-correlation against a template in log-wavelength, with peak fitting and Monte Carlo errors.
 
-For each window the data are resampled onto a uniform ln λ grid at their native sampling, divided by a smooth
-continuum (normalised Gaussian convolution of FWHM `highpass_kms`, so the broad molecular-band shape is
-removed). The template, broadened to the data resolution, is shifted onto the data grid for each trial velocity
-and passed through exactly the same filter (same kernel and pixel mask), so data and template are normalised
-identically, including at window edges and masked intervals.
+For each window the data (on their own pixels; no resampling) are divided by a smooth continuum
+(normalised Gaussian convolution of FWHM `highpass_kms`, capped at a third of the window so that the
+continuum slope within short feature windows is also removed). The template, broadened to the data
+resolution, is shifted onto the data pixels for each trial velocity and passed through exactly the same filter
+(same kernel and pixel mask), so data and template are normalised identically, including at window edges and
+masked intervals. After a first CCF, the data are divided by a low-order polynomial fitted to data/template at
+the peak (`flatten_degree`), which removes their continuum slope relative to the template, and the CCF is redone.
 The noise-weighted, mean-subtracted correlation coefficient
 
     C(v) = Σ w d̃ t̃_v / √(Σ w d̃² · Σ w t̃_v²)
@@ -46,9 +48,10 @@ DEFAULTS: dict[str, Any] = dict(
     resolution=None,  # override the data's R
     rv_min=-500., rv_max=500.,  # search range [km/s]
     rv_step=None,  # default min(native step / 5, 5 km/s)
-    highpass_kms=None,  # FWHM of the continuum smoothing; default 25 resolution elements
+    highpass_kms=None,  # continuum-smoothing FWHM; default 25 resolution elements, capped at 1/3 of each window
     peak='parabola',  # 'parabola' (default) or 'gaussian' (see fit_peak)
     n_mc=100,  # Monte Carlo noise trials (0 disables; then the Zucker error is used)
+    flatten_degree=1,  # polynomial dividing out the data/template continuum slope before the CCF (-1: off)
     chi2_scale=True,  # multiply the error by sqrt(max(1, chi2/dof)) when flux errors are given
     n_chunks=8,  # Monte Carlo tasks (fixed, so results do not depend on the executor)
     vsini=0.,  # rotational broadening applied to the template [km/s] (Gray kernel, epsilon 0.6)
@@ -83,7 +86,10 @@ def _window(prep: C.Prepared, highpass_kms: float, flux: np.ndarray | None = Non
     """
     from scipy.signal import fftconvolve
     flux = prep.flux if flux is None else flux
-    kernel = broadening.gaussian_kernel(highpass_kms * broadening.FWHM_TO_SIGMA / prep.dv, nsigma=3.)
+    # the filter must be narrower than the window, or it cannot remove the continuum slope within it
+    span_kms = float(np.log(prep.wave[-1] / prep.wave[0])) * C_KMS  # pixels: near-uniform in velocity
+    fwhm = min(highpass_kms, span_kms / 3.)
+    kernel = broadening.gaussian_kernel(fwhm * broadening.FWHM_TO_SIGMA / prep.dv, nsigma=3.)
     mask0 = prep.mask & np.isfinite(flux)
     den = fftconvolve(mask0.astype(float), kernel, mode='same')
     with np.errstate(invalid='ignore', divide='ignore'):
@@ -263,14 +269,48 @@ def _copy_prep(prep: C.Prepared) -> C.Prepared:
                       prep.source_pixels)
 
 
+def _flatten_fit(prep: C.Prepared, tpl: C.Template, v: float, degree: int) -> np.ndarray | None:
+    """
+    Polynomial (in scaled wavelength) fitted to data / template at velocity v, σ-weighted; None if not possible
+
+    Dividing the data by it removes the continuum slope of the data relative to the template, which the
+    high-pass filter alone leaves as a slope × line term (a 0.1–0.5 km/s bias per feature window on J1745-like
+    BT-Settl injections).
+    """
+    if degree < 0:
+        return None
+    t = tpl.at(prep.wave, v)
+    m = prep.mask & np.isfinite(t) & (t > 0) & np.isfinite(prep.flux)
+    if m.sum() < degree + 3:
+        return None
+    x = _xscale(prep.wave)
+    ratio = prep.flux[m] / t[m]
+    w = (t[m] / prep.sigma[m]) ** 2 if prep.sigma_known else np.ones(m.sum())
+    return np.polynomial.polynomial.polyfit(x[m], ratio, degree, w=np.sqrt(w))
+
+
+def _xscale(wave: np.ndarray) -> np.ndarray:
+    return 2. * (wave - wave[0]) / (wave[-1] - wave[0]) - 1.
+
+
+def _flatten(prep: C.Prepared, coef: np.ndarray | None) -> C.Prepared:
+    """A copy of prep with the flux and σ divided by the polynomial"""
+    if coef is None:
+        return prep
+    p = np.polynomial.polynomial.polyval(_xscale(prep.wave), coef)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return C.Prepared(prep.wave, prep.flux / p, prep.sigma / np.abs(p), prep.mask & (p > 0), prep.dv,
+                          prep.sigma_known, prep.region, prep.source_pixels)
+
+
 def _mc_chunk(args) -> list[float]:
     """Monte Carlo trials: add noise to the observed pixels, redo the CCF on a local grid and fit the peak"""
-    seed, n, spectrum, sigma_pix, window, masks, dv, tpl, rv_local, highpass_kms, kind = args
+    seed, n, spectrum, sigma_pix, window, masks, dv, tpl, rv_local, highpass_kms, kind, coef = args
     rng = np.random.default_rng(seed)
     out = []
     for _ in range(n):
         flux = spectrum.flux + rng.normal(0., 1., len(spectrum.flux)) * np.nan_to_num(sigma_pix)
-        prep = C.prepare(spectrum, window, masks, dv=dv, flux=flux)
+        prep = _flatten(C.prepare(spectrum, window, masks, dv=dv, flux=flux), coef)
         win = _window(prep, highpass_kms)
         peak = fit_peak(rv_local, _ccf_on_grid(win, tpl, rv_local), kind)
         out.append(peak['rv'] if peak['ok'] else np.nan)
@@ -342,9 +382,17 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
     seeds = C.child_seeds(rng, len(preps) * opts['n_chunks'])
     measurements = []
     for k, (prep, window) in enumerate(zip(preps, kept, strict=True)):
-        win = _window(prep, opts['highpass_kms'])
+        win = _window(_copy_prep(prep), opts['highpass_kms'])
         c = _ccf_on_grid(win, tpl, rv)
         peak = fit_peak(rv, c, opts['peak'])
+        coef = None
+        if peak['ok'] and opts['flatten_degree'] >= 0:  # remove the relative continuum slope, then redo the CCF
+            coef = _flatten_fit(prep, tpl, peak['rv'], opts['flatten_degree'])
+            if coef is not None:
+                prep = _flatten(prep, coef)
+                win = _window(prep, opts['highpass_kms'])
+                c = _ccf_on_grid(win, tpl, rv)
+                peak = fit_peak(rv, c, opts['peak'])
         flag = flag_grid | (C.FLAG_EDGE if peak['edge'] else 0) | (0 if peak['ok'] else C.FLAG_FIT_FAILED)
         chi2, scale, model = _chi2_at(win, tpl, peak['rv']) if peak['ok'] else (np.nan, np.nan, None)
         dof = max(win.prep.n - 2, 1)
@@ -364,7 +412,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
             rv_local = np.arange(peak['rv'] - half, peak['rv'] + half + 1e-9, step)
             n_each = np.diff(np.linspace(0, opts['n_mc'], opts['n_chunks'] + 1).astype(int))
             tasks = [(seeds[k * opts['n_chunks'] + j], int(n), spectrum, sigma_pix, window, masks, prep.dv, tpl,
-                      rv_local, opts['highpass_kms'], opts['peak']) for j, n in enumerate(n_each) if n > 0]
+                      rv_local, opts['highpass_kms'], opts['peak'], coef) for j, n in enumerate(n_each) if n > 0]
             mc = np.concatenate([np.asarray(x, float) for x in C.pmap(_mc_chunk, tasks, executor)])
             finite = np.isfinite(mc)
             if finite.sum() >= max(5, 0.8 * len(mc)):

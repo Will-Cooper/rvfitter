@@ -146,9 +146,14 @@ class Prepared:
 
 
 def prepare(spectrum: Spectrum, window: Region, masks: Sequence[Region], dv: float | None = None,
-            flux: np.ndarray | None = None) -> Prepared:
+            flux: np.ndarray | None = None, *, resample: bool = False) -> Prepared:
     """
-    Resample the part of a spectrum in `window` onto a uniform ln λ grid at (by default) its native sampling
+    The part of a spectrum in `window`, on its own pixels (default) or resampled onto a uniform ln λ grid
+
+    Working on the observed pixels keeps the noise independent and avoids the extra smoothing of a resampling,
+    which the template rows would not share (on J1745-like BT-Settl injections the resampling biased the CCF by
+    −0.1 to −0.55 km/s per feature window, noiseless). Within a window the velocity step is near-constant, and
+    the CCF filters data and template rows identically, so a uniform ln λ grid is not needed.
 
     Parameters
     ----------
@@ -159,26 +164,33 @@ def prepare(spectrum: Spectrum, window: Region, masks: Sequence[Region], dv: flo
     masks
         Intervals to exclude (e.g. telluric bands)
     dv
-        Grid step [km/s]; default the median native step within the window
+        Grid step [km/s] when resampling; default the median native step within the window
     flux
         Replacement flux on the spectrum's pixels (used by Monte Carlo trials)
+    resample
+        Resample onto a uniform ln λ grid (flux-conserving) instead of using the observed pixels
 
     Returns
     -------
     prepared
-        The resampled data; pixels outside the window, in a mask, or non-finite are masked out
+        The window's data; `dv` is the median velocity step. Pixels in a mask or non-finite are masked out
     """
     flux = spectrum.flux if flux is None else flux
     inwin = (spectrum.wave >= window.wmin) & (spectrum.wave <= window.wmax)
     if inwin.sum() < 4:
         raise ValueError(f'window {window.name} covers fewer than 4 pixels')
     w = spectrum.wave[inwin]
-    if dv is None:
-        dv = float(np.median(np.diff(np.log(w)))) * C_KMS
-    grid = broadening.log_wave_grid(w[0], w[-1], dv)
-    f = broadening.rebin(spectrum.wave, flux, grid)
     sigma_known = bool(np.any(np.isfinite(spectrum.sigma) & (spectrum.sigma > 0)))
-    s = broadening._rebin_sigma(spectrum.wave, spectrum.sigma, grid) if sigma_known else np.full(len(grid), np.nan)
+    if resample:
+        if dv is None:
+            dv = float(np.median(np.diff(np.log(w)))) * C_KMS
+        grid = broadening.log_wave_grid(w[0], w[-1], dv)
+        f = broadening.rebin(spectrum.wave, flux, grid)
+        s = (broadening._rebin_sigma(spectrum.wave, spectrum.sigma, grid) if sigma_known
+             else np.full(len(grid), np.nan))
+    else:
+        grid, f, s = w, np.asarray(flux, dtype=float)[inwin], spectrum.sigma[inwin]
+        dv = float(np.median(np.diff(np.log(w)))) * C_KMS
     mask = np.isfinite(f) & ~in_any(grid, [(m.wmin, m.wmax) for m in masks])
     if sigma_known:
         mask &= np.isfinite(s) & (s > 0)
@@ -201,16 +213,36 @@ class Template:
     def wave(self) -> np.ndarray:
         return np.exp(self.lnw0 + self.dlnw * np.arange(len(self.flux)))
 
-    def at(self, wave: np.ndarray, v: float | np.ndarray = 0.) -> np.ndarray:
+    def at(self, wave: np.ndarray, v: float | np.ndarray = 0., *, integrate: bool = True) -> np.ndarray:
         """
-        Template flux at observed wavelengths for radial velocities v (scalar → 1D, array → (len(v), len(wave)))
+        Template flux at observed pixels for radial velocities v (scalar → 1D, array → (len(v), len(wave)))
+
+        By default the shifted template is averaged over each observed pixel (edges half-way between centres in
+        ln λ), matching pixel-integrated data; `integrate=False` point-samples at the pixel centres.
         """
-        lnw = np.log(wave)
+        lnw = np.log(np.asarray(wave, dtype=float))
         v = np.asarray(v, dtype=float)
-        shift = np.log(broadening.doppler_factor(v))
-        x = ((lnw[None, :] - np.atleast_1d(shift)[:, None]) - self.lnw0) / self.dlnw
-        out = np.interp(x.ravel(), np.arange(len(self.flux), dtype=float), self.flux, left=np.nan, right=np.nan)
-        out = out.reshape(x.shape)
+        shift = np.atleast_1d(np.log(broadening.doppler_factor(v)))
+        idx = np.arange(len(self.flux), dtype=float)
+        if not integrate or len(lnw) < 2:
+            x = ((lnw[None, :] - shift[:, None]) - self.lnw0) / self.dlnw
+            out = np.interp(x.ravel(), idx, self.flux, left=np.nan, right=np.nan).reshape(x.shape)
+            return out[0] if v.ndim == 0 else out
+        mid = 0.5 * (lnw[1:] + lnw[:-1])
+        edges = np.concatenate([[2 * lnw[0] - mid[0]], mid, [2 * lnw[-1] - mid[-1]]])
+        finite = np.isfinite(self.flux)
+        f = np.where(finite, self.flux, 0.)
+        cum = np.concatenate([[0.], np.cumsum(0.5 * (f[1:] + f[:-1]))])  # integral in index units
+        bad = np.concatenate([[0.], np.cumsum(~finite[1:] | ~finite[:-1])]).astype(float)
+        x = ((edges[None, :] - shift[:, None]) - self.lnw0) / self.dlnw
+        inside = (x >= 0) & (x <= len(f) - 1)
+        cx = np.interp(x.ravel(), idx, cum).reshape(x.shape)
+        bx = np.interp(x.ravel(), idx, bad).reshape(x.shape)
+        width = np.diff(x, axis=1)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            out = np.diff(cx, axis=1) / width
+        ok = inside[:, :-1] & inside[:, 1:] & (np.diff(bx, axis=1) == 0)
+        out[~ok] = np.nan
         return out[0] if v.ndim == 0 else out
 
 

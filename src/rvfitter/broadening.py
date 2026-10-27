@@ -390,7 +390,12 @@ def _velocity_step(wave: np.ndarray) -> float:
 
 
 def _onto_internal(wave: np.ndarray, flux: np.ndarray, fine: np.ndarray, upsampling: bool) -> np.ndarray:
-    """Move flux onto an internal grid: cubic spline when upsampling, flux-conserving rebin otherwise"""
+    """
+    Move flux onto an internal grid: cubic spline when upsampling, flux-conserving rebin otherwise
+
+    The spline is meant for observed (resolved) data; for unresolved features it does not conserve flux exactly
+    (+0.3 per cent for a delta function at 6 pixels per FWHM).
+    """
     if not upsampling:
         return rebin(wave, flux, fine)
     good = np.isfinite(flux)
