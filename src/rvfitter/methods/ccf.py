@@ -3,7 +3,9 @@ Cross-correlation against a template in log-wavelength, with peak fitting and Mo
 
 For each window the data are resampled onto a uniform ln λ grid at their native sampling, divided by a smooth
 continuum (normalised Gaussian convolution of FWHM `highpass_kms`, so the broad molecular-band shape is
-removed) and the same high-pass is applied to the template, which has been broadened to the data resolution.
+removed). The template, broadened to the data resolution, is shifted onto the data grid for each trial velocity
+and passed through exactly the same filter (same kernel and pixel mask), so data and template are normalised
+identically, including at window edges and masked intervals.
 The noise-weighted, mean-subtracted correlation coefficient
 
     C(v) = Σ w d̃ t̃_v / √(Σ w d̃² · Σ w t̃_v²)
@@ -30,6 +32,7 @@ from typing import Any
 import numpy as np
 from scipy.optimize import curve_fit
 
+from .. import broadening
 from ..constants import C_KMS
 from ..types import Measurement, MethodResult, Region, Spectrum
 from . import _common as C
@@ -59,39 +62,50 @@ DEFAULTS: dict[str, Any] = dict(
 
 @dataclass
 class _Window:
-    """A prepared window: normalised data, weights and the template's normalised flux"""
+    """A prepared window: the high-pass filter and the normalised data and weights on the used pixels"""
     prep: C.Prepared
-    d: np.ndarray  # normalised data residual on mask pixels
-    w: np.ndarray  # weights on mask pixels
-    wave: np.ndarray  # mask pixel wavelengths
-    cont: np.ndarray  # continuum on the full grid
-
-
-def _normalise(prep: C.Prepared, flux: np.ndarray, highpass_kms: float) -> tuple[np.ndarray, np.ndarray]:
-    cont = C.highpass(prep.wave, flux, prep.mask, highpass_kms)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        return flux / cont - 1., cont
+    d: np.ndarray  # normalised data residual on the used pixels
+    w: np.ndarray  # weights on the used pixels
+    wave: np.ndarray  # used pixel wavelengths
+    cont: np.ndarray  # data continuum on the full grid
+    used: np.ndarray  # used pixels (boolean on the full grid)
+    mask0: np.ndarray  # pixels entering the continuum filter (boolean on the full grid)
+    kernel: np.ndarray  # high-pass smoothing kernel
+    den: np.ndarray  # filter normalisation: mask0 convolved with the kernel
 
 
 def _window(prep: C.Prepared, highpass_kms: float, flux: np.ndarray | None = None) -> _Window:
+    """
+    Normalise the data by their smooth continuum (normalised Gaussian convolution over the unmasked pixels)
+
+    The same filter (kernel and mask) is later applied to every shifted template row, so data and template are
+    high-passed identically, including at the window edges and next to masked intervals.
+    """
+    from scipy.signal import fftconvolve
     flux = prep.flux if flux is None else flux
-    d, cont = _normalise(prep, flux, highpass_kms)
-    m = prep.mask & np.isfinite(d) & np.isfinite(cont) & (cont > 0)
-    if prep.sigma_known:
-        w = (cont[m] / prep.sigma[m]) ** 2
-    else:
-        w = np.ones(m.sum())
-    prep.mask = m
-    return _Window(prep, d[m], w, prep.wave[m], cont)
-
-
-def _template_highpassed(tpl: C.Template, highpass_kms: float) -> C.Template:
-    """The template divided by its own smooth continuum, minus one"""
-    wave = tpl.wave
-    cont = C.highpass(wave, tpl.flux, np.isfinite(tpl.flux), highpass_kms)
+    kernel = broadening.gaussian_kernel(highpass_kms * broadening.FWHM_TO_SIGMA / prep.dv, nsigma=3.)
+    mask0 = prep.mask & np.isfinite(flux)
+    den = fftconvolve(mask0.astype(float), kernel, mode='same')
     with np.errstate(invalid='ignore', divide='ignore'):
-        flux = tpl.flux / cont - 1.
-    return C.Template(tpl.lnw0, tpl.dlnw, flux, tpl.label, tpl.params)
+        cont = fftconvolve(np.where(mask0, flux, 0.), kernel, mode='same') / den
+        d = flux / cont - 1.
+    cont[den < 1e-3] = np.nan
+    used = mask0 & np.isfinite(d) & np.isfinite(cont) & (cont > 0) & (den >= 1e-3)
+    w = (cont[used] / prep.sigma[used]) ** 2 if prep.sigma_known else np.ones(used.sum())
+    prep.mask = used
+    return _Window(prep, d[used], w, prep.wave[used], cont, used, mask0, kernel, den)
+
+
+def _template_rows(win: _Window, tpl: C.Template, rv: np.ndarray) -> np.ndarray:
+    """Shifted template rows, high-passed with the data's filter, on the used pixels: shape (len(rv), n_used)"""
+    from scipy.signal import fftconvolve
+    raw = np.atleast_2d(tpl.at(win.prep.wave, np.atleast_1d(rv)))
+    finite = np.isfinite(raw)
+    num = fftconvolve(np.where(win.mask0[None, :] & finite, raw, 0.), win.kernel[None, :], mode='same', axes=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        t = raw / (num / win.den[None, :]) - 1.
+    t[~finite] = np.nan
+    return t[:, win.used]
 
 
 def ccf_curve(d: np.ndarray, w: np.ndarray, tmat: np.ndarray) -> np.ndarray:
@@ -217,12 +231,12 @@ def zucker_error(n_pix: int, height: float, curvature: float) -> float:
 
 
 def _ccf_on_grid(win: _Window, tpl: C.Template, rv: np.ndarray) -> np.ndarray:
-    return ccf_curve(win.d, win.w, tpl.at(win.wave, rv))
+    return ccf_curve(win.d, win.w, _template_rows(win, tpl, rv))
 
 
 def _chi2_at(win: _Window, tpl: C.Template, v: float) -> tuple[float, float, np.ndarray]:
     """χ² of the best-scaled normalised template at v, the scale and the model"""
-    t = tpl.at(win.wave, v)
+    t = _template_rows(win, tpl, np.array([v]))[0]
     ok = np.isfinite(t)
     if ok.sum() < 3:
         return np.inf, np.nan, t
@@ -232,8 +246,7 @@ def _chi2_at(win: _Window, tpl: C.Template, v: float) -> tuple[float, float, np.
 
 def _score_candidate(cand: C.Candidate, preps: list[C.Prepared], resolution: float, wave_range, opts) -> float:
     """Total χ² of one candidate template at its own CCF peak in every window"""
-    raw = C.build_template(cand, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
-    tpl = _template_highpassed(raw, opts['highpass_kms'])
+    tpl = C.build_template(cand, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
     rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, opts['_coarse_step'])
     total = 0.
     for prep in preps:
@@ -323,8 +336,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         log.info('ccf: template %s chosen by χ² from %d candidates', best.label, len(cands))
     else:
         best, scores = cands[0], [np.nan]
-    tpl_raw = C.build_template(best, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
-    tpl = _template_highpassed(tpl_raw, opts['highpass_kms'])
+    tpl_raw = tpl = C.build_template(best, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
     flag_grid = C.FLAG_OUTSIDE_GRID if tpl_raw.params.get('outside_grid') else 0
     rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, step)
     seeds = C.child_seeds(rng, len(preps) * opts['n_chunks'])

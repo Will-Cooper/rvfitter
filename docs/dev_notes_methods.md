@@ -98,3 +98,60 @@ We therefore recommend to the regions package that the strong H2O band (≈9270�
 W1 7400–8600 Å and W2 8600–10 000 Å with the O2 A (7590–7710 Å) and H2O (9270–9680 Å) bands masked, R = 2500: CCF 35.57 ± 12.09 (z = 0.76; W1 44.1, W2 18.4), template fit 26.05 ± 9.49 (z = 0.02; W1 33.9, W2 14.5). At the then-measured R = 1938: CCF 34.52 ± 11.50, template fit 23.95 ± 8.54.
 In every configuration, the blue-to-red trend (≈45 km/s near 8200–8600 Å and below 0 redward of 9100 Å) is the same line-to-line scatter that the Phase A hierarchical combination found (τ_line ≈ 13 km/s). It probably comes from BT-Settl mismatch, which differs between the TiO/VO/CrH and FeH/H2O regions, and from telluric-correction residuals.
 The two methods choose different templates, because the CCF's χ² is computed after the high-pass whereas the template fit's χ² includes the continuum polynomial.
+
+## Diagnosis: why the J1745 ccf/template_fit errors are 13–25 km/s
+
+Here, we investigate why the J1745−1640 errors are an order of magnitude larger than the 2–3 km/s that MagE reaches at R ≈ 4100, or the ≈5 km/s of the paper's own methods on this spectrum.
+Set-up: `regions.select(telluric_corrected=True)` with the H2O bands now masked (spans 7342–7592, 7702–8952 and 9903–10 136 Å), R = 2274 (`estimate_resolution`), segments of 150 resolution elements, seed 42 (script `tmp/m/diag_j1745.py`, not in the repository).
+The median SNR is 87 per pixel (89 in 7700–8950 Å), so photon noise is not the limit.
+
+### (a) Per-segment RVs and errors
+| Segment [Å] | CCF [km/s] | CCF stat (MC) | ×√(χ²/ν) | Template fit [km/s] | TF stat (unscaled cov.) | ×√(χ²/ν) |
+|---|---|---|---|---|---|---|
+| 7702–8098 | 23.0 ± 8.1 | 2.10 | 3.8 | 19.5 ± 7.2 | 1.43 | 5.0 |
+| 8098–8514 | 46.9 ± 4.0 | 0.99 | 4.0 | 41.6 ± 4.9 | 1.01 | 4.9 |
+| 8514–8952 | 41.6 ± 4.4 | 0.68 | 6.5 | 43.4 ± 5.9 | 0.68 | 8.8 |
+| 9903–10 136 | −74.8 ± 11.9 | 1.75 | 6.8 | −73.3 ± 7.2 | 1.10 | 6.5 |
+| 7342–7592 | −454 (outlier) | 14.2 | 1.5 | −454 (outlier) | 6.3 | 1.8 |
+| **Combined (Birge)** | **35.9 ± 15.5** | formal 0.52 | Birge ratio 37 (stat) / 5.7 (scaled) | **17.9 ± 24.9** | formal 0.47 | 54 / 8.2 |
+
+The statistical (noise) errors are 0.7–2 km/s per segment, and 0.5 km/s combined.
+Two inflations act on top of them: the √(χ²/ν) scaling (χ²/ν = 15–77 from template mismatch), and the Birge ratio of the segment scatter, which is still 5.7–8.2 even with the scaled errors.
+The large final errors therefore come from the segments disagreeing, above all the red 9903–10 136 Å segment at −75 km/s, and not from the noise.
+
+### (b) Injection–recovery on a J1745-like synthetic
+BT-Settl 2000/5.0 was broadened to R = 2274, shifted to 26.2 km/s and put on J1745's pixel grid with its σ, masks and segments. Its continuum is the J1745/model ratio smoothed with a 20 000 km/s Gaussian; a 3000 km/s smoothing left continuum structure that neither the polynomial nor the filter follows, giving χ²/ν ≈ 60. N = 30 (15 for the grid search):
+
+| Template used | Method | Mean | Scatter | Mean error | Pull mean / SD | χ²/ν (seg. 1) |
+|---|---|---|---|---|---|---|
+| Matched (2000/5.0) | CCF | 26.15 | 0.40 | 0.47 | −0.11 / 0.80 | 3.1 |
+| Matched | Template fit | 26.18 | 0.32 | 0.39 | −0.05 / 0.82 | 0.96 |
+| Mismatched (1800/5.5) | CCF | 27.21 | 0.63 | 1.75 | 0.60 / 0.39 | 48 |
+| Mismatched | Template fit | 29.08 | 0.44 | 3.33 | 0.87 / 0.09 | 91 |
+
+At J1745's R, SNR and coverage, the achievable statistical precision is therefore 0.3–0.5 km/s with calibrated pulls. A wrong grid template biases the RV by 1–3 km/s; its χ² scaling then over-inflates the error relative to the scatter (pull SD 0.1–0.4) but roughly covers the bias.
+The real data scatter by 10–100 km/s between segments, 30–200 times the noise. The excess is therefore not noise: it is template mismatch and/or something in the data.
+
+**CCF fix found here.** In the first run, the matched-template CCF had χ²/ν = 15 and a +0.6 km/s bias. The cause was that the data were high-passed within their window and mask, whereas the template was high-passed over its own full range, so the two continua differed near window edges and on the steep L-dwarf band slopes. The CCF now shifts the raw template onto the data grid for each trial velocity and applies exactly the data's filter (same kernel and pixel mask) to every row. This removed the bias and brought χ²/ν to 3.1 and the pull SD to 0.80.
+
+### (c) Sensitivity (real data)
+- **Template** (pinned; CCF / template fit, km/s): Teff 1800–1900 K gives 31–34 / 15–30 at every log g; 2000–2200 K gives 33–48 / 18–44. Where the red segment is rejected as an outlier (e.g. 2000/4.5, 2200/5.0), the errors fall to 4–10 km/s, and the values (37–48 km/s) are those of the 7700–8950 Å window alone.
+- **CCF high-pass FWHM** of 10–100 resolution elements: 34.8–35.9 km/s; the segments move by ≤5 km/s. The filter is not the problem.
+- **Segment length** (pre-fix CCF): unsegmented 25 ± 54 (CCF) and −28 ± 94 km/s (template fit); 75 resolution elements gives six segments at 13–65 km/s in the main window plus the red segment at −73/−85. The main-window segments scatter by ≈10–15 km/s at any length.
+- **Template-fit polynomial degree** 1/3/5: 12.9/17.9/30.9 km/s (the segments themselves move by ≤5 km/s; the combined value moves through the weights).
+
+### (d) Statistical versus systematic terms, and what drives the error
+- The statistical term is small: 0.5–2 km/s per segment and about 0.5 km/s combined, consistent with the synthetic.
+- The error is driven by:
+  - the red 9903–10 136 Å segment (−73 to −86 km/s for every template, filter and segmentation);
+  - a 10–15 km/s scatter between segments in 7700–8950 Å, whose mean is ≈40 km/s;
+  - χ²/ν = 15–80.
+- The red segment is the same with every template, so it is probably not template physics alone. It sits at the red edge of the detector (fringing, sparse arc lines, so possibly a λ-solution extrapolation error; 75 km/s ≈ 2.5 Å) inside the FeH Wing–Ford band, which BT-Settl reproduces poorly.
+- The main window's ≈40 km/s is ≈14 km/s above the benchmark, like the paper's line centring (36 km/s). A λ zero-point offset of ≈0.4 Å at 8500 Å would do this; unit 5's telluric zero-point (O2 A and H2O lines in the uncorrected `sciencebk` spectrum) tests it directly.
+
+**Recommendation.**
+- Report per-segment errors as statistical only (MC noise or unscaled covariance), without the √(χ²/ν) factor. At present the mismatch is counted twice: once by the χ² scaling of each segment, then again by the Birge inflation of the segment scatter.
+- Let the segment-to-segment scatter (Birge at method level; τ_line in the hierarchical adopted RV) carry the mismatch.
+- Report `template_spread` (the RV spread over the grid templates within the prior) as a separate systematic, as the report recommends (statistical, template-spread and λ zero-point terms separately, plus their total).
+- With this, J1745's statistical error would be ≈0.5 km/s, and the per-method errors (Birge) would still show the segment disagreement.
+- The decision is the orchestrator's; it is not implemented yet.
