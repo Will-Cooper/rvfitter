@@ -44,6 +44,9 @@ class Feature:
         Reference for the wavelength, Teff range and R, and known caveats
     depth
         Telluric bands only: approximate fractional absorption depth at R ~ 2000 and airmass 1
+    model_fidelity
+        How well synthetic grids reproduce the feature in late-M/L/T dwarfs: 'good' (atomic lines, CO bandheads),
+        'poor' (TiO, VO, CrH, FeH, H2O, CH4 molecular bands; see the catalogue description) or 'n/a' (telluric)
     """
     name: str
     species: str
@@ -57,6 +60,7 @@ class Feature:
     rest_ref: str
     caveat: str
     depth: float
+    model_fidelity: str = 'n/a'
 
     @property
     def core_only(self) -> bool:
@@ -113,4 +117,5 @@ def features() -> tuple[Feature, ...]:
     table = _read()
     return tuple(Feature(str(r['name']), str(r['species']), str(r['kind']), float(r['wave_vac']), float(r['wmin']),
                          float(r['wmax']), float(r['teff_min']), float(r['teff_max']), float(r['r_min']),
-                         str(r['rest_ref']), str(r['caveat']), float(r['depth'])) for r in table)
+                         str(r['rest_ref']), str(r['caveat']), float(r['depth']),
+                         str(r['model_fidelity']) if 'model_fidelity' in table.colnames else 'n/a') for r in table)

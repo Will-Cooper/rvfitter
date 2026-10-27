@@ -104,7 +104,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     # None means "use the SelectOptions default"
     knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
-             'telluric_corrected': True if cfg.input.telluric_corrected else None}
+             'telluric_corrected': True if cfg.input.telluric_corrected else None,
+             'template_windows': getattr(cfg.regions, 'template_windows', None)}
     opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
