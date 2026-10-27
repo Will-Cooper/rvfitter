@@ -139,13 +139,20 @@ def make_j1745_like(spec, rng, v_true=BENCH_RV, cont_kms=20000.):
 
 
 def j1745_like_pulls(spec, measure, name, n=20, seed=0):
-    """Pull summary of `measure` on n J1745-like injections with the exact template (pinned)"""
+    """
+    Pull summaries of `measure` on n J1745-like injections with the exact template (pinned)
+
+    Returns
+    -------
+    method, windows
+        The method-level summary (random-effects combination) and the pooled per-window summary
+    """
     cfg = _cfg()
     cfg.input.resolution = R_INJ
     cfg.templates.teff_range = (TRUTH[0], TRUTH[0])
     cfg.templates.logg_range = (TRUTH[1], TRUTH[1])
     cfg.methods.options = {'ccf': {'n_mc': 50}}
-    rvs, errs = [], []
+    rvs, errs, wrv, werr = [], [], [], []
     for child in np.random.SeedSequence(seed).spawn(n):
         noise, meth = child.spawn(2)
         fake = make_j1745_like(spec, np.random.default_rng(noise))
@@ -153,17 +160,29 @@ def j1745_like_pulls(spec, measure, name, n=20, seed=0):
         res = measure(fake, regs, cfg, rng=np.random.default_rng(meth))
         rvs.append(res.rv)
         errs.append(res.rv_err)
-    rvs, errs = np.array(rvs), np.array(errs)
-    pull = (rvs - BENCH_RV) / errs
-    return dict(bias_sigma=(rvs.mean() - BENCH_RV) / np.std(rvs, ddof=1), pull_std=np.std(pull, ddof=1),
-                bias=rvs.mean() - BENCH_RV, scatter=np.std(rvs, ddof=1), mean_err=errs.mean())
+        for m in res.measurements:
+            if np.isfinite(m.rv) and np.isfinite(m.rv_err):
+                wrv.append(m.rv)
+                werr.append(m.rv_err)
+
+    def summ(r, e):
+        r, e = np.array(r), np.array(e)
+        pull = (r - BENCH_RV) / e
+        return dict(bias_sigma=float(np.mean(pull)), pull_std=float(np.std(pull, ddof=1)), bias=r.mean() - BENCH_RV,
+                    scatter=np.std(r, ddof=1), mean_err=e.mean(), n=len(r))
+
+    return summ(rvs, errs), summ(wrv, werr)
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize('name', ['ccf', 'template_fit'])
 def test_j1745_like_injection(j1745, name):
     from rvfitter.methods import REGISTRY
-    s = j1745_like_pulls(j1745, REGISTRY[name].measure, name, n=80)
-    assert abs(s['bias_sigma']) < 0.2, s  # N = 80: the standard error of the bias is 0.11 sigma
-    assert 0.8 < s['pull_std'] < 1.2, s
+    method, windows = j1745_like_pulls(j1745, REGISTRY[name].measure, name, n=80)
+    # per-window statistical errors: calibrated (N ~ 320 pooled windows)
+    assert abs(windows['bias_sigma']) < 0.2, windows
+    assert 0.8 < windows['pull_std'] < 1.2, windows
+    # method level: the random-effects combination over ~4 windows marginalises tau, so it is conservative
+    assert abs(method['bias_sigma']) < 0.25, method
+    assert 0.6 < method['pull_std'] < 1.2, method
     # the pre-34133d6 CCF (template high-passed on its own grid) gave a bias of -1.6 sigma and pull SD 0.38 here
