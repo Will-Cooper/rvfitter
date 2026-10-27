@@ -106,7 +106,7 @@ class LazyBackend:
         from .cfgutil import enabled_methods
         overrides = get_path(cfg, 'regions.overrides') if with_overrides else None
         prior = get_path(cfg, 'templates.teff_prior')
-        teff = float(prior[0]) if prior else None
+        teff = (float(prior[0]) if isinstance(prior, list | tuple) else float(prior)) if prior else None
         kwargs: dict[str, Any] = {'teff': teff, 'overrides': overrides or None}
         options = self._select_options(cfg, regions)
         if options is not None:
