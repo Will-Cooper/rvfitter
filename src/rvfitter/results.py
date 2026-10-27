@@ -100,7 +100,7 @@ def _columns() -> list[str]:
         cols += [f'rv_{m}', f'rv_{m}_err', f'rv_{m}_flag', f'n_{m}']
     cols += ['rv_adopted', 'rv_adopted_err', 'rv_adopted_q16', 'rv_adopted_q84', 'tau_line', 'tau_method',
              'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'rv_total_err',
-             *TEMPLATE_COLUMNS,
+             *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'wavelength_correction',
              'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'config_hash', 'version']
     return cols
 
@@ -152,6 +152,10 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
                                        _num(sysd.get('floor')))
                                if np.isfinite(row['rv_adopted_err']) else _NAN)
         row.update(_template_row(res))
+        row['zp_sky_kms'] = _num(sysd.get('zp_sky_kms'))
+        row['zp_sky_err'] = _num(sysd.get('zp_sky_err'))
+        row['zp_sky_slope'] = _num(sysd.get('zp_sky_slope'))
+        row['wavelength_correction'] = str((res.barycentric or {}).get('wavelength_correction', 'none'))
         bary = res.barycentric or {}
         row['bary_kms'] = _num(bary.get('applied_kms'))
         row['bary_source'] = str(bary.get('source', ''))

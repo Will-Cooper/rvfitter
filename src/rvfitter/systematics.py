@@ -148,15 +148,28 @@ def template_spread(spectrum: Spectrum, regions: dict[str, list[Region]] | list[
 
 def wavelength_zero_point(spectrum: Spectrum, cfg: Any) -> float:
     """
-    The velocity equivalent of the wavelength-solution RMS: c × rms / λ_mid [km/s]
+    The wavelength zero-point systematic [km/s]: the larger of the arc-RMS term and the sky zero-point error
 
-    The RMS [Å] comes from cfg.input.wave_rms or spectrum.meta['wave_rms']; NaN if neither is known.
-    (A telluric-referenced zero point is added with calibration.telluric_zeropoint.)
+    - Arc RMS: c × rms / λ_mid, with the RMS [Å] from cfg.input.wave_rms or spectrum.meta['wave_rms']. This is a
+      lower bound: an internally consistent arc fit can hide a distortion of the whole solution (J1745: arc RMS
+      ≈3 km/s against a +10 to +25 km/s sky-line distortion).
+    - Sky: the uncertainty of the applied sky zero point at the median wavelength
+      (meta['wavelength_correction']).
+
+    Returns
+    -------
+    sys
+        km/s; NaN if neither is known
     """
+    meta = spectrum.meta if hasattr(spectrum.meta, 'get') else {}
     rms = _cfg_get(cfg, 'input', 'wave_rms', None)
     if rms is None:
-        rms = spectrum.meta.get('wave_rms') if hasattr(spectrum.meta, 'get') else None
-    if rms is None or not np.isfinite(rms):
-        return np.nan
-    return float(C_KMS * rms / np.median(spectrum.wave))
+        rms = meta.get('wave_rms')
+    arc = float(C_KMS * rms / np.median(spectrum.wave)) if rms is not None and np.isfinite(rms) else np.nan
+    sky = np.nan
+    wc = meta.get('wavelength_correction') or {}
+    if wc.get('sky'):
+        sky = float(wc['sky'].get('zp_sky_err', np.nan))
+    vals = [v for v in (arc, sky) if np.isfinite(v)]
+    return float(max(vals)) if vals else np.nan
 

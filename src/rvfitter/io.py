@@ -70,7 +70,9 @@ _ERR_NAMES = ('err', 'error', 'sigma', 'flux_err', 'fluxerr', 'flux_error', 'e_f
               'errors', 'sig')
 _IVAR_NAMES = ('ivar', 'invvar', 'inverse_variance', 'flux_ivar')
 _VAR_NAMES = ('var', 'variance')
-_ROLE_NAMES = {'wave': _WAVE_NAMES, 'flux': _FLUX_NAMES, 'err': _ERR_NAMES, 'ivar': _IVAR_NAMES, 'var': _VAR_NAMES}
+_SKY_NAMES = ('sky', 'sky_flux', 'skyflux', 'counts_sky', 'sky_counts')
+_ROLE_NAMES = {'wave': _WAVE_NAMES, 'flux': _FLUX_NAMES, 'err': _ERR_NAMES, 'ivar': _IVAR_NAMES, 'var': _VAR_NAMES,
+               'sky': _SKY_NAMES}
 
 _RES_KEYS = ('RESOLUTION', 'SPECRES', 'SPEC_RES', 'RESOLVING', 'RESPOWER', 'RESOLPOW')
 _VEL_KEYS = ('VHELIO', 'VBARY', 'VLSR', 'BCV', 'BERV', 'BARYCORR', 'HELIOCOR', 'BARY_CORR', 'VELOSYS', 'HELCORR',
@@ -111,6 +113,8 @@ class RawSpectrum:
         R if the reader found one
     reader
         Name of the reader that produced it
+    sky
+        Optional sky spectrum on the same pixels (PypeIt ``*_COUNTS_SKY``, or a ``sky`` column), else None
     """
     wave: np.ndarray
     flux: np.ndarray
@@ -121,6 +125,7 @@ class RawSpectrum:
     default_medium: str | None = None
     resolution: float | None = None
     reader: str = ''
+    sky: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -398,7 +403,7 @@ def _role_lookup(names: list[str], columns: Mapping[str, str | int] | None) -> d
     for role, spec in (columns or {}).items():
         role = {'sigma': 'err', 'error': 'err', 'wavelength': 'wave'}.get(role.lower(), role.lower())
         if role not in _ROLE_NAMES:
-            raise ValueError(f"columns key {role!r} must be one of wave, flux, err, ivar, var")
+            raise ValueError(f"columns key {role!r} must be one of wave, flux, err, ivar, var, sky")
         if isinstance(spec, int):
             if not 0 <= spec < len(names):
                 raise ValueError(f'columns[{role!r}]={spec} is out of range for {len(names)} columns')
@@ -502,15 +507,18 @@ def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any =
             flux = np.asarray(data[fcol], dtype=float)
             ivar = np.asarray(data[icol], dtype=float)
             if np.any(np.isfinite(wave) & (wave > 0) & np.isfinite(flux)):
-                chosen = (prefix, wave, flux, ivar)
+                skycol = f'{prefix}_COUNTS_SKY'
+                sky = np.asarray(data[skycol], dtype=float) if skycol in names else None
+                chosen = (prefix, wave, flux, ivar, sky)
                 break
         if chosen is None:
             raise ValueError('PypeIt table has no usable OPT_ or BOX_ wave/flam/flam_ivar columns')
-    prefix, wave, flux, ivar = chosen
-    log.debug('%s: PypeIt spec1d, HDU %d, %s extraction', path.name, idx, prefix)
+    prefix, wave, flux, ivar, sky = chosen
+    log.debug('%s: PypeIt spec1d, HDU %d, %s extraction%s', path.name, idx, prefix, ' with sky' if sky is not None
+              else '')
     medium, source = _medium_from_header(header)
     return RawSpectrum(wave, flux, _ivar_to_sigma(ivar), header, medium, source, PYPEIT_DEFAULT_MEDIUM,
-                       _header_resolution(header), 'pypeit_spec1d')
+                       _header_resolution(header), 'pypeit_spec1d', sky)
 
 
 def _coadd_hdu(hdul: fits.HDUList, hdu: int | str | None) -> int | None:
@@ -637,8 +645,10 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
 
             wave, flux = get(roles['wave']), get(roles['flux'])
             sigma = _sigma_from_roles(get, roles, len(wave))
+            sky = get(roles['sky']) if 'sky' in roles else None
             unit = _table_wave_unit(ext, names[roles['wave']])
         elif kind == 'wcs':
+            sky = None
             flux = np.asarray(np.squeeze(ext.data), dtype=float)
             wave = _wcs_wave(header, len(flux))
             sigma = np.full(len(flux), np.nan)
@@ -651,6 +661,7 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
                     break
             unit = _image_unit(header)
         else:  # rows
+            sky = None
             arr = np.asarray(np.squeeze(ext.data), dtype=float)
             if arr.shape[0] > 3:
                 arr = arr.T
@@ -659,7 +670,8 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
             unit = _image_unit(header)
     wave = _wave_to_angstrom(wave, unit, path.name)
     medium, source = _medium_from_header(header)
-    return RawSpectrum(wave, flux, sigma, header, medium, source, None, _header_resolution(header), 'fits_generic')
+    return RawSpectrum(wave, flux, sigma, header, medium, source, None, _header_resolution(header), 'fits_generic',
+                       sky)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -760,12 +772,13 @@ def _read_ascii(path: Path, hdu: int | str | None = None, columns: Any = None) -
         log.debug('%s: columns recognised from header: %s', path.name, names)
     wave, flux = data[:, roles['wave']], data[:, roles['flux']]
     sigma = _sigma_from_roles(lambda i: data[:, i], roles, len(wave))
+    sky = data[:, roles['sky']] if 'sky' in roles else None
     m = _UNIT_RE.search(text)
     unit = m.group(1) if m else None
     header = dict(pseudo)
     medium, source = _medium_from_header(header)
     wave = _wave_to_angstrom(wave, unit, path.name)
-    return RawSpectrum(wave, flux, sigma, header, medium, source, None, _header_resolution(header), 'ascii')
+    return RawSpectrum(wave, flux, sigma, header, medium, source, None, _header_resolution(header), 'ascii', sky)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -801,18 +814,20 @@ def _read_specutils(path: Path, hdu: int | str | None = None, columns: Any = Non
 # public entry point
 # ----------------------------------------------------------------------------------------------------------------------
 
-def _clean_arrays(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _clean_arrays(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray, sky: np.ndarray | None = None
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     wave = np.asarray(wave, dtype=float).ravel()
     flux = np.asarray(flux, dtype=float).ravel()
     sigma = np.asarray(sigma, dtype=float).ravel()
-    if not len(wave) == len(flux) == len(sigma):
-        raise ValueError('wave, flux and sigma have different lengths')
+    sky = None if sky is None else np.asarray(sky, dtype=float).ravel()
+    if not len(wave) == len(flux) == len(sigma) or (sky is not None and len(sky) != len(wave)):
+        raise ValueError('wave, flux, sigma (and sky) have different lengths')
     good = np.isfinite(wave) & (wave > 0) & np.isfinite(flux)
-    wave, flux, sigma = wave[good], flux[good], sigma[good]
-    order = np.argsort(wave, kind='stable')
-    wave, flux, sigma = wave[order], flux[order], sigma[order]
+    order = np.argsort(wave[good], kind='stable')
+    wave, flux, sigma = wave[good][order], flux[good][order], sigma[good][order]
+    sky = None if sky is None else sky[good][order]
     keep = np.concatenate([[True], np.diff(wave) > 0])  # drop duplicate wavelengths, keeping the first
-    return wave[keep], flux[keep], sigma[keep]
+    return wave[keep], flux[keep], sigma[keep], None if sky is None else sky[keep]
 
 
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
@@ -882,7 +897,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
             raise ValueError(f'Could not read {path} as a spectrum ({why})') from exc
     log.debug('%s: read with %s', path.name, raw.reader)
     try:
-        wave, flux, sigma = _clean_arrays(raw.wave, raw.flux, raw.sigma)
+        wave, flux, sigma, sky = _clean_arrays(raw.wave, raw.flux, raw.sigma, raw.sky)
     except ValueError as exc:
         raise ValueError(f'{path}: {exc}') from exc
     if len(wave) < 2:
@@ -905,7 +920,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
                          "(no AIRORVAC, VACUUM, WAVE_MED or CTYPE1 'AWAV'/'WAVE' in the header). "
                          "Pass medium='air' or medium='vacuum' (CLI: --medium).")
     wave = to_vacuum(wave, medium_in, medium_method)
-    wave, flux, sigma = _clean_arrays(wave, flux, sigma)
+    wave, flux, sigma, sky = _clean_arrays(wave, flux, sigma, sky)
 
     meta = _meta_from_header(raw.header)
     meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader)
@@ -914,7 +929,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
         raise ValueError(f'resolution must be positive, not {r}')
     log.debug('%s: %d pixels, %.1f-%.1f Å (vacuum), medium_in=%s (%s)', path.name, len(wave), wave[0], wave[-1],
               medium_in, source)
-    return Spectrum(wave, flux, sigma, None if r is None else float(r), meta, str(path))
+    return Spectrum(wave, flux, sigma, None if r is None else float(r), meta, str(path), sky)
 
 
 register_reader('pypeit_spec1d', _sniff_pypeit_spec1d, _read_pypeit_spec1d)

@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from . import __version__
+from .calibration import sky_zeropoint
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
 __all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem',
@@ -103,6 +104,13 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     # several epochs: report the mean correction applied, and the source of the first
     bary_info = {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
+    # wavelength zero point (sky shape, later + telluric constant), applied once to the wavelengths
+    cal_infos = []
+    for k, (raw, spec) in enumerate(zip(spectra, corrected, strict=True)):
+        corrected[k], info = wavelength_correction(raw, spec, cfg, name)
+        cal_infos.append(info)
+    bary_info['wavelength_correction'] = cal_infos[0]['applied']
+
     # None means "use the SelectOptions default"
     knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
              'telluric_corrected': True if cfg.input.telluric_corrected else None,
@@ -130,6 +138,16 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                 log.debug('traceback', exc_info=True)
                 res = _failed(m)
             per_method[m].append(res)
+
+    # first-order uncorrected RVs (the correction lowered each RV by the Δv applied at its wavelength)
+    for lst in per_method.values():
+        for k, res in enumerate(lst):
+            spec = corrected[min(k, len(corrected) - 1)]
+            for meas in res.measurements:
+                lam = _measurement_wave(meas)
+                dv = float(sky_zeropoint.applied_dv(spec.meta, lam)) if np.isfinite(lam) else np.nan
+                meas.diagnostics['zp_applied_kms'] = dv
+                meas.diagnostics['rv_uncorrected'] = float(meas.rv + dv) if np.isfinite(dv) else np.nan
 
     results: dict[str, MethodResult] = {}
     for m, lst in per_method.items():
@@ -166,7 +184,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     else:
         log.warning('%s: no adopted RV', name)
 
-    sysd: dict[str, float] = {}
+    sysd: dict[str, float] = {k: cal_infos[0][k] for k in ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope')}
     try:
         sysd['wavelength_zero_point'] = float(systematics.wavelength_zero_point(corrected[0], cfg))
     except Exception as exc:  # noqa: BLE001
@@ -181,6 +199,71 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     return ObjectResult(object=name, files=[s.source for s in spectra], methods=results, adopted=adopted,
                         systematics=sysd, barycentric=bary_info, binary={}, config_hash=_config_hash(cfg),
                         version=__version__)
+
+
+def _measurement_wave(meas: Measurement) -> float:
+    """A representative wavelength of a measurement's region (line centre, else the median fitted wavelength)"""
+    d = meas.diagnostics or {}
+    for key in ('centre', 'wave_centre'):
+        if d.get(key) is not None and np.isfinite(d[key]):
+            return float(d[key])
+    w = d.get('wave')
+    if w is not None and len(w):
+        return float(np.median(np.asarray(w, dtype=float)))
+    return float('nan')
+
+
+def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '') -> tuple[Spectrum, dict]:
+    """
+    Measure and apply the wavelength zero point to one spectrum, according to ``cfg.calibration``
+
+    The sky zero point Δv(λ) is measured on the input spectrum (``raw``: its own sky, or the sky of
+    ``calibration.sky_source``) in the observatory frame and applied to ``spec`` (which may already be
+    barycentric-corrected; the correction is a multiplicative factor). 'auto' applies whatever is available
+    (sky shape; the telluric constant arrives with calibration.telluric_zeropoint); 'none' applies nothing.
+
+    Returns
+    -------
+    spectrum, info
+        The (possibly) corrected spectrum and {'mode', 'applied', 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope'}
+    """
+    from . import io
+    from .calibration import sky_zeropoint
+    cal = getattr(cfg, 'calibration', None)
+    mode = getattr(cal, 'wavelength_correction', 'none') if cal is not None else 'none'
+    nan = float('nan')
+    info = {'mode': mode, 'applied': 'none', 'zp_sky_kms': nan, 'zp_sky_err': nan, 'zp_sky_slope': nan}
+    if mode == 'none':
+        return spec, info
+    zp = None
+    if mode in ('auto', 'sky'):
+        src = raw if raw.sky is not None else None
+        sky_source = getattr(cal, 'sky_source', None)
+        if src is None and sky_source:
+            try:
+                other = io.read_spectrum(sky_source, medium=cfg.input.medium, medium_method=cfg.input.medium_method)
+                src = other if other.sky is not None else None
+                if src is None:
+                    log.warning('%s: calibration.sky_source %s has no sky spectrum', name, sky_source)
+            except Exception as exc:  # noqa: BLE001 - a missing sky file is reported, not fatal
+                log.warning('%s: could not read calibration.sky_source %s: %s', name, sky_source, exc)
+        if src is not None:
+            zp = sky_zeropoint.measure(src, seg_width=getattr(cal, 'sky_segment_width', 250.),
+                                       degree=getattr(cal, 'sky_degree', None))
+        elif mode == 'sky':
+            log.warning('%s: wavelength_correction = "sky" but no sky spectrum is available; nothing applied', name)
+    if mode == 'telluric':
+        log.warning('%s: the telluric zero point is not implemented yet; nothing applied', name)
+    if zp is not None:
+        info.update(zp_sky_kms=zp.zp_kms, zp_sky_err=zp.zp_err, zp_sky_slope=zp.slope)
+        spec = sky_zeropoint.apply(spec, zp, source='sky')
+        info['applied'] = 'sky'
+        wc = spec.meta['wavelength_correction']
+        log.info('%s: wavelength correction applied (sky): Δv %+.1f to %+.1f km/s over the spectrum', name,
+                 wc['dv_min'], wc['dv_max'])
+    else:
+        log.info('%s: no wavelength correction applied (mode %s)', name, mode)
+    return spec, info
 
 
 def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str) -> list[Spectrum]:

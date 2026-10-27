@@ -152,6 +152,17 @@ class OutputConfig:
 
 
 @dataclass
+class CalibrationConfig:
+    """Wavelength-solution corrections applied to the spectra before any method runs"""
+    # 'auto': sky shape (OH lines) + telluric constant when available, else whichever exists, else none;
+    # 'sky', 'telluric' or 'none' force one choice. What was applied is always logged and recorded.
+    wavelength_correction: str = 'auto'
+    sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
+    sky_segment_width: float = 250.  # [Å]
+    sky_degree: int | None = None  # polynomial degree of Δv(λ); None = chosen by BIC (0-3)
+
+
+@dataclass
 class Config:
     """The complete description of an analysis"""
     schema_version: int = SCHEMA_VERSION
@@ -163,6 +174,7 @@ class Config:
     methods: MethodsConfig = field(default_factory=MethodsConfig)
     regions: RegionsConfig = field(default_factory=RegionsConfig)
     combine: CombineConfig = field(default_factory=CombineConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     # configuration patches applied by pipeline.refit_object, in order ({'object': ..., 'patch': {...}}); the
@@ -411,6 +423,10 @@ def _validate(cfg: Config) -> list[str]:
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
     _choice(p, 'regions.template_windows', r.template_windows, ('features', 'full'))
+    _choice(p, 'calibration.wavelength_correction', cfg.calibration.wavelength_correction,
+            ('auto', 'sky', 'telluric', 'none'))
+    if not cfg.calibration.sky_segment_width > 0:
+        p.append(f'calibration.sky_segment_width = {cfg.calibration.sky_segment_width} must be > 0 [Å]')
     c = cfg.combine
     if c.tau_scale is not None and not c.tau_scale > 0:
         p.append(f'combine.tau_scale = {c.tau_scale} must be > 0')
