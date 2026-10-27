@@ -1,0 +1,66 @@
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: name, datatype: string}
+# - {name: species, datatype: string}
+# - {name: kind, datatype: string}
+# - {name: wave_vac, unit: Angstrom, datatype: float64}
+# - {name: wmin, unit: Angstrom, datatype: float64}
+# - {name: wmax, unit: Angstrom, datatype: float64}
+# - {name: teff_min, unit: K, datatype: float64}
+# - {name: teff_max, unit: K, datatype: float64}
+# - {name: r_min, datatype: float64}
+# - {name: rest_ref, datatype: string}
+# - {name: caveat, datatype: string}
+# - {name: depth, datatype: float64}
+# meta: !!omap
+# - {description: 'rvfitter feature catalogue; vacuum wavelengths; NaN = not applicable; depth = approximate telluric absorption depth
+#     (R~2000, airmass 1)'}
+# schema: astropy-2.0
+name species kind wave_vac wmin wmax teff_min teff_max r_min rest_ref caveat depth
+"K I 7667" "K I" line 7667.0089 nan nan 1200.0 3000.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"K I 7701" "K I" line 7701.0835 nan nan 1200.0 3000.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Rb I 7802" "Rb I" line 7802.4148 nan nan 1300.0 2400.0 1500.0 "NIST ASD (Ritz)" "weak in late-M and early-L; fades in T dwarfs; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Rb I 7949" "Rb I" line 7949.7891 nan nan 1300.0 2400.0 1500.0 "NIST ASD (Ritz)" "weak in late-M and early-L; fades in T dwarfs; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Na I 8185" "Na I" line 8185.5053 nan nan 1300.0 3200.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); sits inside a weak telluric H2O band; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Na I 8197" "Na I" line 8197.0721 nan nan 1300.0 3200.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); sits inside a weak telluric H2O band; blend of 2 NIST components (8197.0433-8197.0769); Aki-weighted centroid used; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Cs I 8523" "Cs I" line 8523.4728 nan nan 1200.0 2300.0 1500.0 "NIST ASD (Ritz)" "strongest in mid-to-late L; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Cs I 8946" "Cs I" line 8945.9296 nan nan 1200.0 2300.0 1500.0 "NIST ASD (Ritz)" "strongest in mid-to-late L; adjacent to the 8950-9900 A telluric H2O band; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Li I 6710" "Li I" line 6709.6847 nan nan 1500.0 3000.0 2000.0 "NIST ASD (Ritz)" "blend of the 6707.76/6707.91 A doublet (mean used); present only in undepleted (young or low-mass) objects; Teff range uncertain; blend of 2 NIST components (6709.6082-6709.7612); Aki-weighted centroid used; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"H-alpha 6565" "H I" line 6564.6044 nan nan 1500.0 3500.0 1000.0 "NIST ASD (Ritz)" "chromospheric emission, variable; not a reliable photospheric RV line (excluded by default); blend of 9 NIST components (6564.5226-6564.7223); Aki-weighted centroid used; Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan
+"Na I 11385" "Na I" line 11384.5571 nan nan 1500.0 3200.0 1500.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"Na I 11407" "Na I" line 11406.8882 nan nan 1500.0 3200.0 1500.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"K I 11693" "K I" line 11693.4415 nan nan 1000.0 2600.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"K I 11776" "K I" line 11776.0885 nan nan 1000.0 2600.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"K I 12436" "K I" line 12435.6992 nan nan 1000.0 2600.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"K I 12526" "K I" line 12525.5914 nan nan 1000.0 2600.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"Fe I 11886" "Fe I" line 11886.0965 nan nan 1800.0 3500.0 4000.0 "NIST ASD (Ritz)" "blended with FeH at low R; Teff range uncertain; Teff, R ref: McLean et al. 2003, ApJ 596, 561" nan
+"Fe I 11887" "Fe I" line 11887.3356 nan nan 1800.0 3500.0 4000.0 "NIST ASD (Ritz)" "blended with FeH at low R; Teff range uncertain; Teff, R ref: McLean et al. 2003, ApJ 596, 561" nan
+"Fe I 11976" "Fe I" line 11976.3233 nan nan 1800.0 3500.0 4000.0 "NIST ASD (Ritz)" "blended with FeH at low R; Teff range uncertain; Teff, R ref: McLean et al. 2003, ApJ 596, 561" nan
+"Al I 13127" "Al I" line 13127.0065 nan nan 1800.0 3200.0 3000.0 "NIST ASD (Ritz)" "Teff range uncertain; Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"Al I 13154" "Al I" line 13154.3448 nan nan 1800.0 3200.0 3000.0 "NIST ASD (Ritz)" "Teff range uncertain; Teff, R ref: McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" nan
+"FeH 8694" FeH bandhead 8694.0 8694.0 8762.0 1300.0 3200.0 1000.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference; head quoted in air" nan
+"FeH Wing-Ford 9899" FeH bandhead 9899.0 9899.0 9993.0 1300.0 3200.0 1000.0 "Kirkpatrick et al. 1999, ApJ 519, 802; McLean et al. 2003, ApJ 596, 561" "Wing-Ford 0.99 um band; head quoted in air; near the 8950-9900 A telluric H2O band" nan
+"CrH 8613" CrH bandhead 8613.0 8613.0 8672.0 1300.0 2600.0 1000.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference; head quoted in air" nan
+"TiO 7054" TiO band nan 7055.0 7202.0 1900.0 3500.0 500.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference; fades by ~L2" nan
+"TiO 7591" TiO band nan 7591.0 7702.0 1900.0 3500.0 500.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference; coincides with the telluric O2 A band" nan
+"TiO 8434" TiO band nan 8434.0 8502.0 1900.0 3500.0 500.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference; fades by ~L2" nan
+"VO 7334" VO band nan 7336.0 7536.0 1700.0 3000.0 500.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference" nan
+"VO 7851" VO band nan 7853.0 7975.0 1700.0 3000.0 500.0 "Kirkpatrick et al. 1999, ApJ 519, 802" "band limits approximate (+-20 A) from the quoted reference" nan
+"CO 22935" CO bandhead 22935.0 22935.0 23235.0 1200.0 3500.0 1000.0 "McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" "CO overtone bandhead (2-0, 3-1, 4-2); assumed vacuum, +-5 A uncertain; weakens in T dwarfs; telluric CH4 and H2O nearby" nan
+"CO 23227" CO bandhead 23227.0 23227.0 23527.0 1200.0 3500.0 1000.0 "McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" "CO overtone bandhead (2-0, 3-1, 4-2); assumed vacuum, +-5 A uncertain; weakens in T dwarfs; telluric CH4 and H2O nearby" nan
+"CO 23535" CO bandhead 23535.0 23535.0 23835.0 1200.0 3500.0 1000.0 "McLean et al. 2003, ApJ 596, 561; Cushing et al. 2005, ApJ 623, 1115" "CO overtone bandhead (2-0, 3-1, 4-2); assumed vacuum, +-5 A uncertain; weakens in T dwarfs; telluric CH4 and H2O nearby" nan
+"CH4 1.6um" CH4 band nan 15500.0 17500.0 400.0 1500.0 1000.0 "Cushing et al. 2005, ApJ 623, 1115" "band limits approximate (+-20 A) from the quoted reference; T dwarfs only (onset ~L8)" nan
+"CH4 2.2um" CH4 band nan 21500.0 23000.0 400.0 1500.0 1000.0 "Cushing et al. 2005, ApJ 623, 1115" "band limits approximate (+-20 A) from the quoted reference; T dwarfs only (onset ~L8)" nan
+"H2O 1.4um" H2O band nan 13300.0 14900.0 500.0 3000.0 1000.0 "Cushing et al. 2005, ApJ 623, 1115" "coincides with the opaque telluric 1.33-1.49 um band: unusable from the ground" nan
+"H2O 1.9um" H2O band nan 17900.0 20500.0 500.0 3000.0 1000.0 "Cushing et al. 2005, ApJ 623, 1115" "coincides with the opaque telluric 1.79-2.05 um band: unusable from the ground" nan
+"O2 B" O2 telluric nan 6862.0 6902.0 nan nan 5000.0 "Lord 1992, NASA TM 103957" "saturated core; limits approximate" 0.3
+"O2 A" O2 telluric nan 7592.0 7702.0 nan nan 5000.0 "Lord 1992, NASA TM 103957" "saturated core; band head at 7600 A (air)" 0.5
+"H2O 7250" H2O telluric nan 7162.0 7342.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "variable with precipitable water vapour" 0.15
+"H2O 8200" H2O telluric nan 8122.0 8352.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "weak; variable with precipitable water vapour" 0.08
+"H2O 9300" H2O telluric nan 8952.0 9903.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "strong and very variable with precipitable water vapour" 0.4
+"H2O 1.13um" H2O telluric nan 11100.0 11600.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "variable with precipitable water vapour" 0.5
+"H2O 1.4um tell" H2O telluric nan 13300.0 14900.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" opaque 1.0
+"H2O 1.9um tell" H2O telluric nan 17900.0 20500.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" opaque 1.0
+"CO2 2.0um" CO2 telluric nan 19600.0 20800.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "overlaps the 1.79-2.05 um H2O band; limits approximate" 0.3
+"CH4 2.3um" CH4 telluric nan 22500.0 24000.0 nan nan 20000.0 "Lord 1992, NASA TM 103957" "weak lines; usable as a wavelength reference at R>~25000" 0.1
