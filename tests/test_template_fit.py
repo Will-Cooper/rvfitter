@@ -26,8 +26,14 @@ def test_registry_and_diagnostics():
 
 
 def test_injection_recovery_fast():
-    _, _, s = injection.run(template_fit.measure, lambda t: {'template': t}, n=60, method='template_fit', seed=12)
+    _, _, s = injection.run(template_fit.measure, lambda t: {'template': t}, n=200, method='template_fit', seed=99)
     injection.check(s)
+
+
+def test_injection_recovery_segmented_is_conservative():
+    _, _, s = injection.run(template_fit.measure, lambda t: {'template': t}, n=200, method='template_fit', seed=99,
+                            segment_res=None)
+    injection.check(s, pull_range=(0.65, 1.2))  # the Birge factor over three segments is >= 1 by construction
 
 
 SLOW_CASES = [(2500., 15., 0., (7500., 9000.)), (6000., 40., 20., (7500., 9000.)), (20000., 30., 30., (8000., 8500.))]
