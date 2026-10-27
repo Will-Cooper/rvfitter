@@ -14,6 +14,7 @@ This is also PypeIt's convention: its ``VEL_CORR`` header value is the multiplic
 import dataclasses
 import logging
 import math
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -61,22 +62,37 @@ _ALIASES: tuple[tuple[str, str], ...] = (
 )
 
 # Keywords (compared case-insensitively; meta may hold raw header keys or the lower-case names of
-# `Spectrum.meta`) showing the spectrum is already referred to the Sun or barycentre.
+# `Spectrum.meta`).
+# Evidence that the spectrum is ALREADY referred to the Sun or barycentre:
 #  - PypeIt: VEL_TYPE ('heliocentric' | 'barycentric' | 'None'); VEL_CORR is the multiplicative factor.
-#  - IRAF/RVSAO: VHELIO (heliocentric RV of the object, km/s); BCV/HCV are written by bcvcorr (savebcv=yes).
-#  - ESO pipelines: HIERARCH ESO QC VRAD BARYCOR (UVES, X-shooter...) and BERV (HARPS/ESPRESSO-style DRS).
-#  - Spextool: we could not verify any velocity keyword in Spextool v4 headers (they hold XUNITS, YUNITS, AIRMASS,
-#    HA, MJD_OBS...), so SpeX spectra are treated as uncorrected. UNVERIFIED: use mode='skip' if your reduction
-#    already corrected them.
-_CORRECTED_FRAMES = {'barycentric', 'heliocentric', 'helio', 'bary'}
-_CORRECTED_NUMERIC = ('VHELIO', 'BCV', 'HCV', 'HIERARCH ESO QC VRAD BARYCOR', 'ESO QC VRAD BARYCOR',
-                      'QC VRAD BARYCOR', 'BERV', 'HIERARCH ESO DRS BERV', 'ESO DRS BERV')
+#  - `frame_in` in Spectrum.meta; IRAF VHELIO (heliocentric RV of the object, km/s).
+# Correction VALUES (computed by a pipeline but not applied to the wavelengths), used as the correction when present:
+#  - barycentric: IRAF/RVSAO BCV (bcvcorr, savebcv=yes); ESO HIERARCH ESO QC VRAD BARYCOR (UVES, X-shooter...);
+#    BERV (ESO DRS; HARPS/ESPRESSO-style), all in km/s and added to the observed RV. The sign convention of BCV is
+#    NOT verified here; the ESO ones are documented as RV_bary = RV_obs + BERV.
+#  - heliocentric: IRAF HCV.
+# Spextool: we could not verify any velocity keyword in Spextool v4 headers (they hold XUNITS, YUNITS, AIRMASS,
+# HA, MJD_OBS...), so SpeX spectra are treated as uncorrected. UNVERIFIED: use mode='skip' if your reduction
+# already corrected them.
+_CORRECTED_FRAMES = {'barycentric': 'barycentric', 'bary': 'barycentric', 'heliocentric': 'heliocentric',
+                     'helio': 'heliocentric'}
+_CORRECTED_NUMERIC = ('VHELIO',)
+_VALUE_KEYS = {
+    'barycentric': ('BCV', 'HIERARCH ESO QC VRAD BARYCOR', 'ESO QC VRAD BARYCOR', 'QC VRAD BARYCOR', 'BERV',
+                    'HIERARCH ESO DRS BERV', 'ESO DRS BERV'),
+    'heliocentric': ('HCV',),
+}
 
 
 def vel_corr_to_kms(vel_corr: float) -> float:
     """Convert a PypeIt ``VEL_CORR`` factor, sqrt((1+β)/(1-β)), to the velocity v [km/s] it applies."""
     f2 = float(vel_corr) ** 2
     return C_KMS * (f2 - 1.) / (f2 + 1.)
+
+
+def _alias_match(alias: str, text: str) -> bool:
+    """Alias at a word start (and a word end too for short aliases such as 'salt')"""
+    return re.search(r'\b' + re.escape(alias) + (r'\b' if len(alias) <= 4 else ''), text) is not None
 
 
 def lookup_site(name: str):
@@ -95,7 +111,7 @@ def lookup_site(name: str):
     """
     from astropy.coordinates import EarthLocation
     low = str(name).strip().lower()
-    key = low if low in SITES else next((k for a, k in _ALIASES if a in low), None)
+    key = low if low in SITES else next((k for a, k in _ALIASES if _alias_match(a, low)), None)
     if key is None:
         return None
     lat, lon, alt = SITES[key]
@@ -113,19 +129,29 @@ def _meta_get(meta: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _already_corrected(meta: Mapping[str, Any]) -> str | None:
-    """Return a description if the metadata show the spectrum has been corrected, else None"""
+def _already_corrected(meta: Mapping[str, Any]) -> tuple[str, str | None] | None:
+    """Return (description, frame or None) if the metadata show the spectrum has been corrected, else None"""
     for key in ('frame_in', 'vel_type'):
         v = _meta_get(meta, key)
         if v is not None and str(v).strip().lower() in _CORRECTED_FRAMES:
-            return f'{key}={v}'
+            return f'{key}={v}', _CORRECTED_FRAMES[str(v).strip().lower()]
     for key in _CORRECTED_NUMERIC:
         v = _meta_get(meta, key)
-        if v is None:
-            continue
         try:
-            if np.isfinite(float(v)):
-                return f'{key}={v}'
+            if v is not None and np.isfinite(float(v)):
+                return f'{key}={v}', 'heliocentric'
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _header_value(meta: Mapping[str, Any], frame: str) -> tuple[float, str] | None:
+    """A correction value [km/s] written by the reduction pipeline for ``frame``, with its keyword"""
+    for key in _VALUE_KEYS[frame]:
+        v = _meta_get(meta, key)
+        try:
+            if v is not None and np.isfinite(float(v)):
+                return float(v), key
         except (TypeError, ValueError):
             continue
     return None
@@ -185,8 +211,9 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
         The spectrum; ``spectrum.meta`` may hold ra, dec [deg], mjd_mid, site, lat, lon (east), alt [m],
         frame_in and the raw keywords listed in the module source
     mode
-        'auto' (skip if already corrected, else compute if the metadata allow, else warn and skip),
-        'apply' (always compute; raises `ValueError` if inputs are missing) or 'skip' (never correct)
+        'auto' (skip if already corrected; else use a pipeline correction value such as BCV/BERV if present; else
+        compute if the metadata allow; else warn and skip), 'apply' (compute; if inputs are missing use a header
+        value, else raise `ValueError`) or 'skip' (never correct)
     frame
         'barycentric' or 'heliocentric'
     overrides
@@ -196,7 +223,7 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
     -------
     kms, source
         Velocity to add to measured RVs (RV_frame = RV_obs + kms) and its source:
-        'header' (already corrected, so 0), 'computed' or 'skipped'
+        'header' (already corrected, so 0, or a pipeline correction value), 'computed' or 'skipped'
     """
     if frame not in ('barycentric', 'heliocentric'):
         raise ValueError(f"frame must be 'barycentric' or 'heliocentric', not {frame!r}")
@@ -210,9 +237,23 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
     if mode == 'auto':
         done = _already_corrected(meta)
         if done:
-            log.info('Spectrum is already corrected (%s); no further correction applied', done)
+            if done[1] != frame:
+                log.warning('Spectrum is already corrected to the %s frame (%s) but %s was requested; the '
+                            'difference is up to ~0.02 km/s and is not corrected', done[1], done[0], frame)
+            else:
+                log.info('Spectrum is already corrected (%s); no further correction applied', done[0])
             return 0., 'header'
+        hv = _header_value(meta, frame)
+        if hv:
+            log.info('Using the %s correction %+.3f km/s from header keyword %s', frame, hv[0], hv[1])
+            return hv[0], 'header'
     kms, missing = _compute(meta, frame)
+    if kms is None and mode == 'apply':
+        hv = _header_value(meta, frame)
+        if hv:
+            log.info('Inputs for computing the correction are missing (%s); using %+.3f km/s from header '
+                     'keyword %s', ', '.join(missing), hv[0], hv[1])
+            return hv[0], 'header'
     if kms is None:
         if mode == 'apply':
             raise ValueError('Cannot compute the velocity correction; missing ' + ', '.join(missing)

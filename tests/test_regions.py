@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from rvfitter.features import features, load_catalogue  # noqa: E402
 from rvfitter.regions import SelectOptions, der_snr, select  # noqa: E402
-from rvfitter.types import Region, Spectrum  # noqa: E402
+from rvfitter.types import Spectrum  # noqa: E402
 from synth import make_spectrum  # noqa: E402
 
 METHODS = ['linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'telluric_ref']
@@ -140,23 +140,58 @@ def test_gaps_and_nan(caplog):
         assert not (r.wmin < 7802. < r.wmax) and not (r.wmin < 8520. < r.wmax)
 
 
-def test_overrides_replace_auto():
+def test_overrides_on_top_of_auto():
     spec = _synth((7400., 9000.))
-    ov = {'linecentre': [(7800., 7805.), {'name': 'mine', 'wmin': 8500., 'wmax': 8540., 'centre': 8523.47}],
-          'ccf': [Region('c', 'ccf', 8000., 8500.)]}
-    res = select(spec, teff=1800., methods=['linecentre', 'ccf', 'template_fit'], overrides=ov)
-    assert [r.name for r in res['linecentre']][1] == 'mine'
-    assert all(r.reason == 'user override' for r in res['linecentre'] + res['ccf'])
-    assert len(res['ccf']) == 1 and len(res['template_fit']) >= 1
-    assert res['template_fit'][0].reason != 'user override'
+    auto = select(spec, teff=1800., methods=['linecentre', 'ccf'])
+    names = [r.name for r in auto['linecentre']]
+    assert 'Rb I 7802' in names and 'Cs I 8523' in names
+    ov = {'linecentre': [{'name': 'Rb I 7802', 'kind': 'line', 'wmin': 7798., 'wmax': 7806., 'centre': 7802.4148},
+                         {'name': 'mine', 'kind': 'line', 'wmin': 8300., 'wmax': 8310., 'centre': 8305.},
+                         {'name': 'Cs I 8523', 'remove': True},
+                         {'name': 'K I 7701', 'kind': 'line', 'wmin': 7695., 'wmax': 7705.}],  # centre from catalogue
+          'ccf': [(8000., 8500.)]}
+    res = select(spec, teff=1800., methods=['linecentre', 'ccf'], overrides=ov)
+    new = {r.name: r for r in res['linecentre']}
+    assert 'Cs I 8523' not in new and 'mine' in new
+    assert new['Rb I 7802'].reason == 'user override'
+    assert (new['Rb I 7802'].wmin, new['Rb I 7802'].wmax) == (7798., 7806.)
+    assert new['K I 7701'].centre == pytest.approx(7701.0835)
+    assert new['Rb I 7949'].reason != 'user override'  # untouched auto regions stay
+    assert new['mine'].continuum  # feature-free continuum is built for line overrides
+    assert len(res['ccf']) == len(auto['ccf']) + 1 and res['ccf'][-1].reason == 'user override'
+    # removing something not selected only warns
+    select(spec, methods=['linecentre'], overrides={'linecentre': [{'name': 'nothing', 'remove': True}]})
+
+
+def test_line_override_needs_centre():
+    spec = _synth((7400., 9000.))
+    with pytest.raises(ValueError, match='centre'):
+        select(spec, methods=['linecentre'], overrides={'linecentre': [{'name': 'x', 'kind': 'line', 'wmin': 8000.,
+                                                                       'wmax': 8010.}]})
+    with pytest.raises(ValueError, match='centre'):
+        select(spec, methods=['linecentre'], overrides={'linecentre': [(8000., 8010.)]})
 
 
 def test_override_outside_coverage_warns(caplog):
     spec = _synth((7400., 9000.))
     with caplog.at_level(logging.WARNING):
-        res = select(spec, methods=['linecentre'], overrides={'linecentre': [(20000., 21000.), (8900., 9500.)]})
-    assert len(res['linecentre']) == 1 and res['linecentre'][0].wmax == pytest.approx(spec.wmax)
+        res = select(spec, methods=['ccf'], overrides={'ccf': [(20000., 21000.), (8900., 9500.)]})
+    assert res['ccf'][-1].wmax == pytest.approx(spec.wmax)
     assert any('outside the coverage' in r.message for r in caplog.records)
+
+
+def test_options_from_config():
+    class Cfg:
+        min_snr = 7.
+        telluric_strictness = 'strict'
+
+    o = SelectOptions.from_config(Cfg())
+    assert (o.snr_min, o.telluric) == (7., 'strict')
+    o = SelectOptions.from_config({'min_snr': 4., 'k_line': 3.})
+    assert (o.snr_min, o.k_line, o.telluric) == (4., 3., 'standard')
+    spec = _synth((7400., 9000.))
+    assert select(spec, teff=1800., methods=['linecentre'], options=Cfg())['linecentre'] == select(
+        spec, teff=1800., methods=['linecentre'], options=SelectOptions(snr_min=7., telluric='strict'))['linecentre']
 
 
 def test_missing_band_never_raises(caplog):

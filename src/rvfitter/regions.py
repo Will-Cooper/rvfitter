@@ -11,6 +11,7 @@ The selection follows five steps:
 4. Rank by the Bouchy et al. (2001) RV information content, computed on the smoothed observed spectrum.
 5. Build windows scaled to the resolution element.
 """
+import dataclasses
 import logging
 import math
 from collections import Counter
@@ -88,6 +89,31 @@ class SelectOptions:
     nan_gap_pix: int = 3
     exclude_species: tuple[str, ...] = ('H I',)
     max_lines: int | None = None
+
+    @classmethod
+    def from_config(cls, cfg: Any = None) -> 'SelectOptions':
+        """
+        Build options from a config section (attribute object or mapping)
+
+        Config names are mapped as ``min_snr`` -> ``snr_min`` and ``telluric_strictness`` -> ``telluric``;
+        any field of this class may also be given by its own name. Missing or None entries keep the defaults.
+        """
+        if cfg is None:
+            return cls()
+        alias = {'min_snr': 'snr_min', 'telluric_strictness': 'telluric'}
+        names = {f.name for f in dataclasses.fields(cls)}
+        if isinstance(cfg, Mapping):
+            def get(k):
+                return cfg.get(k)
+        else:
+            def get(k):
+                return getattr(cfg, k, None)
+        kwargs = {}
+        for key in [*names, *alias]:
+            val = get(key)
+            if val is not None:
+                kwargs[alias.get(key, key)] = val
+        return cls(**kwargs)
 
 
 # ---------------------------------------------------------------------------------------------------- statistics
@@ -286,31 +312,87 @@ def _feature_list(feats: Sequence[Feature], lo: float, hi: float, teff: float | 
     return names
 
 
-def _normalise_override(item: Any, method: str, ctx: _Context) -> Region | None:
-    """Turn an override entry (Region, mapping or (wmin, wmax)) into a Region clipped to the coverage"""
+def _default_kind(method: str) -> str:
+    return 'line' if method in LINE_METHODS else ('telluric' if method in TELLURIC_METHODS else 'band')
+
+
+def _avoid_windows(ctx: _Context, masks) -> list[tuple[float, float, str]]:
+    """Windows (all catalogue lines plus masked tellurics) that continuum windows must avoid"""
+    out = []
+    for f in features():
+        if f.kind == 'line':
+            a, b = _line_window(ctx, f)
+            out.append((a - ctx.fwhm(f.wave_vac), b + ctx.fwhm(f.wave_vac), f.name))
+    return out + list(masks)
+
+
+def _make_override(item: Any, method: str, ctx: _Context, masks) -> Region | None:
+    """
+    Turn one override entry (Region, mapping or (wmin, wmax)) into a Region clipped to the coverage
+
+    A line override without a centre takes it from the catalogue entry of the same name; failing that a
+    `ValueError` is raised. A line override without continuum windows gets feature-free ones.
+    """
+    kind = _default_kind(method)
     if isinstance(item, Region):
-        reg = item
+        d = dict(name=item.name, kind=item.kind, wmin=item.wmin, wmax=item.wmax, centre=item.centre,
+                 continuum=item.continuum)
     elif isinstance(item, Mapping):
         d = dict(item)
-        d.setdefault('name', f"{method} {d['wmin']:.0f}-{d['wmax']:.0f}")
-        d.setdefault('kind', 'line' if method in LINE_METHODS else ('telluric' if method in TELLURIC_METHODS
-                                                                     else 'band'))
-        d['continuum'] = tuple(tuple(c) for c in d.get('continuum', ()))
-        reg = Region(**d)
+        d.setdefault('kind', kind)
+        if 'name' not in d and 'wmin' in d and 'wmax' in d:
+            d['name'] = f"{method} {d['wmin']:.0f}-{d['wmax']:.0f}"
     else:
         wmin, wmax = (float(x) for x in item)
-        kind = 'line' if method in LINE_METHODS else ('telluric' if method in TELLURIC_METHODS else 'band')
-        reg = Region(f'{method} {wmin:.0f}-{wmax:.0f}', kind, wmin, wmax, 0.5 * (wmin + wmax) if kind == 'line'
-                     else None)
-    lo = max(reg.wmin, ctx.wave[0])
-    hi = min(reg.wmax, ctx.wave[-1])
+        d = dict(name=f'{method} {wmin:.0f}-{wmax:.0f}', kind=kind, wmin=wmin, wmax=wmax)
+    for key in ('name', 'wmin', 'wmax'):
+        if key not in d:
+            raise ValueError(f"override for {method!r} lacks {key!r}: {d}")
+    extra = set(d) - {'name', 'kind', 'wmin', 'wmax', 'centre', 'continuum', 'reason', 'remove'}
+    if extra:
+        raise ValueError(f'override for {method!r} region {d["name"]!r} has unknown keys {sorted(extra)}')
+    centre = d.get('centre')
+    if d['kind'] == 'line' and centre is None:
+        match = [f for f in features() if f.kind == 'line' and f.name == d['name']]
+        if not match:
+            raise ValueError(f"line override {d['name']!r} for {method!r} needs a 'centre' (it is not a catalogue "
+                             'line name)')
+        centre = match[0].wave_vac
+    lo, hi = max(float(d['wmin']), ctx.wave[0]), min(float(d['wmax']), ctx.wave[-1])
     if hi <= lo:
         log.warning('Override region %s (%.1f-%.1f A) lies outside the coverage (%.1f-%.1f A); dropped',
-                    reg.name, reg.wmin, reg.wmax, ctx.wave[0], ctx.wave[-1])
+                    d['name'], d['wmin'], d['wmax'], ctx.wave[0], ctx.wave[-1])
         return None
-    if (lo, hi) != (reg.wmin, reg.wmax):
-        log.warning('Override region %s clipped to the coverage: %.1f-%.1f A', reg.name, lo, hi)
-    return Region(reg.name, reg.kind, float(lo), float(hi), reg.centre, reg.continuum, 'user override')
+    if (lo, hi) != (float(d['wmin']), float(d['wmax'])):
+        log.warning('Override region %s clipped to the coverage: %.1f-%.1f A', d['name'], lo, hi)
+    cont = tuple((float(c[0]), float(c[1])) for c in d.get('continuum', ()))
+    if d['kind'] == 'line' and not cont:
+        cont = _continuum(ctx, lo, hi, [w for w in _avoid_windows(ctx, masks) if w[2] != d['name']])
+    return Region(str(d['name']), str(d['kind']), float(lo), float(hi), None if centre is None else float(centre),
+                  cont, 'user override')
+
+
+def _apply_overrides(auto: list[Region], entries: Sequence[Any], method: str, ctx: _Context, masks
+                     ) -> list[Region]:
+    """Apply override entries on top of the automatic regions: replace by name, add, or remove"""
+    regs = list(auto)
+    for item in entries:
+        if isinstance(item, Mapping) and item.get('remove'):
+            name = item.get('name')
+            keep = [r for r in regs if r.name != name]
+            if len(keep) == len(regs):
+                log.warning('%s: cannot remove region %r (not selected)', method, name)
+            regs = keep
+            continue
+        new = _make_override(item, method, ctx, masks)
+        if new is None:
+            continue
+        idx = next((i for i, r in enumerate(regs) if r.name == new.name), None)
+        if idx is None:
+            regs.append(new)
+        else:
+            regs[idx] = new
+    return regs
 
 
 # ---------------------------------------------------------------------------------------------------- per method
@@ -344,7 +426,7 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
                 why, cat = f'telluric ({hit})', 'telluric'
         if why is None:
             snr = ctx.snr(a, b)
-            if np.isfinite(snr) and snr < o.snr_min:
+            if (math.isnan(snr) or snr < o.snr_min):
                 why, cat = f'SNR {snr:.1f} < {o.snr_min:g}', 'SNR'
             else:
                 cands.append((f, a, b, snr))
@@ -400,7 +482,7 @@ def _select_spans(ctx: _Context, feats: Sequence[Feature], masks, teff, method: 
     out = []
     for lo, hi in _split_spans(ctx, masks):
         snr = ctx.snr(lo, hi)
-        if np.isfinite(snr) and snr < ctx.opts.snr_min:
+        if (math.isnan(snr) or snr < ctx.opts.snr_min):
             drops['SNR'] += 1
             log.debug('span %.0f-%.0f dropped: SNR %.1f', lo, hi, snr)
             continue
@@ -432,7 +514,7 @@ def _select_telluric(ctx: _Context, feats: Sequence[Feature], drops: Counter) ->
             drops['too short'] += 1
             continue
         snr = ctx.snr(lo, hi)
-        if np.isfinite(snr) and snr < ctx.opts.snr_min:
+        if (math.isnan(snr) or snr < ctx.opts.snr_min):
             drops['SNR'] += 1
             continue
         sig = ctx.sigma_rv(lo, hi, snr)
@@ -447,7 +529,7 @@ def _select_telluric(ctx: _Context, feats: Sequence[Feature], drops: Counter) ->
 # ---------------------------------------------------------------------------------------------------- public
 def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[str],
            overrides: Mapping[str, Sequence[Any]] | None = None,
-           options: SelectOptions | None = None) -> dict[str, list[Region]]:
+           options: Any = None) -> dict[str, list[Region]]:
     """
     Choose the regions each method should use on this spectrum
 
@@ -461,10 +543,14 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
         Method names: 'linecentre' gets line windows with continuum, 'telluric_ref' gets telluric bands, and every
         other ('ccf', 'template_fit', 'forward_mcmc', 'lsd'...) gets merged non-telluric spans
     overrides
-        ``{method: [Region | {'wmin':..,'wmax':..,...} | (wmin, wmax), ...]}`` replacing the automatic choice for
-        that method (clipped to the coverage; wholly uncovered entries are dropped with a warning)
+        ``{method: [entry, ...]}`` applied on top of the automatic selection of that method. An entry is a
+        mapping ``{'name', 'kind', 'wmin', 'wmax'[, 'centre', 'continuum']}`` (adds a region, or replaces the one
+        of the same name), ``{'name', 'remove': True}`` (drops it), a `Region` or a ``(wmin, wmax)`` tuple.
+        Entries are clipped to the coverage (wholly uncovered ones are dropped with a warning). A 'linecentre'
+        entry without a centre takes it from the catalogue line of the same name, else a `ValueError` is raised
     options
-        `SelectOptions`; the defaults if None
+        `SelectOptions`, a mapping or object with config-style names (``min_snr``, ``telluric_strictness``;
+        see `SelectOptions.from_config`), or None for the defaults
 
     Returns
     -------
@@ -472,7 +558,7 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
         ``{method: [Region, ...]}``, best (smallest photon-noise sigma_RV) first. A method with nothing usable
         gets an empty list (a warning is logged); this function never raises for missing bands.
     """
-    opts = options or SelectOptions()
+    opts = options if isinstance(options, SelectOptions) else SelectOptions.from_config(options)
     methods = list(methods)
     overrides = dict(overrides or {})
     ctx = _Context(spectrum, opts)
@@ -490,15 +576,16 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
         log.debug('telluric mask %s: %.1f-%.1f A', name, lo, hi)
     for method in methods:
         drops: Counter = Counter()
-        if method in overrides:
-            regs = [r for r in (_normalise_override(i, method, ctx) for i in overrides[method]) if r is not None]
-            how = 'override'
-        elif method in LINE_METHODS:
-            regs, how = _select_lines(ctx, feats, masks, teff, drops), 'auto'
+        if method in LINE_METHODS:
+            regs = _select_lines(ctx, feats, masks, teff, drops)
         elif method in TELLURIC_METHODS:
-            regs, how = _select_telluric(ctx, feats, drops), 'auto'
+            regs = _select_telluric(ctx, feats, drops)
         else:
-            regs, how = _select_spans(ctx, feats, masks, teff, method, drops), 'auto'
+            regs = _select_spans(ctx, feats, masks, teff, method, drops)
+        how = 'auto'
+        if overrides.get(method):
+            regs = _apply_overrides(regs, overrides[method], method, ctx, masks)
+            how = 'auto + overrides'
         result[method] = regs
         if not regs:
             log.warning('%s: no usable regions (%s)', method, dict(drops) or 'none available in the coverage')

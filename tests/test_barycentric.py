@@ -40,12 +40,33 @@ def test_offline_table():
     assert lookup_site('nowhere') is None
 
 
-@pytest.mark.parametrize('key', ['frame_in', 'vel_type', 'VHELIO', 'BCV', 'HIERARCH ESO QC VRAD BARYCOR', 'BERV'])
-def test_auto_skips_when_corrected(key, caplog):
-    value = 'heliocentric' if key in ('frame_in', 'vel_type') else -12.3
-    with caplog.at_level(logging.INFO):
-        kms, src = correction(_spec(**{key: value}, **FULL), 'auto')
-    assert (kms, src) == (0., 'header')
+@pytest.mark.parametrize('key', ['frame_in', 'vel_type', 'VHELIO'])
+def test_auto_skips_when_corrected(key):
+    value = 'barycentric' if key in ('frame_in', 'vel_type') else -12.3
+    assert correction(_spec(**{key: value}, **FULL), 'auto') == (0., 'header')
+
+
+def test_frame_mismatch_warns(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert correction(_spec(frame_in='heliocentric', **FULL), 'auto', 'barycentric') == (0., 'header')
+    assert any('requested' in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize('key', ['BCV', 'HIERARCH ESO QC VRAD BARYCOR', 'BERV'])
+def test_pipeline_values_are_used_not_taken_as_proof(key):
+    # BCV/BARYCOR/BERV are correction values: used as the correction (source "header"), even without coordinates
+    assert correction(_spec(**{key: -12.3}), 'auto') == (-12.3, 'header')
+    # and in apply mode when the inputs for computing are missing
+    assert correction(_spec(**{key: -12.3}), 'apply') == (-12.3, 'header')
+    # but apply computes when it can
+    assert correction(_spec(**{key: -12.3}, **FULL), 'apply')[1] == 'computed'
+    # a heliocentric request does not use a barycentric value
+    assert correction(_spec(**{key: -12.3}), 'auto', 'heliocentric') == (0., 'skipped')
+
+
+def test_site_alias_is_whole_word():
+    assert lookup_site('SALT') is not None
+    assert lookup_site('basalt hill') is None
 
 
 def test_auto_warns_and_skips(caplog):
