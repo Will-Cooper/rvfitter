@@ -70,3 +70,17 @@ The 0.155 km/s difference traces to the GTC headers: they record `LON-OBS` = +17
 Every GTC RV in the paper sample therefore probably carries a sub-0.2 km/s offset from this.
 That is well below the quoted uncertainties, but it is systematic, so it is recorded here.
 The helio–barycentric difference for this spectrum is only 0.007 km/s.
+
+## Wavelength zero point of the GTC spectra (sky lines)
+
+The arc-lamp solution of the J1745−1640 R2500I spectrum has an RMS of only 0.055 pixel, but that measures internal consistency, not the absolute zero point.
+We measured the zero point independently from the OH sky emission in the `PypeIt` spec1d sky spectrum (`OPT_COUNTS_SKY`/`BOX_COUNTS_SKY`, observatory frame).
+We cross-correlated it per segment with a vacuum model sky and checked it against Gaussian fits to individual lines, using vacuum wavelengths from Rousselot et al. (2000).
+
+- Over 7700–8960 Å, where all the alkali lines lie, the observed wavelengths are too red by **+19 ± 5 km/s (+0.54 ± 0.14 Å at 8500 Å)**. The result is consistent across apertures and extraction types.
+- The offset depends on wavelength: from +5 km/s near 7950 Å to +25–33 km/s near 8400–8450 Å, and back to +3 km/s at 8946 Å. This is a distortion of the wavelength solution, not a flexure shift, which is why `PypeIt`'s global flexure correlation found ≈0.
+- Correcting each line by its local sky offset reduces the line-to-line scatter from 11.3 to 3.2 km/s. This test does not use the benchmark. Most of the apparent line-to-line scatter in this spectrum is therefore wavelength calibration, not template physics.
+- The sky fills the slit uniformly, whereas the star may be off-centre, so the sky cannot measure the star's own constant offset. That requires the telluric absorption lines, which share the star's light path.
+
+As a result, rvfitter v2 measures a sky zero point whenever a sky spectrum is present, reports it as a systematic, and (by default) corrects the wavelength-dependent shape from the sky and the constant offset from the tellurics.
+The same distortion probably affects other GTC/OSIRIS R2500I spectra in Cooper et al. (2024), and its size varies by line, so the paper's line-centre RVs may carry offsets of up to a few tens of km/s per line.
