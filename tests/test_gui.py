@@ -228,3 +228,39 @@ def test_lazy_backend_uses_on_object_and_cancel(monkeypatch):
     assert out == got == ['a', 'b']
     assert seen['n'] == 3
     assert not seen['cancel'].is_set()
+
+
+def test_lazy_backend_honours_config(monkeypatch):
+    from types import SimpleNamespace
+
+    from rvfitter import archives, io, regions
+    from rvfitter.gui.backend import LazyBackend
+    seen = {}
+
+    def fake_read(path, *, medium='auto', hdu=None, resolution=None):
+        seen['read'] = (medium, hdu, resolution)
+        return SimpleNamespace(source=str(path))
+
+    def fake_group(spectra, override=None):
+        seen['override'] = override
+        return {'obj': spectra}
+
+    def fake_select(spec, *, teff=None, methods, overrides=None, options=None):
+        seen['select'] = (teff, list(methods), overrides, options)
+        return {}
+
+    monkeypatch.setattr(io, 'read_spectrum', fake_read, raising=False)
+    monkeypatch.setattr(archives, 'group_by_object', fake_group, raising=False)
+    monkeypatch.setattr(regions, 'select', fake_select, raising=False)
+    cfg = SimpleNamespace(input=SimpleNamespace(medium='air', medium_method='edlen', hdu=2, resolution=4000.),
+                          grouping=SimpleNamespace(override={'a': 'obj'}),
+                          templates=SimpleNamespace(teff_prior=(2000., 200.)),
+                          methods=SimpleNamespace(enabled=['ccf']),
+                          regions=SimpleNamespace(overrides={'ccf': [{'name': 'x', 'remove': True}]}))
+    be = LazyBackend()
+    spec = be.read_spectrum('f.fits', cfg)
+    assert seen['read'] == ('air', 2, 4000.)
+    assert be.group_objects(['f.fits'], cfg) == {'obj': ['f.fits']}
+    assert seen['override'] == {'a': 'obj'}
+    be.select_regions(spec, cfg, True)
+    assert seen['select'][:3] == (2000., ['ccf'], cfg.regions.overrides)

@@ -50,6 +50,9 @@ def enabled_methods(cfg: Any) -> list[str]:
     methods = get_path(cfg, 'methods')
     if methods is None:
         return []
+    enabled = getattr(methods, 'enabled', None)
+    if isinstance(enabled, list | tuple | set | frozenset):
+        return [str(m) for m in enabled]
     if isinstance(methods, list | tuple | set | frozenset):
         return [str(m) for m in methods]
     if dataclasses.is_dataclass(methods):

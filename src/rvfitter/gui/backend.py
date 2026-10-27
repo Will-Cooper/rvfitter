@@ -79,8 +79,13 @@ class LazyBackend:
         return list(archives.collect_inputs(path))
 
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any:
+        """Read one spectrum honouring ``cfg.input`` (medium, medium_method, hdu, resolution)."""
         from rvfitter import io
-        return io.read_spectrum(path)
+        wanted = {'medium': get_path(cfg, 'input.medium'), 'medium_method': get_path(cfg, 'input.medium_method'),
+                  'hdu': get_path(cfg, 'input.hdu'), 'resolution': get_path(cfg, 'input.resolution')}
+        params = inspect.signature(io.read_spectrum).parameters
+        kwargs = {k: v for k, v in wanted.items() if k in params and v is not None}
+        return io.read_spectrum(path, **kwargs)
 
     def group_objects(self, files: Sequence[Path], cfg: Any) -> dict[str, list[str]]:
         from rvfitter import archives
@@ -90,17 +95,40 @@ class LazyBackend:
                 spectra.append(self.read_spectrum(f, cfg))
             except Exception as exc:  # unreadable files are skipped, never fatal
                 log.warning('Skipping %s: %s', f, exc)
-        override = getattr(getattr(cfg, 'io', None), 'object_override', None)
-        groups = archives.group_by_object(spectra, override) if override else archives.group_by_object(spectra)
+        override = get_path(cfg, 'grouping.override')
+        groups = archives.group_by_object(spectra, override or None)
         return {name: [s.source for s in specs] for name, specs in groups.items()}
 
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]:
-        """Regions per method: the automatic ones, or those with ``cfg.regions.overrides`` applied."""
+        """Regions per method (as the pipeline selects them), with or without ``cfg.regions.overrides``."""
         from rvfitter import regions
 
         from .cfgutil import enabled_methods
         overrides = get_path(cfg, 'regions.overrides') if with_overrides else None
-        return regions.select(spectrum, methods=enabled_methods(cfg) or list(METHODS), overrides=overrides or None)
+        prior = get_path(cfg, 'templates.teff_prior')
+        teff = float(prior[0]) if prior else None
+        kwargs: dict[str, Any] = {'teff': teff, 'overrides': overrides or None}
+        options = self._select_options(cfg, regions)
+        if options is not None:
+            kwargs['options'] = options
+        return regions.select(spectrum, methods=enabled_methods(cfg) or list(METHODS), **kwargs)
+
+    @staticmethod
+    def _select_options(cfg: Any, regions: Any) -> Any | None:
+        """Build ``regions.SelectOptions`` from the matching ``cfg.regions`` fields."""
+        import dataclasses
+        cls = getattr(regions, 'SelectOptions', None)
+        sect = getattr(cfg, 'regions', None)
+        if cls is None or sect is None:
+            return None
+        alias = {'snr_min': 'min_snr', 'max_lines': 'max_regions', 'cont_fwhm': 'continuum_fwhm'}
+        vals = {}
+        for f in dataclasses.fields(cls):
+            for name in (f.name, alias.get(f.name)):
+                if name and hasattr(sect, name):
+                    vals[f.name] = getattr(sect, name)
+                    break
+        return cls(**vals)
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
             on_result: Callable[[Any], None], should_cancel: Callable[[], bool]) -> list[Any]:
