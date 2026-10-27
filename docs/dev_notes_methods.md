@@ -205,3 +205,51 @@ The full − features differences (−6 km/s for the CCF and −24 km/s for the 
 - With the same feature windows, the hierarchical adopted RV will weight the lines more equally through τ_line.
 - The remaining offset of the atomic lines from 26.2 km/s (≈10 km/s, i.e. ≈0.3 Å at 8500 Å) would be explained by a wavelength zero-point offset in the GTC spectrum, even though the arc RMS is small (0.055 pixel). Unit 5's telluric zero point (O2 A and H2O in the uncorrected `sciencebk` coadd) measures this directly and is the next test.
 - The reviewer's independent check gave ≈30 km/s with the same idea. It differed in including the K I lines (24 km/s; masked here, because the O2 A band stays masked for template spans) and Cs I 8946.
+
+## Unit 3b: grid parameters, edges and extensible grids
+
+### (c) N-dimensional grids
+- `GridMeta` has the standard axes teff, logg, met and alpha, plus named `extra_axes` (e.g. Elf Owl `co`, `kzz`; Diamondback `fsed`), with `extra_defaults`. It also carries a `coverage` table (the documented extent of the full grid, used only for guidance) and a `verified` marker. `medium` may be `"auto"`: it is measured from the NIST alkali minima on first use, and `download()` records the measured value in the metadata.
+- `TemplateGrid` interpolates multilinearly over every axis (2^d corners; any missing corner falls back to the nearest point, with `outside_grid` set).
+- `select()` takes every teff and log g within their ranges. It holds met, alpha and the extra axes at the value nearest their prior or default unless a range is set, so solar-only grids behave exactly as before and the candidate count does not multiply silently. `bounds()` is now `{axis: (min, max)}`.
+- `KNOWN_GRIDS` entries:
+  - bt-settl-cifist: air, verified;
+  - bt-settl-agss2009 ([M/H] −4 to +0.5, [α/M] 0 to 0.4);
+  - sand (Alvarado et al. 2024; [M/H] −2.4 to +0.3, [α/M] −0.2 to +0.6);
+  - sonora-bobcat;
+  - sonora-diamondback (fsed);
+  - sonora-elfowl (C/O, Kzz);
+  - lowz (Meisner et al. 2021; [M/H] −2.5 to +1, C/O, Kzz; may not be on SVO, so it can be used as a local directory with its own GridMeta).
+
+  Every grid apart from CIFIST is marked `verified=False` with medium `"auto"`. SVO was unreachable, so the model ids are best guesses: `rvfitter templates list --available` and the `network`-marked slow test check them live.
+- `download()` writes generic file names (`t2000_g5.00_m-0.50_a+0.20[_co…][_kzz…][_fsed…].txt`), queries every requested axis, and keeps the SHA-256 manifest. The CLI takes `--teff/--logg/--met/--alpha MIN MAX` and `--range AXIS MIN MAX`.
+- `templates.grid` may be a list. Candidates are drawn from every grid, the best is chosen by χ² across all of them, and `template_spread` reports the SD over grids (`sd_grids`). `templates.local_dir` may be a mapping grid → directory. New config keys: `alpha_range`, `alpha_prior` and `ranges` (extra axes).
+
+### (a) Best-template output
+- Each template method stores `template_summary` in its diagnostics: the best grid and label, `template_<teff|logg|met|alpha>` (NaN where the grid has no such axis, i.e. it is neither encoded in the file names nor has more than one value), `template_chi2` and `template_at_edge`.
+- It also stores a χ²-weighted mean ± SD per axis over the candidates of the best grid, with weights exp(−Δχ²/(2s)) and s = max(1, χ²_min/ν), so that a mismatch-dominated fit does not give spuriously sharp parameters. The scalar keys reach the details table.
+- The results table gains `template_method`, `template_grid`, `template_teff`, `template_logg`, `template_met`, `template_alpha`, `template_chi2` and `template_at_edge`, taken from the first of template_fit, forward_mcmc, ccf or lsd that ran.
+- The best template and the χ²-weighted parameters are logged at INFO.
+
+### (b) Edges
+- If the best candidate is at the low or high end of a searched axis with at least two values, the new flag `template_param_edge` (256) is set; it is informational, not an exclusion. A WARNING then gives the axis and direction and one of:
+  - "widen `templates.<axis>_range` to [a, b]" when the grid extends further;
+  - when the grid itself ends there, a KNOWN_GRIDS grid whose coverage extends beyond it and which covers the current teff/logg, with the exact `rvfitter templates download --grid … --met lo hi` command and the config change (`templates.grid = […, new]` and the new range).
+- The same guidance is available as data (`cfg_patch`, `download` kwargs, `command`) for a GUI. `outside_grid` stays separate.
+
+### (d) Reproducible refits
+- `pipeline.refit_object(result, cfg, cfg_patch, …) -> (ObjectResult, new_cfg)` deep-merges the patch into a copy of the config, validates it, appends `{'object', 'patch'}` to `new_cfg.refits` (a new top-level config list, written to the TOML as `[[refits]]`), and remeasures the object from its files.
+- The seed is that of a run on the object alone, so `rvfitter run` with the written TOML reproduces it.
+- `pipeline.suggested_refits(result)` lists the edge actions for a GUI "Download grid & refit" button: call `templates.download(**action['download'])` if it is not None, then `refit_object(result, cfg, action['cfg_patch'])`.
+- `pipeline.apply_patch(cfg, patch)` is exposed too.
+
+### Tests
+`tests/test_grids_nd.py`:
+- a synthetic 4D grid plus an extra axis (exact multilinear interpolation over 32 corners), and the holding of unranged axes;
+- the auto medium;
+- edge guidance for "widen" and for "download" (command, patch and message), and no edge inside the grid;
+- the edge flag set by template_fit, the results and details columns, and `suggested_refits`;
+- `refit_object` (patch applied, original untouched, recorded and round-tripped in the TOML, deterministic seed);
+- a live SVO check (`slow`, `network`, skipped offline).
+
+The new `network` marker is registered in pyproject.toml.
