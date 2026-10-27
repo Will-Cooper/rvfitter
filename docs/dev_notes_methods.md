@@ -155,3 +155,53 @@ The real data scatter by 10–100 km/s between segments, 30–200 times the nois
 - Report `template_spread` (the RV spread over the grid templates within the prior) as a separate systematic, as the report recommends (statistical, template-spread and λ zero-point terms separately, plus their total).
 - With this, J1745's statistical error would be ≈0.5 km/s, and the per-method errors (Birge) would still show the segment disagreement.
 - The decision is the orchestrator's; it is not implemented yet.
+
+## Review of units 2–3: changes
+
+### Blocker: CCF continuum handling (34133d6 and follow-up)
+- **Same filter for data and template** (34133d6): each shifted template row is high-passed on the data's pixels with the data's kernel and mask.
+- **No resampling of the data**: the CCF now works on the observed pixels. Within a window the velocity step is near-constant, and data and template rows pass through the same filter, so a uniform ln λ grid is unnecessary.
+- **Filter narrower than the window**: the high-pass FWHM is capped at a third of each window, since a filter wider than a 60–75 Å feature window cannot remove the continuum slope inside it.
+- **Relative slope removed**: after a first CCF, the data are divided by a degree-1 polynomial fitted to data/template at the peak (`flatten_degree`), and the CCF is redone. A continuum slope that the template lacks otherwise leaves a slope × line term after the high-pass: noiseless J1745-like injections gave −0.1 to −0.55 km/s per feature window, and a flat continuum removed it.
+- **Edge-clipped features dropped**: `regions` drops a feature window when a feature lies within 3 resolution elements of an edge clipped by a telluric mask. On J1745 this is Cs I 8946, at the H2O band, which kept a −0.3 km/s noiseless bias.
+- **Slow test** (`test_j1745_like_injection`, N = 80): BT-Settl 2000/5.0 at R = 2300, injected into J1745's pixels, σ, masks and feature windows, with the exact template.
+
+  | Code | Method | Bias [σ] | Pull SD |
+  |---|---|---|---|
+  | Current | CCF | −0.10 | 0.90 |
+  | Current | Template fit | −0.18 | 0.88 |
+  | Pre-34133d6 (from 1dd9378) | CCF | −1.58 (−0.97 km/s) | 0.38 |
+
+  The test therefore catches the blocker.
+
+### Feature windows (catalogue-driven)
+- `features.ecsv` has a new `model_fidelity` column: good for atomic lines and CO bandheads; poor for TiO, VO, CrH, FeH, H2O and CH4; n/a for tellurics. The catalogue description cites deep-research-report.md ("Synthetic versus empirical templates", "Synthetic-template mismatch") and Hsu et al. (2021).
+- `regions.template_windows = "features"` (default) or `"full"`. With "features", for ccf, template_fit and forward_mcmc at R ≤ 5000, the windows are ±10 resolution elements around the good features, merged where they overlap and clipped by the telluric masks. If none is usable, the full spans are used with a warning. The choice and its reason are logged at INFO.
+- `systematics.template_spread` reports the full-minus-features difference (`delta_modes`) alongside the SD over grid templates. The total is the SD over every variant.
+
+### Nits
+- template_fit scales by √max(1, χ²/ν), as the CCF does.
+- `Template.at` averages the shifted template over each observed pixel by default, matching pixel-integrated data. The toy `synth.py` spectra are point-sampled, which leaves a 0.07σ (0.13 km/s) template-fit bias at N = 200. Pixel-integrating `synth.make_spectrum` (a P0 file) is suggested.
+- The `_onto_internal` docstring notes the spline's flux non-conservation for unresolved features.
+- Injection tests calibrate the statistical error on single windows (`segment_res=0`). With segments, the Birge factor max(1, √(χ²/(N − 1))) is ≥1 by construction (≈1.15 for three segments of pure noise), so those errors are conservative; this is tested separately (pull SD > 0.65).
+- The J1745 segment scatter reflects the window choice and model mismatch. Given that scatter, the quoted errors are honest (the reviewer's independent CCF reproduced it).
+
+### J1745 after the review fixes
+R from `estimate_resolution` is now **2602 ± 198** (feature windows and pixel-integrated templates), consistent with the nominal 2500. Seed 42, telluric_corrected, H2O masked.
+
+| Windows | Method | R | RV [km/s] | z | Per window [km/s] | Template |
+|---|---|---|---|---|---|---|
+| features | CCF | 2602 | 41.46 ± 6.14 | 2.33 | Cs I 8523: 51.4 ± 2.9; Na I: 33.9 ± 3.8; Rb I 7802: 38.6 ± 5.9; Rb I 7949: 20.8 ± 6.0 | 2000/5.5 |
+| features | Template fit | 2602 | 43.19 ± 5.21 | 2.98 | 50.9 ± 3.7; 36.8 ± 5.6; 38.2 ± 9.2; 26.0 ± 7.7 | 2000/5.0 |
+| features | CCF | 2500 | 41.40 ± 6.03 | 2.35 | 49.9; 32.5; 38.8; 19.3 | 1800/5.5 |
+| features | Template fit | 2500 | 44.23 ± 4.82 | 3.38 | 50.1; 36.7; 38.7; 25.2 | 2000/5.0 |
+| full | CCF | 2602 | 35.38 ± 15.62 | 0.58 | 24.8, 46.1, 41.2, −72.2 (red edge), −456 (outlier) | 2100/5.5 |
+| full | Template fit | 2602 | 19.17 ± 24.31 | 0.29 | 19.0, 41.5, 42.8, −70.7, −456 (outlier) | 2000/5.0 |
+
+The full − features differences (−6 km/s for the CCF and −24 km/s for the template fit) enter the template systematic.
+**Feature windows disagree with the benchmark at z = 2.3–3.4. This is investigated, not tuned away.**
+- The per-line values are stable across method, template (1800–2200 K, log g 4.5–5.5) and R (2274–2814): Cs I 8523 ≈ 50 km/s, Na I ≈ 35 km/s, Rb I 7802 ≈ 38 km/s and Rb I 7949 ≈ 22 km/s.
+- Cs I 8523 has the smallest error and so dominates the weighted mean; the unweighted mean of the four lines is ≈37 km/s. The Cooper et al. (2024) line centring found the same pattern on this spectrum (Cs I a 48–55 km/s; line-centring mean 36 km/s).
+- With the same feature windows, the hierarchical adopted RV will weight the lines more equally through τ_line.
+- The remaining offset of the atomic lines from 26.2 km/s (≈10 km/s, i.e. ≈0.3 Å at 8500 Å) would be explained by a wavelength zero-point offset in the GTC spectrum, even though the arc RMS is small (0.055 pixel). Unit 5's telluric zero point (O2 A and H2O in the uncorrected `sciencebk` coadd) measures this directly and is the next test.
+- The reviewer's independent check gave ≈30 km/s with the same idea. It differed in including the K I lines (24 km/s; masked here, because the O2 A band stays masked for template spans) and Cs I 8946.
