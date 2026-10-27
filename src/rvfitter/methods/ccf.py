@@ -378,6 +378,9 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         best, scores = cands[0], [np.nan]
     tpl_raw = tpl = C.build_template(best, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
     flag_grid = C.FLAG_OUTSIDE_GRID if tpl_raw.params.get('outside_grid') else 0
+    summary = C.template_summary(METHOD, cands, scores, best, sum(p.n for p in preps), C.section(cfg, 'templates'))
+    flag_grid |= C.FLAG_PARAM_EDGE if summary['template_at_edge'] else 0
+    summary_scalars = {k: v for k, v in summary.items() if k.startswith('template_')}
     rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, step)
     seeds = C.child_seeds(rng, len(preps) * opts['n_chunks'])
     measurements = []
@@ -429,7 +432,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
             flag |= C.FLAG_FIT_FAILED
         if np.isfinite(chi2) and chi2 / dof > 3. and prep.sigma_known:
             flag |= C.FLAG_POOR_FIT
-        diag = dict(rv_grid=rv, ccf=c, peak=peak, zucker_err=zerr, mc_std=mc_std, chi2_scale=chi2_scale,
+        diag = dict(template_summary=summary, **summary_scalars,
+                    rv_grid=rv, ccf=c, peak=peak, zucker_err=zerr, mc_std=mc_std, chi2_scale=chi2_scale,
                     n_mc=int(len(mc)), mc_rvs=mc,
                     chi2=chi2, dof=dof, scale=scale, n_pix=win.prep.n, resolution=resolution,
                     highpass_kms=opts['highpass_kms'], template=tpl.label, template_params=tpl_raw.params,

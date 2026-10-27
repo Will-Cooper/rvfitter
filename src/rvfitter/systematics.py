@@ -90,14 +90,16 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
             log.debug('template spread variant failed: %s', exc)
             return np.nan
 
-    # (1) every candidate of the (first) grid, pinned
+    # (1) every candidate of every configured grid, pinned (grid and all axes)
     tcfg = C.section(cfg, 'templates')
     cands = C.candidates(cfg, {'teff_window': 300.})
     for k, cand in enumerate(cands):
         if cand.params is None:
             continue
-        t, g, m = cand.params[:3]
-        pinned = _with(cfg, 'templates', teff_range=(t, t), logg_range=(g, g), met_range=(m, m))
+        p = cand.param_dict
+        std = {f'{a}_range': (p[a], p[a]) for a in ('teff', 'logg', 'met', 'alpha')}
+        pinned = _with(cfg, 'templates', grid=cand.grid.name, **std,
+                       ranges={a: (v, v) for a, v in p.items() if a not in ('teff', 'logg', 'met', 'alpha')})
         out['templates'][cand.label] = run(pinned, regs, seeds[0].spawn(len(cands))[k])
     # (2) each enabled grid (when several are configured)
     if len(grids) > 1:

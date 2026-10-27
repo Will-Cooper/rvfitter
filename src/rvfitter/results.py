@@ -11,8 +11,8 @@ import pandas as pd
 
 from .types import ObjectResult
 
-__all__ = ['FLAGS', 'EXCLUDE_FLAGS', 'METHOD_ORDER', 'flag_names', 'to_table', 'details_table', 'write',
-           'summary_lines']
+__all__ = ['FLAGS', 'EXCLUDE_FLAGS', 'METHOD_ORDER', 'TEMPLATE_COLUMNS', 'flag_names', 'to_table', 'details_table',
+           'write', 'summary_lines']
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,8 @@ log = logging.getLogger(__name__)
 #: error_floor (the error was raised to a floor), template_grid_edge (template requested outside the grid; the
 #: nearest point was used), telluric_contaminated, not_converged (optimum at the edge of the search range or an
 #: unconverged sampler), poor_fit (reduced χ² > 3; the error has been scaled by √(χ²/ν), but check the
-#: template) and outlier (a gross outlier among the method's regions)
+#: template), outlier (a gross outlier among the method's regions) and template_param_edge (the best template is
+#: at the edge of the searched parameter range or of the grid; see the logged guidance)
 FLAGS: dict[str, int] = {
     'fit_failed': 1,
     'few_regions': 2,
@@ -31,6 +32,7 @@ FLAGS: dict[str, int] = {
     'not_converged': 32,
     'poor_fit': 64,
     'outlier': 128,
+    'template_param_edge': 256,
 }
 
 #: Flags that exclude a measurement from a method's combination and from the adopted RV
@@ -63,6 +65,31 @@ def _method_flag(mres) -> int:
     return flag
 
 
+#: Best-template columns, taken from the first template method present in TEMPLATE_METHOD_ORDER
+TEMPLATE_COLUMNS = ('template_method', 'template_grid', 'template_teff', 'template_logg', 'template_met',
+                    'template_alpha', 'template_chi2', 'template_at_edge')
+TEMPLATE_METHOD_ORDER = ('template_fit', 'forward_mcmc', 'ccf', 'lsd')
+
+
+def _template_row(res: ObjectResult) -> dict[str, Any]:
+    """The best-template columns of one object (NaN/empty if no template method ran)"""
+    row: dict[str, Any] = {c: _NAN for c in TEMPLATE_COLUMNS}
+    row.update(template_method='', template_grid='', template_at_edge=False)
+    for m in TEMPLATE_METHOD_ORDER:
+        mres = res.methods.get(m)
+        summ = next((x.diagnostics.get('template_summary') for x in (mres.measurements if mres else [])
+                     if (x.diagnostics or {}).get('template_summary')), None)
+        if summ:
+            row['template_method'] = m
+            row['template_grid'] = str(summ.get('template_grid', ''))
+            for a in ('teff', 'logg', 'met', 'alpha'):
+                row[f'template_{a}'] = _num(summ.get(f'template_{a}'))
+            row['template_chi2'] = _num(summ.get('template_chi2'))
+            row['template_at_edge'] = bool(summ.get('template_at_edge', False))
+            break
+    return row
+
+
 def _quad(*terms: float) -> float:
     return float(math.sqrt(sum(0.0 if not np.isfinite(t) else t * t for t in terms)))
 
@@ -73,6 +100,7 @@ def _columns() -> list[str]:
         cols += [f'rv_{m}', f'rv_{m}_err', f'rv_{m}_flag', f'n_{m}']
     cols += ['rv_adopted', 'rv_adopted_err', 'rv_adopted_q16', 'rv_adopted_q84', 'tau_line', 'tau_method',
              'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'rv_total_err',
+             *TEMPLATE_COLUMNS,
              'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'config_hash', 'version']
     return cols
 
@@ -123,6 +151,7 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'],
                                        _num(sysd.get('floor')))
                                if np.isfinite(row['rv_adopted_err']) else _NAN)
+        row.update(_template_row(res))
         bary = res.barycentric or {}
         row['bary_kms'] = _num(bary.get('applied_kms'))
         row['bary_source'] = str(bary.get('source', ''))
