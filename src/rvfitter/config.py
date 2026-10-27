@@ -5,6 +5,7 @@ The configuration is a tree of dataclasses (`Config`) with one section per conce
 
 ====================  ===========================================================================================
 ``[input]``            paths, medium (and air→vacuum formula), HDU, resolution override
+``[grouping]``         optional file -> object overrides
 ``[velocity_frame]``   barycentric correction mode, target frame and overrides of the header values
 ``[templates]``        grid name or local directory, its medium, Teff/log g/[M/H] ranges and priors
 ``[methods]``          enabled methods and per-method options
@@ -36,7 +37,7 @@ import tomli_w
 from .types import Spectrum
 
 __all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
-           'RegionOverride', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
+           'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
            'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'SCHEMA_VERSION']
 
 log = logging.getLogger(__name__)
@@ -72,17 +73,15 @@ class VelocityFrameConfig:
     """Barycentric (or heliocentric) correction"""
     correction: str = 'auto'  # 'auto' | 'apply' | 'skip'
     frame: str = 'barycentric'  # 'barycentric' | 'heliocentric'
-    ra: float | None = None  # overrides of the header values: degrees
-    dec: float | None = None
-    mjd: float | None = None  # mid-exposure MJD
-    site: str | None = None  # observatory name known to astropy (EarthLocation.of_site)
-    site_lat: float | None = None  # geodetic latitude and east longitude [deg], used instead of ``site``
-    site_lon: float | None = None
+    # overrides of the header values; allowed keys: ra, dec [deg], mjd (mid-exposure), site (an astropy site name),
+    # site_lat, site_lon [deg] (used instead of ``site``)
+    overrides: dict[str, Any] = field(default_factory=dict)
 
-    def overrides(self) -> dict[str, Any]:
-        """The overrides that are set, as a dictionary (keys ra, dec, mjd, site, site_lat, site_lon)"""
-        keys = ('ra', 'dec', 'mjd', 'site', 'site_lat', 'site_lon')
-        return {k: getattr(self, k) for k in keys if getattr(self, k) is not None}
+
+@dataclass
+class GroupingConfig:
+    """Grouping of spectra into objects"""
+    override: dict[str, str] | None = None  # file (path, name or stem) or header object name -> object
 
 
 @dataclass
@@ -94,9 +93,9 @@ class TemplatesConfig:
     teff_range: tuple[float, float] | None = None  # [K]
     logg_range: tuple[float, float] | None = None  # [dex, cgs]
     met_range: tuple[float, float] | None = None  # [dex]
-    teff_prior: tuple[float, float] | None = None  # (mean, standard deviation)
-    logg_prior: tuple[float, float] | None = None
-    met_prior: tuple[float, float] | None = None
+    teff_prior: float | None = None  # expected Teff [K] (e.g. from the spectral type), used to select features
+    logg_prior: float | None = None
+    met_prior: float | None = None
 
 
 @dataclass
@@ -107,23 +106,17 @@ class MethodsConfig:
 
 
 @dataclass
-class RegionOverride:
-    """A user-specified region, replacing or removing what `rvfitter.regions.select` would choose"""
-    name: str = ''
-    method: str = '*'  # a method name, or '*' for all
-    wmin: float = 0.  # vacuum Å
-    wmax: float = 0.
-    centre: float | None = None  # vacuum rest wavelength of a line
-    continuum: list[tuple[float, float]] = field(default_factory=list)  # continuum windows, vacuum Å
-    action: str = 'use'  # 'use' (add or replace) | 'exclude' (mask this window out)
-
-
-@dataclass
 class RegionsConfig:
-    """Region selection thresholds and overrides"""
-    overrides: list[RegionOverride] = field(default_factory=list)
+    """
+    Region selection thresholds and overrides.
+
+    ``overrides`` is keyed by method name.
+    Each entry is either ``{name, kind, wmin, wmax[, centre, continuum]}`` (add or replace the region of that name)
+    or ``{name, remove = true}`` (drop it); wavelengths are vacuum Å.
+    """
+    overrides: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     min_snr: float = 5.  # drop features whose local S/N is below this
-    telluric_threshold: float = 0.8  # mask intervals where the telluric transmission is below this
+    telluric_strictness: float = 1.  # scales the airmass-dependent telluric threshold (larger masks more)
     max_regions: int = 12  # keep at most this many, ranked by forecast information content
     continuum_fwhm: float = 5.  # continuum windows extend this many resolution elements around a feature
 
@@ -131,7 +124,7 @@ class RegionsConfig:
 @dataclass
 class CombineConfig:
     """Combination of regions, methods and epochs"""
-    prior_scale: float = 1.  # scale of the hierarchical prior on the scatter [km/s]
+    tau_scale: float | None = None  # scale of the hierarchical prior on the scatter [km/s]; None = automatic
     systematic_floor: float = 0.  # added in quadrature to the adopted error [km/s]
 
 
@@ -156,6 +149,7 @@ class Config:
     schema_version: int = SCHEMA_VERSION
     seed: int = 0
     input: InputConfig = field(default_factory=InputConfig)
+    grouping: GroupingConfig = field(default_factory=GroupingConfig)
     velocity_frame: VelocityFrameConfig = field(default_factory=VelocityFrameConfig)
     templates: TemplatesConfig = field(default_factory=TemplatesConfig)
     methods: MethodsConfig = field(default_factory=MethodsConfig)
@@ -315,11 +309,6 @@ def _range(problems: list[str], where: str, value: tuple[float, float] | None, p
         problems.append(f'{where} = {list(value)} must be positive')
 
 
-def _prior(problems: list[str], where: str, value: tuple[float, float] | None) -> None:
-    if value is not None and not value[1] > 0:
-        problems.append(f'{where} = {list(value)} must be [mean, sd] with sd > 0')
-
-
 def _validate(cfg: Config) -> list[str]:
     p: list[str] = []
     if cfg.schema_version != SCHEMA_VERSION:
@@ -334,24 +323,34 @@ def _validate(cfg: Config) -> list[str]:
     v = cfg.velocity_frame
     _choice(p, 'velocity_frame.correction', v.correction, ('auto', 'apply', 'skip'))
     _choice(p, 'velocity_frame.frame', v.frame, ('barycentric', 'heliocentric'))
-    if v.ra is not None and not 0 <= v.ra < 360:
-        p.append(f'velocity_frame.ra = {v.ra} must be in degrees, 0 <= ra < 360')
-    if v.dec is not None and not -90 <= v.dec <= 90:
-        p.append(f'velocity_frame.dec = {v.dec} must be in degrees, -90 <= dec <= 90')
-    if (v.site_lat is None) != (v.site_lon is None):
-        p.append('velocity_frame.site_lat and site_lon must be given together')
-    if v.site_lat is not None and not -90 <= v.site_lat <= 90:
-        p.append(f'velocity_frame.site_lat = {v.site_lat} must be in degrees, -90 to 90')
-    if v.correction == 'apply' and v.site is None and v.site_lat is None:
-        log.debug('velocity_frame.correction = "apply" without a site override: the header must supply one')
+    allowed = ('ra', 'dec', 'mjd', 'site', 'site_lat', 'site_lon')
+    for key, val in v.overrides.items():
+        if key not in allowed:
+            close = get_close_matches(key, allowed, n=1)
+            hint = f" (did you mean '{close[0]}'?)" if close else ''
+            p.append(f'velocity_frame.overrides has unknown key {key!r}; allowed: {", ".join(allowed)}{hint}')
+        elif key == 'site':
+            if not isinstance(val, str):
+                p.append(f'velocity_frame.overrides.site = {val!r} must be a string')
+        elif isinstance(val, bool) or not isinstance(val, (int, float)):
+            p.append(f'velocity_frame.overrides.{key} = {val!r} must be a number')
+    num = {k: v.overrides[k] for k in allowed if isinstance(v.overrides.get(k), (int, float))}
+    if 'ra' in num and not 0 <= num['ra'] < 360:
+        p.append(f"velocity_frame.overrides.ra = {num['ra']} must be in degrees, 0 <= ra < 360")
+    if 'dec' in num and not -90 <= num['dec'] <= 90:
+        p.append(f"velocity_frame.overrides.dec = {num['dec']} must be in degrees, -90 <= dec <= 90")
+    if ('site_lat' in v.overrides) != ('site_lon' in v.overrides):
+        p.append('velocity_frame.overrides: site_lat and site_lon must be given together')
+    if 'site_lat' in num and not -90 <= num['site_lat'] <= 90:
+        p.append(f"velocity_frame.overrides.site_lat = {num['site_lat']} must be in degrees, -90 to 90")
     t = cfg.templates
     if t.medium is not None:
         _choice(p, 'templates.medium', t.medium, ('air', 'vacuum'))
     _range(p, 'templates.teff_range', t.teff_range, positive=True)
     _range(p, 'templates.logg_range', t.logg_range)
     _range(p, 'templates.met_range', t.met_range)
-    for name in ('teff_prior', 'logg_prior', 'met_prior'):
-        _prior(p, f'templates.{name}', getattr(t, name))
+    if t.teff_prior is not None and not t.teff_prior > 0:
+        p.append(f'templates.teff_prior = {t.teff_prior} must be a positive temperature [K]')
     m = cfg.methods
     if not m.enabled:
         p.append('methods.enabled is empty; enable at least one of ' + ', '.join(METHOD_NAMES))
@@ -362,28 +361,41 @@ def _validate(cfg: Config) -> list[str]:
     for name in m.options:
         _choice(p, 'methods.options key', name, METHOD_NAMES)
     r = cfg.regions
-    for k, o in enumerate(r.overrides):
-        w = f'regions.overrides[{k}]'
-        _choice(p, f'{w}.method', o.method, ('*', *METHOD_NAMES))
-        _choice(p, f'{w}.action', o.action, ('use', 'exclude'))
-        if not (0 < o.wmin < o.wmax):
-            p.append(f'{w}: need 0 < wmin < wmax, got wmin={o.wmin}, wmax={o.wmax}')
-        if o.centre is not None and not o.wmin <= o.centre <= o.wmax:
-            p.append(f'{w}.centre = {o.centre} lies outside [{o.wmin}, {o.wmax}]')
-        for c, (lo, hi) in enumerate(o.continuum):
-            if not 0 < lo < hi:
-                p.append(f'{w}.continuum[{c}] = [{lo}, {hi}] must be [min, max] with 0 < min < max')
+    for method, entries in r.overrides.items():
+        _choice(p, 'regions.overrides method key', method, METHOD_NAMES)
+        for k, e in enumerate(entries):
+            w = f'regions.overrides.{method}[{k}]'
+            if not isinstance(e.get('name'), str) or not e.get('name'):
+                p.append(f'{w}: needs a non-empty "name"')
+                continue
+            if e.get('remove') is True:
+                continue
+            missing = [key for key in ('kind', 'wmin', 'wmax') if key not in e]
+            if missing:
+                p.append(f'{w}: needs {", ".join(missing)} (or remove = true)')
+                continue
+            _choice(p, f'{w}.kind', e['kind'], ('line', 'band', 'ccf', 'telluric', 'continuum'))
+            lo, hi = e['wmin'], e['wmax']
+            if not (isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and 0 < lo < hi):
+                p.append(f'{w}: need numbers 0 < wmin < wmax, got wmin={lo!r}, wmax={hi!r}')
+                continue
+            c = e.get('centre')
+            if c is not None and not (isinstance(c, (int, float)) and lo <= c <= hi):
+                p.append(f'{w}.centre = {c!r} lies outside [{lo}, {hi}]')
+            for j, win in enumerate(e.get('continuum', [])):
+                if not (isinstance(win, (list, tuple)) and len(win) == 2 and 0 < win[0] < win[1]):
+                    p.append(f'{w}.continuum[{j}] = {win!r} must be [min, max] with 0 < min < max')
     if r.min_snr < 0:
         p.append(f'regions.min_snr = {r.min_snr} must be >= 0')
-    if not 0 <= r.telluric_threshold <= 1:
-        p.append(f'regions.telluric_threshold = {r.telluric_threshold} must be between 0 and 1')
+    if not r.telluric_strictness > 0:
+        p.append(f'regions.telluric_strictness = {r.telluric_strictness} must be > 0')
     if r.max_regions < 1:
         p.append(f'regions.max_regions = {r.max_regions} must be >= 1')
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
     c = cfg.combine
-    if not c.prior_scale > 0:
-        p.append(f'combine.prior_scale = {c.prior_scale} must be > 0')
+    if c.tau_scale is not None and not c.tau_scale > 0:
+        p.append(f'combine.tau_scale = {c.tau_scale} must be > 0')
     if c.systematic_floor < 0:
         p.append(f'combine.systematic_floor = {c.systematic_floor} must be >= 0')
     if cfg.parallel.n_procs is not None and cfg.parallel.n_procs < 1:

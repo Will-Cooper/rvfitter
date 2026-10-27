@@ -17,7 +17,7 @@
 - RA/DEC: floats are degrees; sexagesimal strings are hours (RA) and degrees (Dec).
 - Units without a declared unit are guessed from the median wavelength (µm < 100, nm < 3000, else Å) with a warning.
 - 1D WCS log-linear: `DC-FLAG = 1` means log10 (IRAF); `CTYPE1` ending `-LOG` follows FITS WCS paper III.
-- ASCII: `# KEY = value` comment lines form a pseudo-header (OBJECT, MJD, AIRORVAC, RESOLUTION…); column names and units are taken from a header row or comment; words "vacuum"/"air" in comments are used as a medium hint only if exactly one occurs.
+- ASCII: the medium is never inferred from comment words, only from explicit keys (`# medium: air`, `AIRORVAC`); `# KEY = value` comment lines form a pseudo-header (OBJECT, MJD, AIRORVAC, RESOLUTION…); column names and units are taken from a header row or comment; words "vacuum"/"air" in comments are used as a medium hint only if exactly one occurs.
 - `columns` = `{'wave': name|index, 'flux': …, 'err'|'ivar'|'var': …}`.
 
 ## archives.py
@@ -30,7 +30,7 @@
 - Sections: input, velocity_frame, templates, methods, regions, combine, parallel, output (+ `seed`, `schema_version`).
   Unknown keys are errors with "did you mean" hints; all semantic errors are listed together.
 - `Config.hash()` hashes the canonical JSON of the analysis, excluding `input.paths` and `output` (P2 records input checksums).
-- `VelocityFrameConfig.overrides()` returns keys `ra, dec, mjd (mid-exposure), site, site_lat, site_lon`.
+- Config names follow the interface addenda: `velocity_frame.overrides` (dict: ra, dec, mjd, site, site_lat, site_lon), `grouping.override`, `regions.overrides` (method-keyed dict of dicts), `regions.telluric_strictness`, `combine.tau_scale`, `templates.teff_prior` (float).
 - Option keys invented in `default_for` for the Opus package to honour or rename: `template_fit.telluric_model`, `forward_mcmc.fit_vsini`, `telluric_model`, `fit_wave_offset`, `per_order`. Region thresholds `min_snr`, `telluric_threshold`, `max_regions`, `continuum_fwhm` are for P3.
 - Regime edges: R < 4500 low, 4500–20000 mid, > 20000 high. Bands: optical (ends below 11000 Å), nir (starts at or above 9000 Å), else mixed. These only select default methods, not regions.
 - `systematic_floor` defaults to 0 (the plan gives anchors, not a default).

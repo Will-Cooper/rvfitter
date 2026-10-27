@@ -275,7 +275,7 @@ def _medium_from_header(header: Mapping[str, Any]) -> tuple[str | None, str]:
             return 'air'
         return None
 
-    for key in ('AIRORVAC', 'WAVE_MED', 'WAVEMED', 'WAVE_MEDIUM', 'WAVEMEDIUM', 'WAVMED'):
+    for key in ('AIRORVAC', 'MEDIUM', 'WAVE_MED', 'WAVEMED', 'WAVE_MEDIUM', 'WAVEMEDIUM', 'WAVMED'):
         if key in header:
             medium = from_text(header[key])
             if medium:
@@ -764,11 +764,6 @@ def _read_ascii(path: Path, hdu: int | str | None = None, columns: Any = None) -
     unit = m.group(1) if m else None
     header = dict(pseudo)
     medium, source = _medium_from_header(header)
-    if medium is None:
-        has_vac = re.search(r'\bvac(?:uum)?\b', text, re.IGNORECASE) is not None
-        has_air = re.search(r'\bair\b', text, re.IGNORECASE) is not None
-        if has_vac != has_air:
-            medium, source = ('vacuum' if has_vac else 'air'), 'header:comment'
     wave = _wave_to_angstrom(wave, unit, path.name)
     return RawSpectrum(wave, flux, sigma, header, medium, source, None, _header_resolution(header), 'ascii')
 
@@ -820,7 +815,8 @@ def _clean_arrays(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray) -> tupl
     return wave[keep], flux[keep], sigma[keep]
 
 
-def read_spectrum(path: str | Path, *, medium: str = 'auto', hdu: int | str | None = None,
+def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
+                  hdu: int | str | None = None,
                   columns: Mapping[str, str | int] | None = None, resolution: float | None = None) -> Spectrum:
     """
     Read a one-dimensional spectrum and return it in vacuum Å.
@@ -834,6 +830,8 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', hdu: int | str | No
         'auto' (read the header; raise `ValueError` if it cannot be determined; PypeIt files default to vacuum),
         'air' or 'vacuum'.
         An explicit value overrides the header (a conflict is logged as a warning).
+    medium_method
+        Air to vacuum formula: 'ciddor' (default), 'edlen' or 'morton'
     hdu
         HDU index or name to read (default: the first suitable one; for PypeIt spec1d the first extension
         with ``OPT_WAVE``/``BOX_WAVE``)
@@ -906,7 +904,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', hdu: int | str | No
         raise ValueError(f"Cannot determine whether the wavelengths in {path} are in air or vacuum "
                          "(no AIRORVAC, VACUUM, WAVE_MED or CTYPE1 'AWAV'/'WAVE' in the header). "
                          "Pass medium='air' or medium='vacuum' (CLI: --medium).")
-    wave = to_vacuum(wave, medium_in)
+    wave = to_vacuum(wave, medium_in, medium_method)
     wave, flux, sigma = _clean_arrays(wave, flux, sigma)
 
     meta = _meta_from_header(raw.header)

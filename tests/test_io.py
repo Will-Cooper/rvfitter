@@ -193,7 +193,7 @@ def test_ascii_variants(tmp_path):
     np.testing.assert_allclose(spec.wave, WAVE)
     np.testing.assert_allclose(spec.sigma, 0.1)
     # tab separated, two columns, comments with key = value and medium hint
-    lines = ['# OBJECT = TestObj', '# wavelength in Angstrom, in air', '# MJD = 58000.5', '# EXPTIME = 100',
+    lines = ['# OBJECT = TestObj', '# wavelength in Angstrom', '# medium: air', '# MJD = 58000.5', '# EXPTIME = 100',
              '# RESOLUTION = 3000'] + [f'{w}\t{f}' for w, f in zip(WAVE, FLUX, strict=True)]
     (tmp_path / 'b.tsv').write_text('\n'.join(lines))
     spec = io.read_spectrum(tmp_path / 'b.tsv')
@@ -202,8 +202,13 @@ def test_ascii_variants(tmp_path):
     assert spec.meta['mjd_mid'] == pytest.approx(58000.5 + 50. / 86400.)
     assert np.isnan(spec.sigma).all()
     np.testing.assert_allclose(spec.wave, air_to_vac(WAVE), rtol=1e-12)
+    # a comment word alone is not enough to infer the medium
+    body = '\n'.join(f'{w} {f}' for w, f in zip(WAVE, FLUX, strict=True))
+    (tmp_path / 'd.txt').write_text('# spectrum in vacuum\n' + body)
+    with pytest.raises(ValueError, match='air or vacuum'):
+        io.read_spectrum(tmp_path / 'd.txt')
     # ivar column by name, nm units
-    (tmp_path / 'c.dat').write_text('# wave[nm] flux ivar\n# vacuum\n' +
+    (tmp_path / 'c.dat').write_text('# wave[nm] flux ivar\n# medium = vacuum\n' +
                                     '\n'.join(f'{w/10} {f} 100' for w, f in zip(WAVE, FLUX, strict=True)))
     spec = io.read_spectrum(tmp_path / 'c.dat')
     np.testing.assert_allclose(spec.wave, WAVE)

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from rvfitter import config
-from rvfitter.config import Config, ConfigError, RegionOverride, default_for, regime_for
+from rvfitter.config import Config, ConfigError, default_for, regime_for
 from rvfitter.types import Spectrum
 
 
@@ -16,18 +16,20 @@ def _full() -> Config:
     cfg.input.resolution = 2500.
     cfg.velocity_frame.correction = 'skip'
     cfg.velocity_frame.frame = 'heliocentric'
-    cfg.velocity_frame.ra, cfg.velocity_frame.dec, cfg.velocity_frame.mjd = 266.4, -16.6, 57238.1
-    cfg.velocity_frame.site = 'GTC'
+    cfg.velocity_frame.overrides = {'ra': 266.4, 'dec': -16.6, 'mjd': 57238.1, 'site': 'GTC'}
+    cfg.grouping.override = {'a.fits': 'Star A', 'b': 'Star A'}
     cfg.templates.local_dir = '/tmp/t'
     cfg.templates.medium = 'air'
     cfg.templates.teff_range = (1500., 2500.)
-    cfg.templates.logg_prior = (5., 0.3)
+    cfg.templates.teff_prior = 1900.
+    cfg.templates.logg_prior = 5.
     cfg.methods.enabled = ['template_fit', 'ccf']
     cfg.methods.options = {'ccf': {'oversample': 5, 'mask': [1.0, 2.0], 'sub': {'x': True}}}
-    cfg.regions.overrides = [RegionOverride(name='K I', method='ccf', wmin=7660., wmax=7710., centre=7701.,
-                                            continuum=[(7600., 7650.), (7720., 7760.)]),
-                             RegionOverride(name='bad', wmin=7600., wmax=7700., action='exclude')]
-    cfg.combine.prior_scale = 2.
+    cfg.regions.overrides = {'ccf': [{'name': 'K I', 'kind': 'line', 'wmin': 7660., 'wmax': 7710., 'centre': 7701.,
+                                      'continuum': [[7600., 7650.], [7720., 7760.]]},
+                                     {'name': 'bad', 'remove': True}]}
+    cfg.regions.telluric_strictness = 1.5
+    cfg.combine.tau_scale = 2.
     cfg.combine.systematic_floor = 1.5
     cfg.parallel.n_procs = 3
     cfg.output.formats = ['csv', 'html']
@@ -42,7 +44,8 @@ def test_round_trip(tmp_path):
     assert back == cfg
     assert back.hash() == cfg.hash()
     assert isinstance(back.templates.teff_range, tuple)
-    assert back.regions.overrides[0].continuum == [(7600., 7650.), (7720., 7760.)]
+    assert back.regions.overrides['ccf'][0]['continuum'] == [[7600., 7650.], [7720., 7760.]]
+    assert back.grouping.override == {'a.fits': 'Star A', 'b': 'Star A'}
 
 
 def test_default_round_trip_and_loads(tmp_path):
@@ -73,10 +76,9 @@ def test_partial_file_uses_defaults(tmp_path):
 
 def test_velocity_overrides():
     cfg = Config()
-    assert cfg.velocity_frame.overrides() == {}
-    cfg.velocity_frame.ra = 10.
-    cfg.velocity_frame.site = 'LCO'
-    assert cfg.velocity_frame.overrides() == {'ra': 10., 'site': 'LCO'}
+    assert cfg.velocity_frame.overrides == {} and cfg.grouping.override is None
+    cfg.velocity_frame.overrides = {'ra': 10., 'site': 'LCO'}
+    assert config.loads(config.dumps(cfg)).velocity_frame.overrides == {'ra': 10., 'site': 'LCO'}
 
 
 @pytest.mark.parametrize('text, needle', [
@@ -92,12 +94,19 @@ def test_velocity_overrides():
     ('[methods.options.bogus]\nx = 1\n', 'methods.options key'),
     ('[templates]\nteff_range = [2500, 1500]\n', 'templates.teff_range'),
     ('[templates]\nteff_range = [1500]\n', 'templates.teff_range: expected a list of 2'),
-    ('[templates]\nteff_prior = [2000, 0]\n', 'sd > 0'),
+    ('[templates]\nteff_prior = [2000, 100]\n', 'templates.teff_prior: expected'),
+    ('[templates]\nteff_prior = -5.0\n', 'positive temperature'),
     ('[output]\nformats = ["pdf"]\n', "output.formats[0] = 'pdf'"),
-    ('[velocity_frame]\ndec = 120.0\n', 'velocity_frame.dec'),
-    ('[velocity_frame]\nsite_lat = 10.0\n', 'site_lat and site_lon must be given together'),
-    ('[[regions.overrides]]\nname = "x"\nwmin = 8000.0\nwmax = 7000.0\n', 'regions.overrides[0]'),
-    ('[combine]\nprior_scale = -1.0\n', 'combine.prior_scale'),
+    ('[velocity_frame.overrides]\ndec = 120.0\n', 'velocity_frame.overrides.dec'),
+    ('[velocity_frame.overrides]\nsite_lat = 10.0\n', 'site_lat and site_lon must be given together'),
+    ('[velocity_frame.overrides]\nrra = 10.0\n', "did you mean 'ra'"),
+    ('[[regions.overrides.ccf]]\nname = "x"\nkind = "line"\nwmin = 8000.0\nwmax = 7000.0\n',
+     'regions.overrides.ccf[0]'),
+    ('[[regions.overrides.ccf]]\nname = "x"\n', 'needs kind, wmin, wmax'),
+    ('[[regions.overrides.cff]]\nname = "x"\nremove = true\n', "did you mean 'ccf'"),
+    ('[regions]\ntelluric_strictness = 0.0\n', 'regions.telluric_strictness'),
+    ('[grouping.override]\na = 3\n', 'grouping.override: expected'),
+    ('[combine]\ntau_scale = -1.0\n', 'combine.tau_scale'),
     ('schema_version = 99\n', 'schema_version'),
     ('seed = [\n', 'Invalid TOML'),
 ])
@@ -112,8 +121,8 @@ def test_validation_errors(text, needle, tmp_path):
 
 def test_all_problems_reported_together():
     with pytest.raises(ConfigError) as exc:
-        config.loads('[parallel]\nn_procs = 0\n[combine]\nprior_scale = 0.0\n')
-    assert 'n_procs' in str(exc.value) and 'prior_scale' in str(exc.value)
+        config.loads('[parallel]\nn_procs = 0\n[combine]\ntau_scale = 0.0\n')
+    assert 'n_procs' in str(exc.value) and 'tau_scale' in str(exc.value)
 
 
 def test_dump_refuses_invalid(tmp_path):
