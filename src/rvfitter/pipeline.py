@@ -19,7 +19,7 @@ import numpy as np
 from . import __version__
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
-__all__ = ['run', 'measure_object', 'enabled_methods']
+__all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem']
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +33,28 @@ def enabled_methods(cfg: Any, override: Sequence[str] | None = None) -> list[str
     return list(cfg.methods.enabled)
 
 
+class NoMethodsError(RuntimeError):
+    """None of the enabled methods is available; the message is user-ready"""
+
+
 def _registry() -> dict[str, Any]:
-    return importlib.import_module('rvfitter.methods').REGISTRY
+    """The method registry, or an empty dict if ``rvfitter.methods`` has none yet"""
+    return dict(getattr(importlib.import_module('rvfitter.methods'), 'REGISTRY', None) or {})
+
+
+def method_problem(cfg: Any, methods: Sequence[str] | None = None) -> str | None:
+    """Why no method can run (a user-ready message), or None if at least one enabled method is registered"""
+    names = enabled_methods(cfg, methods)
+    registry = _registry()
+    if not names:
+        return 'no RV methods available: none is enabled in the configuration'
+    if not registry:
+        return ('no RV methods available: rvfitter.methods has no registered methods yet '
+                f'(enabled: {", ".join(names)})')
+    if not any(m in registry for m in names):
+        return (f'no RV methods available: none of the enabled methods ({", ".join(names)}) is registered '
+                f'(registered: {", ".join(sorted(registry))})')
+    return None
 
 
 def _config_hash(cfg: Any) -> str:
@@ -83,7 +103,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     bary_info = {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
     # None means "use the SelectOptions default"
-    knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness}
+    knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
+             'telluric_corrected': True if cfg.input.telluric_corrected else None}
     opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
@@ -196,6 +217,9 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     """
     from . import archives
 
+    problem = method_problem(cfg, methods)
+    if problem:
+        raise NoMethodsError(problem)
     if inputs is None:
         inputs = cfg.input.paths
     if n_procs is None:

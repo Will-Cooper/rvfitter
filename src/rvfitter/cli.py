@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from . import __version__, logging_setup
+from .pipeline import NoMethodsError
 
 __all__ = ['main', 'build_parser']
 
@@ -44,10 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--format', dest='formats', help='comma-separated output formats: csv,json,tsv,html')
     p.add_argument('--n-procs', type=int, default=None, help='processes used within each object')
     p.add_argument('--medium', choices=('auto', 'air', 'vacuum'), default=None, help='wavelength medium of the input')
+    p.add_argument('--telluric-corrected', action='store_true',
+                   help='the spectra are already telluric-corrected (relaxes the telluric masking)')
+    p.add_argument('--no-plots', action='store_true', help='do not make diagnostic plots')
     p.add_argument('--bary', choices=('auto', 'apply', 'skip'), default=None, help='barycentric correction mode')
 
     p = sub.add_parser('run', parents=[common], help='run an analysis described by a TOML config')
     p.add_argument('config', help='TOML configuration file')
+    p.add_argument('--no-plots', action='store_true', help='do not make diagnostic plots')
     p.add_argument('--n-procs', type=int, default=None, help='processes per object (default: from the config)')
 
     p = sub.add_parser('init', parents=[common], help='write a default config for a spectrum')
@@ -81,6 +86,10 @@ def _cmd_measure(args) -> int:
             log.error('No spectra found in %s', args.path)
             return 1
         cfg = config.default_for(io.read_spectrum(first[0], medium=args.medium or 'auto'))
+    if args.telluric_corrected:
+        cfg.input.telluric_corrected = True
+    if args.no_plots:
+        cfg.output.plots = False
     methods = [m for m in args.methods.split(',') if m] if args.methods else None
     res = pipeline.run(cfg, args.path, n_procs=args.n_procs, medium=args.medium, methods=methods, bary=args.bary)
     if not res:
@@ -96,6 +105,8 @@ def _cmd_run(args) -> int:
     from . import config, pipeline, results
 
     cfg = config.load(args.config)
+    if args.no_plots:
+        cfg.output.plots = False
     inputs = cfg.input.paths
     if not inputs:
         log.error('The config %s names no input paths', args.config)
@@ -237,6 +248,10 @@ def main(argv=None) -> int:
     except (ImportError, NotImplementedError) as exc:
         logging_setup.configure(_verbosity(args))
         return _import_failure(exc, args.command)
+    except NoMethodsError as exc:
+        logging_setup.configure(_verbosity(args))
+        log.error('%s', exc)
+        return 1
     except Exception as exc:  # noqa: BLE001
         logging_setup.configure(_verbosity(args))
         log.error('%s: %s', type(exc).__name__, exc)

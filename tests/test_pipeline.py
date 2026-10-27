@@ -73,7 +73,7 @@ def fakes(monkeypatch):
 
 NS = types.SimpleNamespace
 CFG = NS(seed=7, methods=NS(enabled=['linecentre', 'ccf', 'lsd'], options={}), hash=lambda: 'h',
-         input=NS(medium='auto', hdu=None, resolution=None, paths=['p1']),
+         input=NS(medium='auto', hdu=None, resolution=None, paths=['p1'], telluric_corrected=False),
          regions=NS(overrides={'ccf': [{'name': 'x', 'remove': True}]}, min_snr=7.0, telluric_strictness=None),
          combine=NS(tau_scale=0.3, systematic_floor=0.2), grouping=NS(override=None),
          velocity_frame=NS(correction='auto', frame='barycentric', overrides={}), templates=NS(teff_prior=None),

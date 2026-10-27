@@ -4,7 +4,7 @@ Reading, validating and writing the TOML configuration that fully describes an a
 The configuration is a tree of dataclasses (`Config`) with one section per concern:
 
 ====================  ===========================================================================================
-``[input]``            paths, medium (and air→vacuum formula), HDU, resolution override
+``[input]``            paths, medium (and air→vacuum formula), HDU, resolution override, telluric-corrected flag
 ``[grouping]``         optional file -> object overrides
 ``[velocity_frame]``   barycentric correction mode, target frame and overrides of the header values
 ``[templates]``        grid name or local directory, its medium, Teff/log g/[M/H] ranges and priors
@@ -66,6 +66,7 @@ class InputConfig:
     medium_method: str = 'ciddor'  # air↔vacuum formula: 'ciddor' | 'edlen' | 'morton'
     hdu: int | str | None = None
     resolution: float | None = None  # R override (applied to every spectrum)
+    telluric_corrected: bool = False  # spectra are already telluric-corrected: relax the telluric masking
 
 
 @dataclass
