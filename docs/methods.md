@@ -58,3 +58,15 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 | LSD | — | | | |
 | Telluric-referenced | — | | | |
 | Adopted | 32.7 ± 6.5 | | | |
+
+## Barycentric correction of the GTC spectra
+
+The GTC/OSIRIS spectra used by Cooper et al. (2024) were corrected to the heliocentric frame by `PypeIt` 1.7.0 during reduction.
+rvfitter v2 recomputes that correction for J1745−1640 from the header coordinates and mid-exposure time, at the Roque de los Muchachos site.
+It finds −20.851 km/s heliocentric (−20.858 km/s barycentric).
+`PypeIt` applied −21.006 km/s (`VEL_CORR` = 0.9999299356).
+
+The 0.155 km/s difference traces to the GTC headers: they record `LON-OBS` = +17.877°, but GTC lies at 17.89° **west**.
+Every GTC RV in the paper sample therefore probably carries a sub-0.2 km/s offset from this.
+That is well below the quoted uncertainties, but it is systematic, so it is recorded here.
+The helio–barycentric difference for this spectrum is only 0.007 km/s.
