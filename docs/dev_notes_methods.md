@@ -301,3 +301,29 @@ Through `pipeline.run`: tellcorr input, sky from the Science spec1d, R = 2602, f
 - With the sky correction, the total error is 6.5 km/s (sys_wavezp 3.8 and sys_template 4.2).
 - The corrected value is 7.6 km/s below the benchmark. The sky cannot see the star's own offset from slit centring; only the telluric absorption lines, which share the starlight's path, can. That term (unit 5) is the next test, and no correction is chosen by its effect on 26.2.
 - Per-line values with the sky correction (CCF): Cs I 8523 19.6, Na I 12.9, Rb I 7802 24.6 and Rb I 7949 14.5 km/s (uncorrected 49.6, 36.1, 34.4 and 24.2 km/s).
+
+## Unit 3b-fix: grid holes, reproducible refits, Zenodo grid source
+
+- **Holes:** a request inside the grid's range whose multilinear corners include a missing file falls back to the nearest point with the new flag `template_grid_hole` (512). The missing corner files are named in a WARNING. We do not renormalise over the corners that exist, because that would bias the template. `outside_grid` / `template_grid_edge` now means only a request outside an axis's range.
+- **Seeds:** each object's RNG is `SeedSequence([cfg.seed, blake2b(name)])` (`pipeline.object_seed`), independent of the other inputs and their order.
+- **Refits:** a refit is recorded as `{'object', 'patch'}` without changing the global values. `pipeline.run` applies each patch only to its object (`config_for_object`), and `Config.hash()` excludes the refit list, so it describes each object's configuration.
+- **End-to-end test** (`tests/test_refit_e2e.py`): two synthetic objects are run, the second is refitted with a wider `met_range`, the TOML is dumped and rerun from scratch, and the CSV tables are byte-identical. The unpatched object is unchanged, and the patched object alone gives the same row.
+- **Download defaults:** `templates.download` holds an unranged met/alpha at the grid default (SAND: the near-solar chemistry [M/H] +0.1, [α/M] +0.15, since its chemistries are specific pairs). All requests carry an rvfitter User-Agent.
+- **SVO** now answers HTTP 403 Forbidden from this host (curl too), so its model ids remain unverified. The network test skips on 403 or a timeout.
+- **Zenodo** (`grid_sources.py`; `templates.download(source="auto" | "svo" | "zenodo")` and CLI `--source`; auto tries SVO first, then Zenodo). The records were verified live on 2026-10-27; all are CC-BY-4.0:
+
+  | Grid | Record(s) | Archive | Format |
+  |---|---|---|---|
+  | Sonora Bobcat | 5063476 | `spectra_m{met}.tar.gz`, `…_co{0.5,1.5}_g1000nc.tar.gz` | text, μm, F_ν, g [MKS] |
+  | Sonora Diamondback | 12735103 | `spectra.zip` (1445 members) | text, μm, W/m²/m; f_sed (nc = 0) |
+  | Sonora Elf Owl (Paper IV) | 15150865, 15150874, 15150881 | `teff_{lo}_{hi}.tar.gz` (≈9.5 GB each) | netCDF-4 (h5py), μm, erg/s/cm²/cm |
+  | SAND | 11582126 | `SAND.zip` (5181 "recommended" FITS) | FITS table, Å, erg/s/cm²/Å, AIRORVAC = VAC |
+
+  - zip archives are read remotely with HTTP range requests, so only the selected members are transferred, each checked by its CRC-32.
+  - tar.gz archives are streamed once, with only the selected members converted, and the whole stream is checked against Zenodo's MD5 (a mismatch deletes the converted files).
+  - Member names are checked as in `archives` (unsafe ones are skipped with a warning), and output names are generated from the parsed parameters. Each member is capped at 500 MB.
+  - The spectra keep their native sampling and resolution (Å, F_λ). The medium is the header's (SAND) or measured on opening; both live tests gave vacuum.
+  - Live tests: SAND (three models at 1900–2100 K in 4 s, declared vacuum confirmed) and Bobcat (two models from a 108 MB stream in 40 s, MD5 verified, measured vacuum).
+- **Upstream URLs** are now on every grid. LOWZ is on Harvard Dataverse, and BT-Settl CIFIST and AGSS2009 are on the Lyon server (which times out from here); these are manual downloads, opened with a GridMeta, and `download` says so.
+- SED_Tools / NJM was not used: it serves only R ≈ 1000 BOSZ and BT-Cond spectra, standardised for SED work, and disables SSL verification on failure.
+- **CI:** `-m "not data and not gui and not slow and not network"`.
