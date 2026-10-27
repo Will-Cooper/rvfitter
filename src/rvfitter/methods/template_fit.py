@@ -231,7 +231,7 @@ def _rv_grid(spectrum, opts):
 def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, executor: Executor | None = None,
             rng: np.random.Generator) -> MethodResult:
     """
-    Template-fit RVs, one per window, combined with the Birge-inflated weighted mean
+    Template-fit RVs, one per window, combined with a random-effects model (combine.combine_regions)
 
     Parameters
     ----------

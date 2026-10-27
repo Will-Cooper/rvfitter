@@ -219,7 +219,8 @@ class Template:
         Template flux at observed pixels for radial velocities v (scalar → 1D, array → (len(v), len(wave)))
 
         By default the shifted template is averaged over each observed pixel (edges half-way between centres in
-        ln λ), matching pixel-integrated data; `integrate=False` point-samples at the pixel centres.
+        ln λ, and extrapolated by half a pixel at the two ends, which makes the first and last pixels very slightly
+        asymmetric; negligible), matching pixel-integrated data; `integrate=False` point-samples at the centres.
         """
         lnw = np.log(np.asarray(wave, dtype=float))
         v = np.asarray(v, dtype=float)
@@ -632,13 +633,20 @@ def reject_outliers(measurements: list[Measurement], k: float = 5.) -> list[Meas
 
 
 def finish(method: str, measurements: list[Measurement], outlier_k: float | None = 5.) -> MethodResult:
-    """Combine a method's per-region measurements (Birge), ignoring seriously flagged ones and gross outliers"""
+    """Combine a method's per-region measurements (random effects), ignoring seriously flagged ones and outliers"""
     from ..combine import combine_regions
     if outlier_k:
         reject_outliers(measurements, outlier_k)
     bad = SERIOUS | FLAG_OUTLIER
     good = [m for m in measurements if not (m.flag & bad) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
-    rv, err = combine_regions(good)
+    details: dict = {}
+    rv, err = combine_regions(good, details=details)
+    for m in measurements:  # the combination is method-level; recorded on every row for the details table
+        m.diagnostics.update(method_tau=details.get('tau_line', np.nan), method_birge_rv=details.get('birge_rv'),
+                             method_birge_err=details.get('birge_err'))
+    if len(good) > 1:
+        log.info('%s: random-effects %.2f ± %.2f km/s (τ %.1f km/s over %d regions; Birge %.2f ± %.2f km/s)', method,
+                 rv, err, details['tau_line'], len(good), details['birge_rv'], details['birge_err'])
     return MethodResult(method, rv, err, len(good), measurements)
 
 
