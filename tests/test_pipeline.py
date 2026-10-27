@@ -53,6 +53,7 @@ def fakes(monkeypatch):
         return {m: [] for m in kw['methods']}
 
     monkeypatch.setattr(regions, 'select', select, raising=False)
+    monkeypatch.setattr(regions, 'SelectOptions', types.SimpleNamespace, raising=False)
     monkeypatch.setattr(combine, 'combine_regions',
                         lambda ms: (float(np.mean([m.rv for m in ms])), 1.0), raising=False)
 
@@ -73,7 +74,7 @@ def fakes(monkeypatch):
 NS = types.SimpleNamespace
 CFG = NS(seed=7, methods=NS(enabled=['linecentre', 'ccf', 'lsd'], options={}), hash=lambda: 'h',
          input=NS(medium='auto', hdu=None, resolution=None, paths=['p1']),
-         regions=NS(overrides={'ccf': [{'name': 'x', 'remove': True}]}),
+         regions=NS(overrides={'ccf': [{'name': 'x', 'remove': True}]}, min_snr=7.0, telluric_strictness=None),
          combine=NS(tau_scale=0.3, systematic_floor=0.2), grouping=NS(override=None),
          velocity_frame=NS(correction='auto', frame='barycentric', overrides={}), templates=NS(teff_prior=None),
          parallel=NS(n_procs=1))
@@ -117,6 +118,8 @@ def test_config_overrides_passed(fakes):
     res = pipeline.run(CFG, ['p1'], n_procs=1)
     assert fakes.calls['select']['overrides'] == CFG.regions.overrides
     assert fakes.calls['tau'] == 0.3
+    opts = fakes.calls['select']['options']
+    assert opts.snr_min == 7.0 and not hasattr(opts, 'telluric')
     assert res[0].systematics['floor'] == 0.2
     df = results.to_table(res)
     expect = np.sqrt(df.loc[0, 'rv_adopted_err'] ** 2 + 0.5**2 + 0.4**2 + 0.2**2)

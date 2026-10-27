@@ -82,11 +82,15 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     # several epochs: report the mean correction applied, and the source of the first
     bary_info = {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
+    # None means "use the SelectOptions default"
+    knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness}
+    opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
     sel0: dict[str, list] = {}
     for spec in corrected:
-        sel = regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=cfg.regions.overrides)
+        sel = regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=cfg.regions.overrides,
+                             options=opts)
         if not sel0:
             sel0 = sel
         for m in names:
