@@ -88,15 +88,19 @@ class GroupingConfig:
 @dataclass
 class TemplatesConfig:
     """Model-atmosphere grid and the parameter space searched"""
-    grid: str = 'bt-settl-cifist'
-    local_dir: str | None = None  # use a local directory of templates instead of downloading
+    grid: str | list[str] = 'bt-settl-cifist'  # one grid name, or several (searched together; their spread is a
+    # systematic)
+    local_dir: str | dict[str, str] | None = None  # local template directory (first grid), or {grid: directory}
     medium: str | None = None  # declared medium of the grid; None = take it from the grid's metadata
     teff_range: tuple[float, float] | None = None  # [K]
     logg_range: tuple[float, float] | None = None  # [dex, cgs]
     met_range: tuple[float, float] | None = None  # [dex]
+    alpha_range: tuple[float, float] | None = None  # [dex]
+    ranges: dict[str, tuple[float, float]] = field(default_factory=dict)  # extra grid axes, e.g. {co = [0.5, 1]}
     teff_prior: float | None = None  # expected Teff [K] (e.g. from the spectral type), used to select features
     logg_prior: float | None = None
-    met_prior: float | None = None
+    met_prior: float | None = None  # met, alpha and extra axes without a range are held at their prior/default
+    alpha_prior: float | None = None
 
 
 @dataclass
@@ -161,6 +165,9 @@ class Config:
     combine: CombineConfig = field(default_factory=CombineConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    # configuration patches applied by pipeline.refit_object, in order ({'object': ..., 'patch': {...}}); the
+    # values above already include them, this list records how they came about
+    refits: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self, drop_none: bool = True) -> dict[str, Any]:
         """Plain nested dictionary (tuples as lists); ``None`` values are dropped unless ``drop_none`` is False"""
@@ -353,6 +360,12 @@ def _validate(cfg: Config) -> list[str]:
     _range(p, 'templates.teff_range', t.teff_range, positive=True)
     _range(p, 'templates.logg_range', t.logg_range)
     _range(p, 'templates.met_range', t.met_range)
+    _range(p, 'templates.alpha_range', t.alpha_range)
+    for axis, r_ in t.ranges.items():
+        _range(p, f'templates.ranges.{axis}', r_)
+    grids = [t.grid] if isinstance(t.grid, str) else list(t.grid)
+    if not grids or len(set(grids)) != len(grids):
+        p.append(f'templates.grid = {t.grid!r} must be a name or a list of distinct names')
     if t.teff_prior is not None and not t.teff_prior > 0:
         p.append(f'templates.teff_prior = {t.teff_prior} must be a positive temperature [K]')
     m = cfg.methods

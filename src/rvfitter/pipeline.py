@@ -19,7 +19,8 @@ import numpy as np
 from . import __version__
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
-__all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem']
+__all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem',
+           'refit_object', 'suggested_refits', 'apply_patch']
 
 log = logging.getLogger(__name__)
 
@@ -246,3 +247,107 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
         if on_object is not None:
             on_object(res)
     return out
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# refitting one object with an updated configuration (e.g. a wider parameter range or an extra grid)
+# ----------------------------------------------------------------------------------------------------------------------
+def _deep_merge(base: dict, patch: dict) -> dict:
+    out = dict(base)
+    for k, v in patch.items():
+        out[k] = _deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def _plain(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {str(k): _plain(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_plain(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
+def apply_patch(cfg: Any, cfg_patch: dict) -> Any:
+    """
+    A new, validated Config: ``cfg`` with ``cfg_patch`` deep-merged into it (``cfg`` is not modified)
+
+    Parameters
+    ----------
+    cfg
+        A `config.Config`
+    cfg_patch
+        Nested mapping of the sections and keys to change, e.g. ``{'templates': {'met_range': [-1.0, 0.0]}}``
+    """
+    from . import config
+    return config.from_dict(_deep_merge(cfg.to_dict(), _plain(cfg_patch)))
+
+
+def suggested_refits(result: ObjectResult) -> list[dict]:
+    """
+    Actions suggested by the template-edge guidance of an object (for the CLI log or a GUI button)
+
+    Returns
+    -------
+    actions
+        One dict per distinct (axis, direction, action): 'method', 'axis', 'direction', 'action' ('widen' |
+        'download' | 'none'), 'message', 'cfg_patch' (for `refit_object`), 'download' (keyword arguments for
+        `templates.download`, or None) and 'command' (the equivalent CLI command, or '')
+    """
+    seen, out = set(), []
+    for name, mres in result.methods.items():
+        for meas in mres.measurements:
+            summ = (meas.diagnostics or {}).get('template_summary') or {}
+            for e in summ.get('edges', []):
+                key = (e['axis'], e['direction'], e['action'])
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(dict(method=name, axis=e['axis'], direction=e['direction'], action=e['action'],
+                                message=e['message'], cfg_patch=e['cfg_patch'], download=e['download'],
+                                command=e['command']))
+    return out
+
+
+def refit_object(result: ObjectResult, cfg: Any, cfg_patch: dict, *, inputs: Sequence[str | Path] | None = None,
+                 n_procs: int | None = 1, medium: str | None = None, methods: Sequence[str] | None = None,
+                 bary: str | None = None) -> tuple[ObjectResult, Any]:
+    """
+    Rerun one object with an updated configuration, recording the change
+
+    Nothing changes mid-run: the patch (e.g. a suggestion from `suggested_refits`, applied after downloading
+    any grid it needs) gives a new Config, which is validated, recorded in ``new_cfg.refits`` and so in any TOML
+    written from it, and the object is measured again from its files.
+
+    Parameters
+    ----------
+    result
+        The object's previous result (its ``files`` are re-read unless ``inputs`` is given)
+    cfg
+        The Config used for ``result`` (not modified)
+    cfg_patch
+        Nested mapping merged into the configuration, e.g. ``{'templates': {'met_range': [-1.0, 0.0]}}``
+    inputs, n_procs, medium, methods, bary
+        As for `run`
+
+    Returns
+    -------
+    result, new_cfg
+        The new ObjectResult and the Config that produced it. The random seed is
+        ``SeedSequence(new_cfg.seed).spawn(1)[0]``, i.e. that of a run on this object alone, so ``rvfitter run``
+        with the written TOML on the same files reproduces it exactly
+    """
+    new_cfg = apply_patch(cfg, cfg_patch)
+    new_cfg.refits.append({'object': result.object, 'patch': _plain(cfg_patch)})
+    log.info('Refitting %s with %s', result.object, _plain(cfg_patch))
+    spectra = _read_all(new_cfg, list(inputs or result.files), medium or new_cfg.input.medium)
+    if not spectra:
+        raise FileNotFoundError(f'none of the files of {result.object} could be read: {result.files}')
+    rng = np.random.default_rng(np.random.SeedSequence(new_cfg.seed).spawn(1)[0])
+    if n_procs and n_procs > 1:
+        with ProcessPoolExecutor(n_procs, mp_context=multiprocessing.get_context('spawn')) as ex:
+            res = measure_object(spectra, new_cfg, ex, rng, name=result.object, methods=methods, bary=bary)
+    else:
+        res = measure_object(spectra, new_cfg, None, rng, name=result.object, methods=methods, bary=bary)
+    return res, new_cfg
