@@ -16,12 +16,15 @@ from ..types import Measurement, MethodResult, Region, Spectrum
 
 log = logging.getLogger(__name__)
 
-# measurement flag bits (mirrored by results.FLAGS)
-FLAG_EDGE = 1  # peak or optimum at the edge of the search range
-FLAG_OUTSIDE_GRID = 2  # template requested outside the grid: nearest point used
-FLAG_FIT_FAILED = 4  # the fit did not converge or gave a non-finite error
-FLAG_FEW_PIXELS = 8  # too few usable pixels
-FLAG_POOR_FIT = 16  # reduced χ² far above one (the error is scaled, but check the template)
+# measurement flag bits, from results.FLAGS
+from ..results import FLAGS as _FLAGS  # noqa: E402
+
+FLAG_FIT_FAILED = _FLAGS['fit_failed']  # the fit failed or gave a non-finite error
+FLAG_FEW_PIXELS = _FLAGS['few_regions']  # too few usable pixels/regions
+FLAG_OUTSIDE_GRID = _FLAGS['template_grid_edge']  # template requested outside the grid: nearest point used
+FLAG_EDGE = _FLAGS['not_converged']  # optimum at the edge of the search range
+FLAG_POOR_FIT = _FLAGS.get('poor_fit', 64)  # reduced χ² > 3 (the error is scaled; check the template)
+FLAG_OUTLIER = _FLAGS.get('outlier', 128)  # gross outlier among the method's regions (excluded)
 SERIOUS = FLAG_EDGE | FLAG_FIT_FAILED | FLAG_FEW_PIXELS
 
 MASK_KINDS = ('telluric',)
@@ -58,12 +61,34 @@ def options(cfg: Any, method: str, defaults: Mapping[str, Any]) -> dict:
     return out
 
 
-def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any]) -> float:
-    """The data's resolving power: method option, else spectrum.resolution, else cfg.input.resolution"""
-    for r in (opts.get('resolution'), spectrum.resolution, section(cfg, 'input').get('resolution')):
+_ESTIMATED_R: dict[tuple, float] = {}
+
+
+def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any], *, estimate: bool = True) -> float:
+    """
+    The data's resolving power: the method option, else cfg.input.resolution, else spectrum.resolution, else
+    (if `estimate`) `template_fit.estimate_resolution`, cached per spectrum and logged as a warning
+    """
+    for r in (opts.get('resolution'), section(cfg, 'input').get('resolution'), spectrum.resolution):
         if r is not None and np.isfinite(r) and r > 0:
             return float(r)
-    raise ValueError('the spectral resolution is unknown: set input.resolution or the method option "resolution"')
+    if not estimate:
+        raise ValueError('the spectral resolution is unknown: set input.resolution or the method option '
+                         '"resolution"')
+    key = (spectrum.source, len(spectrum.wave), spectrum.wmin, spectrum.wmax, float(np.nansum(spectrum.flux)))
+    if key not in _ESTIMATED_R:
+        from .template_fit import estimate_resolution
+        est_cfg = cfg
+        given = {k: opts[k] for k in ('template', 'templates') if opts.get(k) is not None}
+        if given:  # estimate with the calling method's own template
+            est_cfg = {'templates': section(cfg, 'templates'), 'methods': {'options': {'template_fit': given}}}
+        out = estimate_resolution(spectrum, cfg=est_cfg)
+        if not np.isfinite(out['resolution']):
+            raise ValueError('the spectral resolution is unknown and could not be estimated: set input.resolution')
+        log.warning('Resolution of %s unknown: estimated R = %.0f ± %.0f from a template fit (set input.resolution '
+                    'to override)', spectrum.source or 'the spectrum', out['resolution'], out['resolution_err'])
+        _ESTIMATED_R[key] = out['resolution']
+    return _ESTIMATED_R[key]
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -267,11 +292,7 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
         specs = [as_spec(t, i) for i, t in enumerate(opts['templates'])]
         return [Candidate(str(s.meta.get('object', f'template{i}')), spectrum=s) for i, s in enumerate(specs)]
     tcfg = section(cfg, 'templates')
-    if not tcfg.get('local_dir'):
-        raise ValueError('no template given: set templates.local_dir (and grid) in the config, '
-                         'or the method option "template"')
-    from ..templates import TemplateGrid
-    grid = TemplateGrid(tcfg['local_dir'], grid=tcfg.get('grid'))
+    grid = open_grid(tcfg)
     teff = tcfg.get('teff_prior')
     teff_range = tcfg.get('teff_range')
     if teff_range is None and teff is not None:
@@ -281,6 +302,33 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
         points = [grid.nearest(teff or 2000., tcfg.get('logg_prior') or 5.)]
         log.warning('no grid points in the prior ranges: using %s', points[0])
     return [Candidate(f'{grid.name} {t:g}/{g:g}/{m:+g}', grid=grid, params=(t, g, m)) for t, g, m in points]
+
+
+def open_grid(tcfg: Mapping[str, Any]):
+    """
+    The TemplateGrid named by a templates config section: `local_dir`, else the downloaded grid in the cache
+
+    A `medium` given in the config overrides the grid's declared medium (and is then verified like any other).
+    """
+    from dataclasses import replace as _replace
+    from pathlib import Path
+
+    from .. import templates as T
+    name = tcfg.get('grid') or 'bt-settl-cifist'
+    directory = tcfg.get('local_dir')
+    if not directory:
+        cached = T.cache_dir() / name
+        if not cached.is_dir():
+            raise ValueError(f'no templates: set templates.local_dir, or run "rvfitter templates download --grid '
+                             f'{name}", or give the method option "template"')
+        directory = cached
+    meta = None
+    if tcfg.get('medium'):
+        base = T._read_metadata(Path(directory)) or T.KNOWN_GRIDS.get(name)
+        if base is None:
+            raise ValueError(f'unknown grid {name!r} and no metadata in {directory}')
+        meta = _replace(base, medium=tcfg['medium'])
+    return T.TemplateGrid(directory, grid=name, meta=meta)
 
 
 def build_template(cand: Candidate, resolution: float, wave_range: tuple[float, float], *, vsini: float = 0.,
@@ -313,10 +361,73 @@ def child_seeds(rng: np.random.Generator, n: int) -> list[np.random.SeedSequence
     return np.random.SeedSequence(entropy).spawn(n)
 
 
-def finish(method: str, measurements: list[Measurement]) -> MethodResult:
-    """Combine a method's per-region measurements (Birge), ignoring seriously flagged ones"""
+def segment(windows: Sequence[Region], resolution: float, n_res: float | None) -> list[Region]:
+    """
+    Split windows longer than n_res resolution elements into near-equal segments (per-segment RVs)
+
+    Each segment is a separate measurement, so the segment-to-segment scatter enters the Birge combination and
+    the hierarchical line × method model, and a region that disagrees (e.g. telluric residuals or a badly
+    matched molecular band) is visible instead of being averaged into one number.
+
+    Parameters
+    ----------
+    windows
+        The fitting windows
+    resolution
+        Resolving power
+    n_res
+        Maximum segment length in resolution elements (None or ≤0: no splitting)
+
+    Returns
+    -------
+    segments
+        The windows, with long ones replaced by segments named "<name> [a–b]"
+    """
+    if not n_res or n_res <= 0:
+        return list(windows)
+    out = []
+    for w in windows:
+        n_elem = np.log(w.wmax / w.wmin) * resolution
+        k = int(np.ceil(n_elem / n_res - 1e-9))
+        if k <= 1:
+            out.append(w)
+            continue
+        edges = w.wmin * (w.wmax / w.wmin) ** (np.arange(k + 1) / k)
+        for a, b in zip(edges[:-1], edges[1:], strict=True):
+            out.append(Region(f'{w.name} [{a:.0f}-{b:.0f}]', w.kind, float(a), float(b), w.centre, w.continuum,
+                              f'{w.reason}; segment {a:.0f}-{b:.0f} of {k}'.lstrip('; ')))
+    return out
+
+
+def reject_outliers(measurements: list[Measurement], k: float = 5.) -> list[Measurement]:
+    """
+    Flag gross outliers among a method's usable measurements (at least three)
+
+    A measurement is an outlier if |rv − median| > k √(s² + σ²), with s = 1.4826 × MAD of the RVs. With k = 5
+    this only catches failures (e.g. a fit locked on a wrong optimum), not ordinary scatter, which the Birge
+    and hierarchical combinations handle. Outliers get the `FLAG_OUTLIER` bit (excluded from the combination).
+    """
+    usable = [m for m in measurements if not (m.flag & SERIOUS) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
+    if len(usable) < 3:
+        return measurements
+    rvs = np.array([m.rv for m in usable])
+    med = float(np.median(rvs))
+    s = 1.4826 * float(np.median(np.abs(rvs - med)))
+    for m in usable:
+        if abs(m.rv - med) > k * np.hypot(s, m.rv_err):
+            m.flag |= FLAG_OUTLIER
+            log.warning('%s %s: %.1f km/s is a gross outlier (median %.1f, robust scatter %.1f); excluded',
+                        m.method, m.region, m.rv, med, s)
+    return measurements
+
+
+def finish(method: str, measurements: list[Measurement], outlier_k: float | None = 5.) -> MethodResult:
+    """Combine a method's per-region measurements (Birge), ignoring seriously flagged ones and gross outliers"""
     from ..combine import combine_regions
-    good = [m for m in measurements if not (m.flag & SERIOUS) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
+    if outlier_k:
+        reject_outliers(measurements, outlier_k)
+    bad = SERIOUS | FLAG_OUTLIER
+    good = [m for m in measurements if not (m.flag & bad) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
     rv, err = combine_regions(good)
     return MethodResult(method, rv, err, len(good), measurements)
 

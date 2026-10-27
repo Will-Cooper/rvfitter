@@ -26,7 +26,7 @@ from ..constants import C_KMS
 from ..types import Measurement, MethodResult, Region, Spectrum
 from . import _common as C
 
-__all__ = ['measure', 'DEFAULTS', 'measure_resolution', 'fit_window']
+__all__ = ['measure', 'DEFAULTS', 'measure_resolution', 'estimate_resolution', 'fit_window']
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +41,10 @@ DEFAULTS: dict[str, Any] = dict(
     n_chunks=8,
     template=None, templates=None, teff_window=300.,
     region_kinds=None,
+    segment_res=150.,  # split windows longer than this many resolution elements (0: never)
+    outlier_k=5.,  # gross-outlier rejection among regions (0: off)
     pad_kms=1500.,
+    telluric_model=False,  # multiply the model by a telluric transmission (calibration.telluric; unit 5)
 )
 
 
@@ -201,10 +204,12 @@ def _score_candidate(cand: C.Candidate, datas, windows, resolution, wave_range, 
     return total
 
 
-def _prepare(spectrum, regions, cfg, opts):
+def _prepare(spectrum, regions, cfg, opts, resolution=None):
     windows, masks = C.split_regions(regions, opts['region_kinds'])
     if not windows:
         raise ValueError('no template-fit windows among the regions')
+    if resolution is not None:
+        windows = C.segment(windows, resolution, opts['segment_res'])
     datas, kept = [], []
     for win in windows:
         d = _data(spectrum, win, masks)
@@ -246,8 +251,10 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         The combined RV; diagnostics hold the χ² scan, best-fit model, polynomial, vsini and errors
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
+    if opts['telluric_model']:
+        log.warning('template_fit: telluric_model is not implemented yet; fitting without it')
     resolution = C.resolution_of(spectrum, cfg, opts)
-    datas, kept = _prepare(spectrum, regions, cfg, opts)
+    datas, kept = _prepare(spectrum, regions, cfg, opts, resolution)
     if not datas:
         return MethodResult(METHOD, np.nan, np.nan, 0, [])
     rv_grid = _rv_grid(spectrum, opts)
@@ -300,7 +307,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         log.debug('template_fit %s: %.2f ± %.2f km/s (χ²/ν %.2f, flag %d)', window.name, m.rv, m.rv_err, chi2_red,
                   flag)
         measurements.append(m)
-    result = C.finish(METHOD, measurements)
+    result = C.finish(METHOD, measurements, opts['outlier_k'])
     log.info('template_fit: %.2f ± %.2f km/s (template %s, %d windows)', result.rv, result.rv_err, tpl.label,
              result.n_regions)
     return result
@@ -329,7 +336,7 @@ def measure_resolution(spectrum: Spectrum, regions: Sequence[Region], cfg: Any =
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     try:
-        r0 = C.resolution_of(spectrum, cfg, opts)
+        r0 = C.resolution_of(spectrum, cfg, opts, estimate=False)
         r_grid = np.geomspace(0.5 * r0, 2. * r0, 20) if r_grid is None else np.asarray(r_grid, float)
     except ValueError:
         r_grid = np.geomspace(1000., 10000., 25) if r_grid is None else np.asarray(r_grid, float)
@@ -355,3 +362,49 @@ def measure_resolution(spectrum: Spectrum, regions: Sequence[Region], cfg: Any =
     else:
         best, err = float(r_grid[i]), np.nan
     return dict(resolution=best, resolution_err=float(err), r_grid=r_grid, chi2=chi2)
+
+
+def estimate_resolution(spectrum: Spectrum, regions: Sequence[Region] | None = None, cfg: Any = None) -> dict:
+    """
+    Estimate the resolving power of a spectrum of unknown (or doubtful) resolution from a template-fit LSF
+
+    A coarse χ² profile over R = 300–100 000 (16 log-spaced values) is refined with `measure_resolution` over
+    a factor of 1.5 either side of its minimum. Templates come from the config (or the 'template' option of
+    template_fit). Regions default to `regions.select(..., methods=['template_fit'])`.
+
+    Parameters
+    ----------
+    spectrum
+        The spectrum (its own `resolution` is ignored)
+    regions
+        Fitting windows and telluric masks
+    cfg
+        Config or mapping
+
+    Returns
+    -------
+    result
+        'resolution', 'resolution_err', 'r_grid', 'chi2' (of the refinement), 'method' ('template_fit')
+    """
+    from dataclasses import replace as _replace
+    spec = _replace(spectrum, resolution=None)
+    tcfg = C.section(cfg, 'templates')
+    if regions is None:
+        from .. import regions as _regions
+        regions = _regions.select(spectrum, teff=tcfg.get('teff_prior'), methods=[METHOD]).get(METHOD, [])
+    no_r = _strip_resolution(cfg)
+    coarse = measure_resolution(spec, regions, no_r, r_grid=np.geomspace(300., 1e5, 16))
+    i = int(np.argmin(coarse['chi2']))
+    r_best = coarse['r_grid'][i]
+    fine = measure_resolution(spec, regions, no_r, r_grid=np.geomspace(r_best / 1.5, r_best * 1.5, 15))
+    fine['method'] = METHOD
+    return fine
+
+
+def _strip_resolution(cfg: Any) -> dict:
+    """A mapping copy of the parts of cfg the template fit reads, without any resolution override"""
+    opts = dict(C.section(cfg, 'methods').get('options', {}) or {})
+    tf = dict(opts.get(METHOD, {}) or {})
+    tf.pop('resolution', None)
+    opts[METHOD] = tf
+    return {'templates': C.section(cfg, 'templates'), 'methods': {'options': opts}, 'input': {}}

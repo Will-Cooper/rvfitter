@@ -7,6 +7,7 @@ import pytest
 import injection
 import synth
 from rvfitter.methods import REGISTRY, template_fit
+from rvfitter.methods import _common as C
 
 
 def _cfg(tpl, **kw):
@@ -73,4 +74,16 @@ def test_edge_flag_when_outside_search_range():
     spec, truth = synth.make_spectrum(rv=180., snr=50., rng=np.random.default_rng(3))
     res = template_fit.measure(spec, injection.full_region(spec), _cfg(truth['template'], rv_min=-100., rv_max=100.),
                                rng=np.random.default_rng(0))
-    assert res.measurements[0].flag & 1 and res.n_regions == 0
+    assert all(m.flag & C.FLAG_EDGE for m in res.measurements) and res.n_regions == 0
+
+
+def test_segments_and_outlier_rejection():
+    from rvfitter.types import Measurement
+    spec, truth = synth.make_spectrum(rv=3., snr=40., rng=np.random.default_rng(8))
+    segs = C.segment(injection.full_region(spec), 2500., 150.)
+    assert len(segs) == 3 and segs[0].wmin == injection.full_region(spec)[0].wmin
+    np.testing.assert_allclose([s.wmax for s in segs[:-1]], [s.wmin for s in segs[1:]])
+    assert C.segment(injection.full_region(spec), 2500., 0) == injection.full_region(spec)
+    ms = [Measurement('x', str(i), v, 2.) for i, v in enumerate([20., 22., 25., 21., 400.])]
+    res = C.finish('x', ms)
+    assert ms[-1].flag & C.FLAG_OUTLIER and res.n_regions == 4 and abs(res.rv - 22.) < 2.

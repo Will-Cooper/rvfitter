@@ -51,6 +51,8 @@ DEFAULTS: dict[str, Any] = dict(
     vsini=0.,  # rotational broadening applied to the template [km/s] (Gray kernel, epsilon 0.6)
     template=None, templates=None, teff_window=300.,
     region_kinds=None,  # region kinds used as windows (default: all but telluric/continuum)
+    segment_res=150.,  # split windows longer than this many resolution elements (0: never)
+    outlier_k=5.,  # gross-outlier rejection among regions (0: off)
     pad_kms=1500.,
 )
 
@@ -292,6 +294,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
     windows, masks = C.split_regions(regions, opts['region_kinds'])
     if not windows:
         raise ValueError('no CCF windows among the regions')
+    windows = C.segment(windows, resolution, opts['segment_res'])
     if opts['highpass_kms'] is None:
         opts['highpass_kms'] = 25. * C_KMS / resolution
     preps, kept = [], []
@@ -375,7 +378,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         m = Measurement(METHOD, window.name, float(peak['rv']), float(err), int(flag), diag)
         log.debug('ccf %s: %.2f ± %.2f km/s (Zucker %.2f, flag %d)', window.name, m.rv, m.rv_err, zerr, flag)
         measurements.append(m)
-    result = C.finish(METHOD, measurements)
+    result = C.finish(METHOD, measurements, opts['outlier_k'])
     log.info('ccf: %.2f ± %.2f km/s (template %s, %d windows)', result.rv, result.rv_err, tpl.label,
              result.n_regions)
     return result

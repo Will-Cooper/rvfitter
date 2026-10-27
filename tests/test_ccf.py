@@ -39,21 +39,27 @@ def test_registry():
     spec, truth = synth.make_spectrum(rv=-40., snr=50., rng=np.random.default_rng(3))
     cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}}
     res = REGISTRY['ccf'](spec, injection.full_region(spec), cfg, rng=np.random.default_rng(0))
-    assert abs(res.rv + 40.) < 5. and res.n_regions == 1
+    assert abs(res.rv + 40.) < 5. and res.n_regions == len(res.measurements) == 3  # 1500 Å = 3 segments at R 2500
     m = res.measurements[0]
     for key in ('rv_grid', 'ccf', 'zucker_err', 'mc_std', 'template', 'wave', 'data', 'model'):
         assert key in m.diagnostics
 
 
-def test_unknown_option_and_missing_resolution():
+def test_unknown_option():
     spec, truth = synth.make_spectrum(rng=np.random.default_rng(3))
     with pytest.raises(ValueError, match='unknown ccf options'):
         ccf.measure(spec, injection.full_region(spec), {'methods': {'options': {'ccf': {'n_mcc': 3}}}},
                     rng=np.random.default_rng(0))
+
+
+def test_unknown_resolution_is_estimated(caplog):
     from dataclasses import replace
-    with pytest.raises(ValueError, match='resolution is unknown'):
-        ccf.measure(replace(spec, resolution=None), injection.full_region(spec),
-                    {'methods': {'options': {'ccf': {'template': truth['template']}}}}, rng=np.random.default_rng(0))
+    spec, truth = synth.make_spectrum(rv=10., resolution=3000., snr=60., rng=np.random.default_rng(3))
+    cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}}
+    res = ccf.measure(replace(spec, resolution=None), injection.full_region(spec), cfg, rng=np.random.default_rng(0))
+    assert 'estimated R' in caplog.text
+    r = res.measurements[0].diagnostics['resolution']
+    assert abs(r - 3000.) / 3000. < 0.1 and abs(res.rv - 10.) < 3 * res.rv_err
 
 
 def test_injection_recovery_fast():

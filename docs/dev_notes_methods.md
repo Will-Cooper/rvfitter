@@ -38,8 +38,13 @@ Here, we record the design decisions, validation and J1745−1640 results of the
 - Windows are all regions except `telluric`/`continuum` kinds (configurable); `telluric` regions are masked.
 - Template candidates: the option `template`/`templates` (rest-frame Spectrum or (wave, flux)), else `cfg.templates` (local_dir, grid, teff_prior ± 300 K, ranges). Selection is by the lowest total χ² over the windows, evaluated per candidate with `executor.map`.
 - Seeds: `child_seeds(rng, n)` spawns a fixed number of task seeds, so Monte Carlo and bootstrap results do not depend on the executor (tested with a thread pool).
-- Flag bits (to be mirrored by `results.FLAGS`): 1 edge, 2 outside grid, 4 fit failed, 8 few pixels, 16 poor fit (χ²/ν > 3). Bits 1, 4 and 8 exclude a measurement from the method's Birge combination.
-- `methods.REGISTRY[name]` is a lazy, picklable callable with the `measure` signature.
+- Flag bits come from `results.FLAGS`: fit_failed 1, few_regions 2 (too few pixels), template_grid_edge 8 (outside grid), not_converged 32 (optimum at the edge of the RV search). Two bits are not yet in `results.FLAGS` and are requested: poor_fit 64 (χ²/ν > 3; the error is scaled) and outlier 128. Bits 1, 2, 32 and 128 exclude a measurement from the method's Birge combination.
+- `methods.REGISTRY[name]` is a lazy, picklable callable; `REGISTRY[name].measure(...)` (as the pipeline calls it) and `REGISTRY[name](...)` are equivalent.
+- **Segments (plan technique 16).** Windows longer than `segment_res` = 150 resolution elements (≈450 Å at R 2500) are split into near-equal segments in ln λ, each a separate measurement, so segment-to-segment scatter enters the Birge and hierarchical combinations. This was added at integration, when `regions.select(telluric_corrected=True)` returned a single 7324–10 137 Å window for J1745 and both methods fell to z > 2 (see below); 150 was fixed a priori (about five segments over a typical optical spectrum), not tuned.
+- **Gross outliers.** Among at least three usable measurements, one with |rv − median| > 5√(s² + σ²) (s = 1.4826 MAD) is flagged `outlier` and excluded. This catches only failures (a fit on a wrong optimum), not ordinary scatter.
+- **Unknown R.** `resolution_of` takes the method option, then `cfg.input.resolution`, then `spectrum.resolution`; if none is set, it calls `estimate_resolution` (template-fit LSF; coarse χ² profile over R = 300–100 000, refined over ×/÷1.5), caches the result per spectrum and logs a warning. `estimate_resolution` is exported from `rvfitter.methods`. A telluric-line estimate will be added with the telluric model in unit 5.
+- `templates` config: `local_dir`, else the downloaded grid in the cache (`rvfitter templates download`); `templates.medium` overrides the declared medium (still verified).
+- `template_fit` accepts `telluric_model` (written by `config.default_for` for the NIR regimes); it logs a warning until unit 5 implements it.
 
 ### `ccf.py`
 - Data are rebinned onto a ln λ grid at native sampling, divided by a normalised-Gaussian-convolution continuum (FWHM 25 resolution elements by default) and correlated with the equally high-passed, R-broadened template over an RV grid (default −500 to 500 km/s, step ≤5 km/s). The peak is located by a parabola through its top (±max(2 steps, 0.2 HWHM)). A Gaussian fit over the upper half of the peak was the first default, but the slow injection test at R = 20 000, SNR 30 and vsini 30 km/s showed a bias of −0.18 ± 0.02 km/s (−0.8σ) for it and −0.003 ± 0.024 km/s for the parabola: the CCF of a real line list is asymmetric, and noise moves the half-maximum boundary of the fitted region. Noiseless spectra show no bias with either, so the Gaussian is kept only as an option.
@@ -55,26 +60,41 @@ Here, we record the design decisions, validation and J1745−1640 results of the
 
 | Test | N | bias/σ | pull width |
 |---|---|---|---|
-| CCF, R 2500, SNR 30 | 40 | see test (passes) | 0.8–1.2 |
-| Template fit, R 2500, SNR 30 | 60 | see test (passes) | 0.8–1.2 |
+| CCF, R 2500, SNR 30 (3 segments) | 40 | passes (< 0.2) | passes (0.8–1.2) |
+| Template fit, R 2500, SNR 30 (3 segments) | 60 | passes | passes |
 
 A trial run with 30 realisations gave a CCF bias of 0.13σ and pull width 1.04, and a template-fit bias of 0.09σ and pull width 1.03. The slow tests (R 2500/6000/20 000, SNR 15–40, vsini 0–30 km/s, N = 120; the R 20 000 case over 8000–8500 Å to keep it to a minute) are marked `slow`, and all six pass.
 
 ## J1745−1640 benchmark
 
 Benchmark 26.2 ± 2.3 km/s (Burgasser et al. 2015); z = |RV − 26.2| / √(2.3² + σ²).
-Input: `Science/DENISJ174534.6-164053_tellcorr.fits` (PypeIt vacuum, already heliocentric, so no barycentric step).
-Regions (by hand until the regions package merges, fixed before any fit): W1 7400–8600 Å and W2 8600–10 000 Å, with the O2 A band (7590–7710 Å) and the strongest H2O band (9270–9680 Å) masked, i.e. the plan's R ≲ 3000 optical default.
-Templates: the local BT-Settl-CIFIST grid, teff prior 2100 K ± 300 K (21 candidates), chosen by χ².
-Seed 42; the CCF uses 200 Monte Carlo trials.
+Input: `Science/DENISJ174534.6-164053_tellcorr.fits`, read with `io.read_spectrum(medium='vacuum')` (PypeIt vacuum and already heliocentric, so the barycentric step is skipped). The file carries no resolution.
+Templates: the local BT-Settl-CIFIST grid, Teff prior 2100 K ± 300 K (21 candidates), chosen by χ². Seed 42.
 
-| Method | R | RV [km/s] | z | Per window (W1, W2) | Template | Notes |
-|---|---|---|---|---|---|---|
-| CCF | 2500 (nominal) | 35.57 ± 12.09 | 0.76 | 44.10 ± 2.98, 18.43 ± 4.22 | 2100/5.5 | Birge-inflated; χ²/ν flag on both windows |
-| Template fit | 2500 | 26.05 ± 9.49 | 0.02 | 33.85 ± 5.46, 14.49 ± 6.65 | 1800/5.0 | χ²/ν = 58 and 132 |
-| CCF | 1938 (measured) | 34.52 ± 11.50 | 0.71 | 43.18 ± 3.16, 19.24 ± 4.19 | 2100/5.5 | |
-| Template fit | 1938 | 23.95 ± 8.54 | 0.25 | 31.34 ± 6.45, 14.08 ± 7.45 | 1800/5.0 | |
+### Resolution
+`estimate_resolution` gives **R = 2274 ± 149** on the `regions.select` window (whole spectrum, `telluric_corrected=True`). On the earlier hand-made W1/W2 windows with the telluric bands masked, `measure_resolution` gave R = 1940 ± 160. Both are below the nominal 2500; the difference between them probably reflects template mismatch in the line depths, which differs between regions, so the estimate is uncertain at the ≈15 per cent level.
 
-The resolution measured by profiling the template-fit χ² is R = 1940 ± 160, lower than the nominal 2500. This may be partly real (seeing-limited slit width) and partly template mismatch in the line depths, so we keep the nominal R as the default and give the measured R as a sensitivity test; it moves each method by ≤2.1 km/s (1.0 km/s for the CCF).
-Both methods agree with the benchmark (z < 1), but the errors (≈10 km/s) are dominated by a real difference between the two windows: both methods find W1 high (34–43 km/s) and W2 low (14–22 km/s). This probably reflects BT-Settl mismatch, which differs between the TiO/VO/CrH region and the FeH/H2O region, plus residuals of the telluric correction near the H2O bands. It is the same line-to-line scatter that the hierarchical combination found in Phase A (τ_line ≈ 13 km/s), and it should shrink with the catalogue's narrower, feature-based windows from the regions package.
-The two methods choose different templates (2100/5.5 vs 1800/5.0), because the CCF's χ² is computed after the high-pass whereas the template fit's χ² includes the continuum polynomial.
+### Current benchmark (`regions.select`, telluric_corrected, segments; tests/test_benchmark_j1745_methods.py)
+
+| Method | R | RV [km/s] | z | Per segment [km/s] | Template |
+|---|---|---|---|---|---|
+| CCF | 2274 (estimated) | 32.65 ± 13.59 | 0.47 | 7324–7816: 22.8 ± 14.9; 7816–8341: 35.5 ± 4.2; 8341–8901: 49.6 ± 3.8; 8901–9499: −9.7 ± 11.5; 9499–10137: −44.6 ± 8.8 | 2100/5.5 |
+| Template fit | 2274 | 23.67 ± 18.51 | 0.14 | −249.2 ± 32.3; 32.0 ± 4.1; 49.2 ± 5.5; −13.0 ± 10.1; −42.2 ± 9.5 | 1900/5.5 |
+| CCF | 2500 (nominal) | 32.27 ± 11.63 | 0.51 | 7324–7732: 176 ± 126; 7732–8162: 29.4 ± 5.9; 8162–8616: 47.6 ± 3.5; 8616–9096: 34.3 ± 4.7; 9096–9602: −52.1 ± 13.1; 9602–10137: −37.8 ± 9.5 | 2100/5.5 |
+| Template fit | 2500 | 32.93 ± 11.66 | 0.57 | −109.9 ± 75.7; 26.0 ± 4.9; 47.3 ± 3.0; 35.6 ± 7.0; −51.9 ± 10.9; −33.4 ± 10.6 | 2000/5.0 |
+
+The CLI run `rvfitter measure <tellcorr> --config j1745.toml --bary skip --telluric-corrected --medium vacuum` writes one results row with finite `rv_ccf`, `rv_template_fit` and `rv_adopted` (tested).
+
+### Investigation: the single-window result (z > 2)
+Before segmentation, `regions.select(telluric_corrected=True)` gave one unmasked 7324–10 137 Å window, and the methods returned 13.5 ± 4.2 (CCF, z = 2.6) and 6.4 ± 5.3 km/s (template fit, z = 3.4).
+Fitting 350 Å slices showed why. The 7700–9100 Å slices agree (25–63 km/s, mostly 30–48 km/s), whereas:
+- every slice redward of ≈9100 Å, i.e. the H2O band and its correction residuals plus the FeH Wing–Ford band, gives −10 to −64 km/s;
+- the short TiO/VO stretch blueward of the O2 A band gives ±100–530 km/s with large errors (a poorly matched molecular band with no sharp features).
+
+A single window lets the long, high-weight H2O region pull the answer towards the telluric frame, and its error (4–5 km/s) hides the disagreement. With segments, the disagreement inflates the Birge error to 12–19 km/s, and the result is consistent with the benchmark.
+We therefore recommend to the regions package that the strong H2O band (≈9270–9680 Å) stay masked for the fitting methods even on telluric-corrected spectra; residuals of the correction are not random noise.
+
+### History (hand-made regions, before integration)
+W1 7400–8600 Å and W2 8600–10 000 Å with the O2 A (7590–7710 Å) and H2O (9270–9680 Å) bands masked, R = 2500: CCF 35.57 ± 12.09 (z = 0.76; W1 44.1, W2 18.4), template fit 26.05 ± 9.49 (z = 0.02; W1 33.9, W2 14.5). At the then-measured R = 1938: CCF 34.52 ± 11.50, template fit 23.95 ± 8.54.
+In every configuration, the blue-to-red trend (≈45 km/s near 8200–8600 Å and below 0 redward of 9100 Å) is the same line-to-line scatter that the Phase A hierarchical combination found (τ_line ≈ 13 km/s). It probably comes from BT-Settl mismatch, which differs between the TiO/VO/CrH and FeH/H2O regions, and from telluric-correction residuals.
+The two methods choose different templates, because the CCF's χ² is computed after the high-pass whereas the template fit's χ² includes the continuum polynomial.
