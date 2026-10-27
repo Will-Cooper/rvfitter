@@ -14,6 +14,7 @@ import re
 import stat
 import tarfile
 import tempfile
+import warnings
 import zipfile
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -140,7 +141,11 @@ def _extract_tar(path: Path, dest: Path, budget: _Budget) -> None:
             else:
                 member.mode = 0o755 if member.isdir() else 0o644
                 member.uid = member.gid = 0
-                tf.extract(member, dest)
+                # members were validated above and the metadata normalised; the Python versions that reach this
+                # branch either have no ``filter`` argument or warn that the default will change
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', DeprecationWarning)
+                    tf.extract(member, dest)
 
 
 def _extract(path: Path, dest: Path, max_bytes: int, max_members: int) -> None:

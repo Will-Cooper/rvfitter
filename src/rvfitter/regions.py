@@ -35,6 +35,8 @@ TELLURIC_METHODS = frozenset({'telluric_ref'})
 _FWHM_TO_SIGMA = 1. / (2. * math.sqrt(2. * math.log(2.)))
 # Named telluric strictness levels (aliases for the float scale: 0 = off, larger masks more)
 _STRICTNESS = {'off': 0., 'loose': 0.5, 'standard': 1., 'strict': 2.}
+_OPAQUE_DEPTH = 0.9  # effective depth above which a band is still masked for ccf/fit regions when telluric-corrected
+_CORRECTED_SCALE = 0.25  # strictness factor for line regions when the spectrum is already telluric-corrected
 _BASE_DEPTH = 0.15  # effective band depth masked at strictness 1 (airmass-scaled); the threshold is this / strictness
 
 
@@ -75,6 +77,9 @@ class SelectOptions:
         line is rejected if a masked band overlaps its centre (strictness < 0.75), its core (< 1.5) or its whole
         window. 0 switches masking off. The names 'off' (0), 'loose' (0.5), 'standard' (1) and 'strict' (2) are
         aliases
+    telluric_corrected
+        The spectrum has already been telluric-corrected (``input.telluric_corrected``): line regions use
+        ``telluric`` x 0.25, and ccf/fit regions mask only opaque bands (effective depth >= 0.9)
     min_span_resel, max_span_resel
         Minimum and maximum length of a span for ccf/template_fit/forward, in resolution elements
     snr_window_fwhm
@@ -99,6 +104,7 @@ class SelectOptions:
     cont_gap_fwhm: float = 0.5
     edge_fwhm: float = 2.
     telluric: float | str = 1.
+    telluric_corrected: bool = False
     min_span_resel: float = 30.
     max_span_resel: float = 2000.
     snr_window_fwhm: float = 10.
@@ -258,12 +264,21 @@ def _airmass(spec: Spectrum) -> float:
     return x if math.isfinite(x) and x >= 1. else 1.
 
 
-def _tellurics(ctx: _Context, feats: Sequence[Feature]) -> list[tuple[float, float, str]]:
-    """Masked telluric intervals within the coverage, for the configured strictness"""
-    strict = _strictness(ctx.opts.telluric)
+def _tellurics(ctx: _Context, feats: Sequence[Feature], strict: float | None = None,
+               min_depth: float | None = None) -> list[tuple[float, float, str]]:
+    """
+    Masked telluric intervals within the coverage
+
+    By default for the configured strictness; ``strict`` overrides it, and ``min_depth`` masks (without padding) only
+    bands whose airmass-scaled effective depth is at least that.
+    """
+    if strict is None:
+        strict = _strictness(ctx.opts.telluric)
     if strict == 0.:
         return []
     threshold, pad_fwhm = _BASE_DEPTH / strict, 2. * max(strict - 1., 0.)
+    if min_depth is not None:
+        threshold, pad_fwhm = min_depth, 0.
     out = []
     for f in feats:
         if f.kind != 'telluric':
@@ -414,7 +429,8 @@ def _apply_overrides(auto: list[Region], entries: Sequence[Any], method: str, ct
 
 
 # ---------------------------------------------------------------------------------------------------- per method
-def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: Counter) -> list[Region]:
+def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: Counter,
+                  strict: float | None = None) -> list[Region]:
     o = ctx.opts
     lines = [f for f in feats if f.kind == 'line']
     # windows of all catalogue lines inside the coverage, to keep continuum windows feature-free
@@ -423,7 +439,7 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
         a, b = _line_window(ctx, f)
         all_windows.append((a - ctx.fwhm(f.wave_vac), b + ctx.fwhm(f.wave_vac), f.name))
     avoid = all_windows + list(masks)
-    mode = _strictness(o.telluric)
+    mode = _strictness(o.telluric) if strict is None else strict
     cands = []
     for f in lines:
         a, b = _line_window(ctx, f)
@@ -586,6 +602,16 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
                     spectrum.source or 'spectrum')
         return {m: [] for m in methods}
     masks = _tellurics(ctx, feats)
+    line_strict = None
+    span_masks = masks
+    if opts.telluric_corrected and masks:
+        line_strict = _strictness(opts.telluric) * _CORRECTED_SCALE
+        line_masks = _tellurics(ctx, feats, strict=line_strict)
+        span_masks = _tellurics(ctx, feats, min_depth=_OPAQUE_DEPTH)
+        log.info('Spectrum is telluric-corrected: line masking x%.2f (%d band(s)), ccf/fit masking only opaque bands '
+                 '(%d)', _CORRECTED_SCALE, len(line_masks), len(span_masks))
+    else:
+        line_masks = masks
     cov = ', '.join(f'{a:.0f}-{b:.0f}' for a, b in ctx.segments)
     log.info('Region selection: usable coverage %s A, R=%.0f (%s), telluric=%s (%d band(s) masked), Teff prior %s',
              cov, ctx.R, ctx.r_note, opts.telluric, len(masks), 'none' if teff is None else f'{teff:.0f} K')
@@ -594,16 +620,17 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
     for method in methods:
         drops: Counter = Counter()
         if method in LINE_METHODS:
-            regs = _select_lines(ctx, feats, masks, teff, drops)
+            regs = _select_lines(ctx, feats, line_masks, teff, drops, line_strict)
         elif method in TELLURIC_METHODS:
             regs = _select_telluric(ctx, feats, drops)
         else:
-            regs = _select_spans(ctx, feats, masks, teff, method, drops)
+            regs = _select_spans(ctx, feats, span_masks, teff, method, drops)
         if opts.max_regions is not None:
             regs = regs[:opts.max_regions]
         how = 'auto'
         if overrides.get(method):
-            regs = _apply_overrides(regs, overrides[method], method, ctx, masks)
+            regs = _apply_overrides(regs, overrides[method], method, ctx,
+                                    line_masks if method in LINE_METHODS else span_masks)
             how = 'auto + overrides'
         result[method] = regs
         if not regs:
