@@ -47,6 +47,7 @@ __all__ = ['GridMeta', 'TemplateGrid', 'KNOWN_GRIDS', 'STANDARD_AXES', 'AXIS_SCA
 log = logging.getLogger(__name__)
 
 METADATA_FILE = 'rvfitter_grid.toml'
+_USER_AGENT = 'rvfitter (github.com/Will-Cooper/rvfitter)'
 SVO_SSAP_URL = 'http://svo2.cab.inta-csic.es/theory/newov2/ssap.php'
 _LYON_PATTERN = r'^lte(?P<teff>\d+(?:\.\d+)?)-(?P<logg>\d+(?:\.\d+)?)(?P<met>[-+]\d+(?:\.\d+)?)?.*\.(?:txt|dat)$'
 #: file names written by `download`: t2000_g5.0_m-0.5_a+0.2[_co0.5][_kzz7].txt (teff in K)
@@ -392,12 +393,20 @@ class TemplateGrid:
         return tuple(float(x) for x in self.points[np.argmin(d)])
 
     def _corners(self, p: dict):
-        """Multilinear corners and weights over every axis, or None if outside the grid or a corner is missing"""
+        """
+        Multilinear corners and weights over every axis
+
+        Returns
+        -------
+        corners, missing
+            corners: [(path, weight)], or None if the request lies outside the grid's range on some axis or a
+            corner file is missing; missing: the parameter tuples of the missing corners ([] when outside)
+        """
         per_axis = []
         for a in self.axes:
             axis, value = self.axis_values(a), p[a]
             if value < axis[0] - 1e-9 or value > axis[-1] + 1e-9:
-                return None
+                return None, []
             j = int(np.clip(np.searchsorted(axis, value), 1, max(len(axis) - 1, 1)))
             if len(axis) == 1 or np.isclose(value, axis[j - 1]) or np.isclose(value, axis[min(j, len(axis) - 1)]):
                 per_axis.append(((float(axis[np.argmin(np.abs(axis - value))]), 1.),))
@@ -405,34 +414,46 @@ class TemplateGrid:
                 lo, hi = axis[j - 1], axis[j]
                 t = (value - lo) / (hi - lo)
                 per_axis.append(((float(lo), 1. - t), (float(hi), t)))
-        corners = []
+        corners, missing = [], []
         for combo in np.ndindex(*[len(x) for x in per_axis]):
             key = tuple(per_axis[i][k][0] for i, k in enumerate(combo))
             w = float(np.prod([per_axis[i][k][1] for i, k in enumerate(combo)]))
             if w <= 0:
                 continue
             if key not in self._index:
-                return None
-            corners.append((self._index[key], w))
-        return corners
+                missing.append(key)
+            else:
+                corners.append((self._index[key], w))
+        return (None, missing) if missing else (corners, [])
 
     def _resolve(self, p: dict, method: str):
-        corners = None if method == 'nearest' else self._corners(p)
+        """
+        Corners for a request, with fallbacks: (corners, outside, missing)
+
+        Outside the grid's range → nearest point, outside=True (flag template_grid_edge). Inside the range but
+        with a missing corner file (a hole) → nearest point, missing lists the absent corners (flag
+        template_grid_hole). Renormalising over the corners that exist is not done: it would bias the template.
+        """
+        corners, missing = (None, []) if method == 'nearest' else self._corners(p)
         outside = False
         if corners is None:
             point = self.nearest(**p)
-            outside = method != 'nearest'
-            if outside:
-                log.warning('%s is outside grid %s or not enclosed: using the nearest point %s',
-                            _fmt_params(p), self.name, _fmt_params(dict(zip(self.axes, point, strict=True))))
+            near = _fmt_params(dict(zip(self.axes, point, strict=True)))
+            if method != 'nearest' and missing:
+                names = [_generic_name(dict(zip(self.axes, m, strict=True))) for m in missing]
+                log.warning('%s lies in a hole of grid %s (missing corner%s: %s): using the nearest point %s',
+                            _fmt_params(p), self.name, 's' if len(missing) > 1 else '', ', '.join(names), near)
+            elif method != 'nearest':
+                outside = True
+                log.warning('%s is outside grid %s: using the nearest point %s', _fmt_params(p), self.name, near)
             corners = [(self._index[point], 1.)]
-        return corners, outside
+        return corners, outside, missing
 
-    def _meta(self, p, corners, outside, **extra) -> dict:
+    def _meta(self, p, corners, outside, missing=(), **extra) -> dict:
         return dict(object=f'{self.name} {_fmt_params(p, short=True)}', grid=self.name, params=dict(p), **p,
                     medium_in=self.meta.medium, files=[c[0].name for c in corners],
                     weights=[float(c[1]) for c in corners], interpolated=len(corners) > 1, outside_grid=outside,
-                    **extra)
+                    grid_hole=bool(missing), missing_corners=[list(m) for m in missing], **extra)
 
     def get(self, teff: float, logg: float = 5., met: float | None = None, *,
             wave_range: tuple[float, float] | None = None, method: str = 'linear', **extra: float) -> Spectrum:
@@ -460,7 +481,7 @@ class TemplateGrid:
             raise ValueError(f"method must be 'linear' or 'nearest', not {method!r}")
         self._ensure_verified()
         p = self.params(teff, logg, met, **extra)
-        corners, outside = self._resolve(p, method)
+        corners, outside, missing = self._resolve(p, method)
         wave_full, flux = _load_vacuum(*_file_key(corners[0][0]), self.meta.medium)
         if wave_range is not None:
             sel = (wave_full >= wave_range[0]) & (wave_full <= wave_range[1])
@@ -472,7 +493,7 @@ class TemplateGrid:
             w2, f2 = _load_vacuum(*_file_key(path), self.meta.medium)
             total = total + w * (f2[sel] if np.array_equal(w2, wave_full) else np.interp(wave, w2, f2))
         return Spectrum(wave, total, np.full(len(wave), np.nan), self.meta.resolution_native,
-                        self._meta(p, corners, outside), str(corners[0][0]))
+                        self._meta(p, corners, outside, missing), str(corners[0][0]))
 
     def broadened(self, teff: float, logg: float = 5., met: float | None = None, *, resolution: float | None,
                   wave_range: tuple[float, float], dv: float | None = None, vsini: float = 0., epsilon: float = 0.6,
@@ -503,7 +524,7 @@ class TemplateGrid:
         """
         self._ensure_verified()
         p = self.params(teff, logg, met, **extra)
-        corners, outside = self._resolve(p, method)
+        corners, outside, missing = self._resolve(p, method)
         if dv is None:
             dv = C_KMS / (10. * resolution) if resolution else 1.
         wmin, wmax = (float(x) for x in wave_range)
@@ -517,7 +538,7 @@ class TemplateGrid:
         if vsini > 0:
             flux = broadening.broaden_loglam(flux, dv, vsini=vsini, epsilon=epsilon)
         return Spectrum(wave, flux, np.full(len(wave), np.nan), resolution,
-                        self._meta(p, corners, outside, vsini=vsini, dv=dv), str(corners[0][0]))
+                        self._meta(p, corners, outside, missing, vsini=vsini, dv=dv), str(corners[0][0]))
 
     def select(self, teff: float | None = None, teff_range: tuple[float, float] | None = None,
                logg_range: tuple[float, float] | None = None, met_range: tuple[float, float] | None = None,
@@ -679,7 +700,8 @@ def cache_dir() -> Path:
 
 def _fetch(url: str, timeout: float = 60.) -> bytes:
     """GET a URL (the single network entry point; patched in tests)"""
-    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (fixed https/http SVO URLs)
+    req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (fixed https/http URLs)
         return resp.read()
 
 
@@ -742,7 +764,7 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
     grid
         A name in `KNOWN_GRIDS` with an SVO model
     teff_range, logg_range, met_range, alpha_range
-        Inclusive parameter ranges (met and alpha: None = everything SVO returns)
+        Inclusive parameter ranges (met and alpha: None = the grid default only, e.g. solar)
     ranges
         Ranges of extra axes (e.g. {'co': (0.5, 1.0)})
     directory
@@ -766,8 +788,11 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
     fetch = fetch or _fetch
     directory = Path(directory) if directory is not None else cache_dir() / grid
     directory.mkdir(parents=True, exist_ok=True)
-    want = {'teff': teff_range, 'logg': logg_range, **({'met': met_range} if met_range is not None else {}),
-            **({'alpha': alpha_range} if alpha_range is not None else {}), **dict(ranges or {})}
+    defaults = meta.defaults()
+    # an unranged met/alpha is held at the grid default (solar, unenhanced), not the whole axis
+    met_range = met_range if met_range is not None else (defaults['met'], defaults['met'])
+    alpha_range = alpha_range if alpha_range is not None else (defaults['alpha'], defaults['alpha'])
+    want = {'teff': teff_range, 'logg': logg_range, 'met': met_range, 'alpha': alpha_range, **dict(ranges or {})}
     params = dict(model=meta.svo_model, REQUEST='queryData')
     svo_names = {'teff': 'teff', 'logg': 'logg', 'met': 'meta', 'alpha': 'alpha'}
     for axis, (lo, hi) in want.items():

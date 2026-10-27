@@ -270,6 +270,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         best, scores = cands[0], [np.nan]
     tpl = C.build_template(best, resolution, wave_range, pad_kms=opts['pad_kms'])
     flag_grid = C.FLAG_OUTSIDE_GRID if tpl.params.get('outside_grid') else 0
+    flag_grid |= C.FLAG_GRID_HOLE if tpl.params.get('grid_hole') else 0
     summary = C.template_summary(METHOD, cands, scores, best, sum(len(d.wave) for d in datas),
                                  C.section(cfg, 'templates'))
     flag_grid |= C.FLAG_PARAM_EDGE if summary['template_at_edge'] else 0

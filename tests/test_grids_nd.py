@@ -65,6 +65,20 @@ def test_multilinear_interpolation_4d_and_extra(tmp_path):
     assert out.meta['outside_grid']
 
 
+def test_grid_hole_is_flagged_not_renormalised(tmp_path, caplog):
+    d = _grid4(tmp_path / 'g')
+    hole = dict(teff=1900., logg=5.0, met=-0.5, alpha=0.0)
+    (d / T._generic_name(hole)).unlink()
+    grid = T.TemplateGrid(d)
+    spec = grid.get(1930., 4.8, -0.7, alpha=0.05, wave_range=(7600., 7620.))
+    assert spec.meta['grid_hole'] and not spec.meta['outside_grid']
+    assert spec.meta['missing_corners'] == [[1900., 5.0, -0.5, 0.0]]
+    assert T._generic_name(hole) in caplog.text and 'hole' in caplog.text
+    assert len(spec.meta['files']) == 1  # the nearest point, not a renormalised partial interpolation
+    out = grid.get(2400., 4.8, -0.7, wave_range=(7600., 7620.))
+    assert out.meta['outside_grid'] and not out.meta['grid_hole']
+
+
 def test_select_holds_unranged_axes(tmp_path):
     grid = T.TemplateGrid(_grid4(tmp_path / 'g'))
     pts = grid.select(teff=1900.)
@@ -175,10 +189,13 @@ def test_refit_object_applies_and_records_patch(monkeypatch):
                                                                                                          1., 1.)])})
     patch = {'templates': {'met_range': [-1.0, 0.0], 'grid': ['bt-settl-cifist', 'sand']}}
     res, new = pipeline.refit_object(old, cfg, patch)
-    assert res.object == 'J1745' and seen['cfg'] is new
-    assert new.templates.met_range == (-1.0, 0.0) and new.templates.grid == ['bt-settl-cifist', 'sand']
+    assert res.object == 'J1745'
+    obj = seen['cfg']  # the object's configuration has the patch; the global values do not
+    assert obj.templates.met_range == (-1.0, 0.0) and obj.templates.grid == ['bt-settl-cifist', 'sand']
+    assert new.templates.met_range is None and new.templates.grid == 'bt-settl-cifist'
     assert cfg.templates.met_range is None and cfg.refits == []  # the original is untouched
     assert new.refits == [{'object': 'J1745', 'patch': patch}]
+    assert pipeline.config_for_object(new, 'other').templates.met_range is None
     text = config.dumps(new)
     assert '[[refits]]' in text and config.loads(text).refits == new.refits
     first = seen['rng']
@@ -201,6 +218,9 @@ def test_svo_known_models_live():
     if not _online():
         pytest.skip('SVO not reachable')
     status = T.available(grids=list(T.KNOWN_GRIDS))
+    err = status['bt-settl-cifist']['error']
+    if not status['bt-settl-cifist']['ok'] and any(k in err for k in ('403', 'timed out', 'urlopen error')):
+        pytest.skip(f'SVO refuses or times out from here: {err}')
     assert status['bt-settl-cifist']['ok'], status
     for name, st in status.items():
         print(f'{name}: {st}')

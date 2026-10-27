@@ -25,6 +25,7 @@ FLAG_OUTSIDE_GRID = _FLAGS['template_grid_edge']  # template requested outside t
 FLAG_EDGE = _FLAGS['not_converged']  # optimum at the edge of the search range
 FLAG_POOR_FIT = _FLAGS['poor_fit']  # reduced χ² > 3 (the error is scaled; check the template)
 FLAG_OUTLIER = _FLAGS['outlier']  # gross outlier among the method's regions (excluded)
+FLAG_GRID_HOLE = _FLAGS['template_grid_hole']  # template in a hole of the grid (missing corner): nearest used
 FLAG_PARAM_EDGE = _FLAGS['template_param_edge']  # best template at the edge of the searched parameters
 SERIOUS = FLAG_EDGE | FLAG_FIT_FAILED | FLAG_FEW_PIXELS
 

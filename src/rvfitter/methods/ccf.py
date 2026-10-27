@@ -421,6 +421,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         best, scores = cands[0], [np.nan]
     tpl_raw = tpl = C.build_template(best, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
     flag_grid = C.FLAG_OUTSIDE_GRID if tpl_raw.params.get('outside_grid') else 0
+    flag_grid |= C.FLAG_GRID_HOLE if tpl_raw.params.get('grid_hole') else 0
     summary = C.template_summary(METHOD, cands, scores, best, sum(p.n for p in preps), C.section(cfg, 'templates'))
     flag_grid |= C.FLAG_PARAM_EDGE if summary['template_at_edge'] else 0
     summary_scalars = {k: v for k, v in summary.items() if k.startswith('template_')}
