@@ -35,7 +35,7 @@ TELLURIC_METHODS = frozenset({'telluric_ref'})
 _FWHM_TO_SIGMA = 1. / (2. * math.sqrt(2. * math.log(2.)))
 # Named telluric strictness levels (aliases for the float scale: 0 = off, larger masks more)
 _STRICTNESS = {'off': 0., 'loose': 0.5, 'standard': 1., 'strict': 2.}
-_OPAQUE_DEPTH = 0.9  # effective depth above which a band is still masked for ccf/fit regions when telluric-corrected
+_RELAXED_SPECIES = ('O2',)  # telluric bands relaxed for line regions when the spectrum is telluric-corrected
 _CORRECTED_SCALE = 0.25  # strictness factor for line regions when the spectrum is already telluric-corrected
 _BASE_DEPTH = 0.15  # effective band depth masked at strictness 1 (airmass-scaled); the threshold is this / strictness
 
@@ -79,7 +79,9 @@ class SelectOptions:
         aliases
     telluric_corrected
         The spectrum has already been telluric-corrected (``input.telluric_corrected``): line regions use
-        ``telluric`` x 0.25, and ccf/fit regions mask only opaque bands (effective depth >= 0.9)
+        ``telluric`` x 0.25 for the O2 bands only. H2O (and every other) band stays masked as usual, for lines
+        and for ccf/fit spans alike, because residuals of a telluric correction are not random noise: on
+        J1745−1640 the unmasked H2O region pulled the template RVs to ≈ −45 km/s (docs/dev_notes_methods.md)
     min_span_resel, max_span_resel
         Minimum and maximum length of a span for ccf/template_fit/forward, in resolution elements
     snr_window_fwhm
@@ -605,11 +607,13 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
     line_strict = None
     span_masks = masks
     if opts.telluric_corrected and masks:
+        # only the O2 bands (stable, well corrected) are relaxed, and only for line regions
         line_strict = _strictness(opts.telluric) * _CORRECTED_SCALE
-        line_masks = _tellurics(ctx, feats, strict=line_strict)
-        span_masks = _tellurics(ctx, feats, min_depth=_OPAQUE_DEPTH)
-        log.info('Spectrum is telluric-corrected: line masking x%.2f (%d band(s)), ccf/fit masking only opaque bands '
-                 '(%d)', _CORRECTED_SCALE, len(line_masks), len(span_masks))
+        o2 = {f.name for f in feats if f.kind == 'telluric' and f.species in _RELAXED_SPECIES}
+        line_masks = ([m for m in masks if m[2] not in o2]
+                      + [m for m in _tellurics(ctx, feats, strict=line_strict) if m[2] in o2])
+        log.info('Spectrum is telluric-corrected: O2 line masking x%.2f (%d band(s) masked for lines); ccf/fit '
+                 'spans keep every telluric mask (%d)', _CORRECTED_SCALE, len(line_masks), len(span_masks))
     else:
         line_masks = masks
     cov = ', '.join(f'{a:.0f}-{b:.0f}' for a, b in ctx.segments)

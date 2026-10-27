@@ -11,11 +11,17 @@ import pandas as pd
 
 from .types import ObjectResult
 
-__all__ = ['FLAGS', 'METHOD_ORDER', 'flag_names', 'to_table', 'details_table', 'write', 'summary_lines']
+__all__ = ['FLAGS', 'EXCLUDE_FLAGS', 'METHOD_ORDER', 'flag_names', 'to_table', 'details_table', 'write',
+           'summary_lines']
 
 log = logging.getLogger(__name__)
 
-#: Bit flags used in ``Measurement.flag`` and the ``rv_<method>_flag`` columns (combined with bitwise OR)
+#: Bit flags used in ``Measurement.flag`` and the ``rv_<method>_flag`` columns (combined with bitwise OR):
+#: fit_failed (the fit failed or gave a non-finite error), few_regions (too few usable pixels or regions),
+#: error_floor (the error was raised to a floor), template_grid_edge (template requested outside the grid; the
+#: nearest point was used), telluric_contaminated, not_converged (optimum at the edge of the search range or an
+#: unconverged sampler), poor_fit (reduced χ² > 3; the error has been scaled by √(χ²/ν), but check the
+#: template) and outlier (a gross outlier among the method's regions)
 FLAGS: dict[str, int] = {
     'fit_failed': 1,
     'few_regions': 2,
@@ -23,7 +29,12 @@ FLAGS: dict[str, int] = {
     'template_grid_edge': 8,
     'telluric_contaminated': 16,
     'not_converged': 32,
+    'poor_fit': 64,
+    'outlier': 128,
 }
+
+#: Flags that exclude a measurement from a method's combination and from the adopted RV
+EXCLUDE_FLAGS = FLAGS['fit_failed'] | FLAGS['few_regions'] | FLAGS['not_converged'] | FLAGS['outlier']
 
 #: Fixed order of the per-method column blocks
 METHOD_ORDER = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')

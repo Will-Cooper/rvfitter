@@ -253,34 +253,48 @@ def hierarchical(values: Sequence[float], errors: Sequence[float], line_ids: Seq
     return out
 
 
-def hierarchical_from_methods(methods: Mapping[str, MethodResult], *, include_flagged: bool = False,
+def hierarchical_from_methods(methods: Mapping[str, MethodResult], *, exclude_flags: int | None = None,
                               **kwargs) -> dict:
     """
-    Run `hierarchical` over every per-region measurement of every method
+    Run `hierarchical` over every usable per-region measurement of every method
 
-    The region name is the line label, so regions shared between methods share a line offset.
+    The region name is the line label, so regions shared between methods share a line offset. Measurements
+    with non-finite values or errors, or with any of `exclude_flags` set, are left out and listed (and logged).
 
     Parameters
     ----------
     methods
         Method name → MethodResult
-    include_flagged
-        Also use measurements with a non-zero flag
+    exclude_flags
+        Flag bits that exclude a measurement (default `results.EXCLUDE_FLAGS`: fit_failed, few_regions,
+        not_converged, outlier); 0 keeps every finite measurement
     **kwargs
         Passed to `hierarchical`
 
     Returns
     -------
     result
-        As `hierarchical`
+        As `hierarchical`, plus 'excluded': a list of (method, region, flag, reason)
     """
-    values, errors, lines, meths = [], [], [], []
+    if exclude_flags is None:
+        from .results import EXCLUDE_FLAGS
+        exclude_flags = EXCLUDE_FLAGS
+    from .results import flag_names
+    values, errors, lines, meths, excluded = [], [], [], [], []
     for name, res in methods.items():
         for m in res.measurements:
-            if m.flag and not include_flagged:
+            if m.flag & exclude_flags:
+                excluded.append((name, m.region, int(m.flag), ','.join(flag_names(m.flag & exclude_flags))))
+                continue
+            if not (np.isfinite(m.rv) and np.isfinite(m.rv_err) and m.rv_err > 0):
+                excluded.append((name, m.region, int(m.flag), 'non-finite'))
                 continue
             values.append(m.rv)
             errors.append(m.rv_err)
             lines.append(m.region)
             meths.append(name)
-    return hierarchical(values, errors, lines, meths, **kwargs)
+    for name, region, _, why in excluded:
+        log.info('adopted RV: excluding %s %s (%s)', name, region or '(all)', why)
+    out = hierarchical(values, errors, lines, meths, **kwargs)
+    out['excluded'] = excluded
+    return out

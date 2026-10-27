@@ -144,7 +144,13 @@ def test_from_methods_skips_flagged():
     methods = {'ccf': MethodResult('ccf', 0, 0, 3, ms_a), 'linecentre': MethodResult('linecentre', 0, 0, 2, ms_b)}
     res = combine.hierarchical_from_methods(methods)
     assert res['n'] == 4 and res['n_lines'] == 2 and res['n_methods'] == 2
-    assert combine.hierarchical_from_methods(methods, include_flagged=True)['n'] == 5
+    assert res['excluded'] == [('ccf', 'Cs I', 1, 'fit_failed')]
+    assert combine.hierarchical_from_methods(methods, exclude_flags=0)['n'] == 5
+    # poor_fit (64) is informative only; outlier (128) excludes
+    ms_a[2].flag = 64
+    assert combine.hierarchical_from_methods(methods)['n'] == 5
+    ms_a[2].flag = 128
+    assert combine.hierarchical_from_methods(methods)['n'] == 4
 
 
 # ------------------------------------------------------------------------------------------------------------

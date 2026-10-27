@@ -23,8 +23,8 @@ FLAG_FIT_FAILED = _FLAGS['fit_failed']  # the fit failed or gave a non-finite er
 FLAG_FEW_PIXELS = _FLAGS['few_regions']  # too few usable pixels/regions
 FLAG_OUTSIDE_GRID = _FLAGS['template_grid_edge']  # template requested outside the grid: nearest point used
 FLAG_EDGE = _FLAGS['not_converged']  # optimum at the edge of the search range
-FLAG_POOR_FIT = _FLAGS.get('poor_fit', 64)  # reduced χ² > 3 (the error is scaled; check the template)
-FLAG_OUTLIER = _FLAGS.get('outlier', 128)  # gross outlier among the method's regions (excluded)
+FLAG_POOR_FIT = _FLAGS['poor_fit']  # reduced χ² > 3 (the error is scaled; check the template)
+FLAG_OUTLIER = _FLAGS['outlier']  # gross outlier among the method's regions (excluded)
 SERIOUS = FLAG_EDGE | FLAG_FIT_FAILED | FLAG_FEW_PIXELS
 
 MASK_KINDS = ('telluric',)

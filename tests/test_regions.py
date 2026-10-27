@@ -254,3 +254,26 @@ def test_real_config_regions():
     assert all(len(v) <= cfg.max_regions for v in res.values())
     o = SelectOptions.from_config(cfg)
     assert (o.snr_min, o.telluric, o.cont_fwhm) == (cfg.min_snr, cfg.telluric_strictness, cfg.continuum_fwhm)
+
+
+def test_telluric_corrected_relaxes_only_o2_for_lines():
+    """H2O stays masked for spans and lines on a telluric-corrected spectrum; only O2 is relaxed, for lines only"""
+    spec = _synth((7300., 10100.), snr=100.)
+    tell = [f for f in features() if f.kind == 'telluric' and f.wmin < spec.wmax and f.wmax > spec.wmin]
+    h2o = [f for f in tell if f.species == 'H2O' and f.depth >= 0.3]
+    o2 = [f for f in tell if f.species == 'O2']
+    assert h2o and o2
+
+    def covers(regs, f):
+        centre = 0.5 * (f.wmin + f.wmax)
+        return any(r.wmin < centre < r.wmax for r in regs)
+
+    for corrected in (False, True):
+        sel = select(spec, teff=2000., methods=['ccf', 'linecentre'],
+                     options=SelectOptions(telluric_corrected=corrected))
+        assert not any(covers(sel['ccf'], f) or covers(sel['linecentre'], f) for f in h2o), corrected
+        assert not any(covers(sel['ccf'], f) for f in o2), corrected
+    off = select(spec, teff=2000., methods=['linecentre'], options=SelectOptions())['linecentre']
+    on = select(spec, teff=2000., methods=['linecentre'], options=SelectOptions(telluric_corrected=True))['linecentre']
+    in_o2 = lambda rs: [r.name for r in rs if any(f.wmin <= r.centre <= f.wmax for f in o2)]  # noqa: E731
+    assert not in_o2(off) and in_o2(on)
