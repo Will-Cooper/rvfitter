@@ -33,8 +33,22 @@ log = logging.getLogger(__name__)
 LINE_METHODS = frozenset({'linecentre'})
 TELLURIC_METHODS = frozenset({'telluric_ref'})
 _FWHM_TO_SIGMA = 1. / (2. * math.sqrt(2. * math.log(2.)))
-# telluric strictness -> (minimum effective depth masked, padding [FWHM_inst], line-overlap half-width mode)
-_STRICTNESS = {'strict': (0., 2.), 'standard': (0.15, 0.), 'loose': (0.5, 0.), 'off': None}
+# Named telluric strictness levels (aliases for the float scale: 0 = off, larger masks more)
+_STRICTNESS = {'off': 0., 'loose': 0.5, 'standard': 1., 'strict': 2.}
+_BASE_DEPTH = 0.15  # effective band depth masked at strictness 1 (airmass-scaled); the threshold is this / strictness
+
+
+def _strictness(value: float | str) -> float:
+    """Telluric strictness as a float, from a number or one of the names 'off', 'loose', 'standard', 'strict'"""
+    if isinstance(value, str):
+        try:
+            return _STRICTNESS[value.lower()]
+        except KeyError:
+            raise ValueError(f'telluric must be a number >= 0 or one of {sorted(_STRICTNESS)}, not {value!r}') from None
+    value = float(value)
+    if not math.isfinite(value) or value < 0.:
+        raise ValueError(f'telluric strictness must be a finite number >= 0, not {value!r}')
+    return value
 
 
 @dataclass
@@ -56,9 +70,11 @@ class SelectOptions:
     edge_fwhm
         Trim applied at the ends of every usable segment, in FWHM
     telluric
-        'strict' (mask every band, pad by 2 FWHM, reject lines whose full window overlaps a band), 'standard'
-        (bands whose effective depth >= 0.15; reject lines whose core overlaps), 'loose' (depth >= 0.5, reject
-        lines whose centre is inside) or 'off'
+        Telluric strictness, a float scale (the config's ``telluric_strictness``): bands whose airmass-scaled depth
+        is >= 0.15 / strictness are masked, bands are padded by 2 (strictness - 1) FWHM when strictness > 1, and a
+        line is rejected if a masked band overlaps its centre (strictness < 0.75), its core (< 1.5) or its whole
+        window. 0 switches masking off. The names 'off' (0), 'loose' (0.5), 'standard' (1) and 'strict' (2) are
+        aliases
     min_span_resel, max_span_resel
         Minimum and maximum length of a span for ccf/template_fit/forward, in resolution elements
     snr_window_fwhm
@@ -72,6 +88,8 @@ class SelectOptions:
         Line species never chosen automatically (H-alpha is chromospheric)
     max_lines
         Keep only the best N lines per method (None = all)
+    max_regions
+        Keep only the best N automatic regions of any method (None = all); overrides are added afterwards
     """
     snr_min: float = 3.
     k_line: float = 2.5
@@ -80,7 +98,7 @@ class SelectOptions:
     cont_fwhm: float = 3.
     cont_gap_fwhm: float = 0.5
     edge_fwhm: float = 2.
-    telluric: str = 'standard'
+    telluric: float | str = 1.
     min_span_resel: float = 30.
     max_span_resel: float = 2000.
     snr_window_fwhm: float = 10.
@@ -89,18 +107,20 @@ class SelectOptions:
     nan_gap_pix: int = 3
     exclude_species: tuple[str, ...] = ('H I',)
     max_lines: int | None = None
+    max_regions: int | None = None
 
     @classmethod
     def from_config(cls, cfg: Any = None) -> 'SelectOptions':
         """
         Build options from a config section (attribute object or mapping)
 
-        Config names are mapped as ``min_snr`` -> ``snr_min`` and ``telluric_strictness`` -> ``telluric``;
+        Config names are mapped as ``min_snr`` -> ``snr_min``, ``telluric_strictness`` -> ``telluric`` and
+        ``continuum_fwhm`` -> ``cont_fwhm`` (``max_regions`` keeps its name), so ``Config().regions`` can be passed;
         any field of this class may also be given by its own name. Missing or None entries keep the defaults.
         """
         if cfg is None:
             return cls()
-        alias = {'min_snr': 'snr_min', 'telluric_strictness': 'telluric'}
+        alias = {'min_snr': 'snr_min', 'telluric_strictness': 'telluric', 'continuum_fwhm': 'cont_fwhm'}
         names = {f.name for f in dataclasses.fields(cls)}
         if isinstance(cfg, Mapping):
             def get(k):
@@ -240,12 +260,10 @@ def _airmass(spec: Spectrum) -> float:
 
 def _tellurics(ctx: _Context, feats: Sequence[Feature]) -> list[tuple[float, float, str]]:
     """Masked telluric intervals within the coverage, for the configured strictness"""
-    rule = _STRICTNESS.get(ctx.opts.telluric)
-    if ctx.opts.telluric not in _STRICTNESS:
-        raise ValueError(f'telluric must be one of {sorted(_STRICTNESS)}, not {ctx.opts.telluric!r}')
-    if rule is None:
+    strict = _strictness(ctx.opts.telluric)
+    if strict == 0.:
         return []
-    threshold, pad_fwhm = rule
+    threshold, pad_fwhm = _BASE_DEPTH / strict, 2. * max(strict - 1., 0.)
     out = []
     for f in feats:
         if f.kind != 'telluric':
@@ -405,7 +423,7 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
         a, b = _line_window(ctx, f)
         all_windows.append((a - ctx.fwhm(f.wave_vac), b + ctx.fwhm(f.wave_vac), f.name))
     avoid = all_windows + list(masks)
-    mode = o.telluric
+    mode = _strictness(o.telluric)
     cands = []
     for f in lines:
         a, b = _line_window(ctx, f)
@@ -419,8 +437,7 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
         elif not ctx.covered(a, b):
             why = cat = 'outside coverage'
         else:
-            half = {'strict': b - f.wave_vac, 'standard': o.k_core * ctx.fwhm(f.wave_vac), 'loose': 0.,
-                    'off': 0.}[mode]
+            half = (0. if mode < 0.75 else o.k_core * ctx.fwhm(f.wave_vac) if mode < 1.5 else b - f.wave_vac)
             hit = _overlaps(f.wave_vac - half, f.wave_vac + half, masks)
             if hit:
                 why, cat = f'telluric ({hit})', 'telluric'
@@ -582,6 +599,8 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
             regs = _select_telluric(ctx, feats, drops)
         else:
             regs = _select_spans(ctx, feats, masks, teff, method, drops)
+        if opts.max_regions is not None:
+            regs = regs[:opts.max_regions]
         how = 'auto'
         if overrides.get(method):
             regs = _apply_overrides(regs, overrides[method], method, ctx, masks)

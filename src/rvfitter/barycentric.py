@@ -66,11 +66,15 @@ _ALIASES: tuple[tuple[str, str], ...] = (
 # Evidence that the spectrum is ALREADY referred to the Sun or barycentre:
 #  - PypeIt: VEL_TYPE ('heliocentric' | 'barycentric' | 'None'); VEL_CORR is the multiplicative factor.
 #  - `frame_in` in Spectrum.meta; IRAF VHELIO (heliocentric RV of the object, km/s).
-# Correction VALUES (computed by a pipeline but not applied to the wavelengths), used as the correction when present:
-#  - barycentric: IRAF/RVSAO BCV (bcvcorr, savebcv=yes); ESO HIERARCH ESO QC VRAD BARYCOR (UVES, X-shooter...);
-#    BERV (ESO DRS; HARPS/ESPRESSO-style), all in km/s and added to the observed RV. The sign convention of BCV is
-#    NOT verified here; the ESO ones are documented as RV_bary = RV_obs + BERV.
-#  - heliocentric: IRAF HCV.
+# Correction VALUES (computed by a pipeline but not applied to the wavelengths), used only as a FALLBACK when the
+# correction cannot be computed, and logged at WARNING:
+#  - barycentric: ESO DRS BERV (HIERARCH ESO DRS BERV, or QC BERV), the barycentric Earth radial velocity in km/s,
+#    which is subtracted from a barycentric RV to obtain the observer-frame one, i.e. RV_bary = RV_obs + BERV
+#    (HARPS DRS products: arXiv:1601.05646 states the header BERV is subtracted from the barycentric velocity to
+#    give the observer-frame one; the ESO QC1 database lists the keyword in km/s. Indirect evidence only:
+#    check your DRS manual).
+#  - NOT used: IRAF/RVSAO BCV/HCV and ESO QC VRAD BARYCOR, because we could not cite their sign convention
+#    (IRAF rvcorrect documents only that the correction is applied to an observed velocity).
 # Spextool: we could not verify any velocity keyword in Spextool v4 headers (they hold XUNITS, YUNITS, AIRMASS,
 # HA, MJD_OBS...), so SpeX spectra are treated as uncorrected. UNVERIFIED: use mode='skip' if your reduction
 # already corrected them.
@@ -78,9 +82,9 @@ _CORRECTED_FRAMES = {'barycentric': 'barycentric', 'bary': 'barycentric', 'helio
                      'helio': 'heliocentric'}
 _CORRECTED_NUMERIC = ('VHELIO',)
 _VALUE_KEYS = {
-    'barycentric': ('BCV', 'HIERARCH ESO QC VRAD BARYCOR', 'ESO QC VRAD BARYCOR', 'QC VRAD BARYCOR', 'BERV',
-                    'HIERARCH ESO DRS BERV', 'ESO DRS BERV'),
-    'heliocentric': ('HCV',),
+    'barycentric': ('BERV', 'QC BERV', 'HIERARCH ESO QC BERV', 'ESO QC BERV', 'HIERARCH ESO DRS BERV',
+                    'ESO DRS BERV'),
+    'heliocentric': (),
 }
 
 
@@ -211,9 +215,9 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
         The spectrum; ``spectrum.meta`` may hold ra, dec [deg], mjd_mid, site, lat, lon (east), alt [m],
         frame_in and the raw keywords listed in the module source
     mode
-        'auto' (skip if already corrected; else use a pipeline correction value such as BCV/BERV if present; else
-        compute if the metadata allow; else warn and skip), 'apply' (compute; if inputs are missing use a header
-        value, else raise `ValueError`) or 'skip' (never correct)
+        'auto' (skip if already corrected; else compute if ra, dec, mjd_mid and a site are available; else fall
+        back to an ESO BERV header value; else warn and skip), 'apply' (compute; if inputs are missing use a BERV
+        header value, else raise `ValueError`) or 'skip' (never correct)
     frame
         'barycentric' or 'heliocentric'
     overrides
@@ -243,16 +247,12 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
             else:
                 log.info('Spectrum is already corrected (%s); no further correction applied', done[0])
             return 0., 'header'
-        hv = _header_value(meta, frame)
-        if hv:
-            log.info('Using the %s correction %+.3f km/s from header keyword %s', frame, hv[0], hv[1])
-            return hv[0], 'header'
     kms, missing = _compute(meta, frame)
-    if kms is None and mode == 'apply':
+    if kms is None:
         hv = _header_value(meta, frame)
         if hv:
-            log.info('Inputs for computing the correction are missing (%s); using %+.3f km/s from header '
-                     'keyword %s', ', '.join(missing), hv[0], hv[1])
+            log.warning('Cannot compute the %s correction (missing %s); using %+.3f km/s from header keyword %s '
+                        '(RV = RV_obs + value)', frame, ', '.join(missing), hv[0], hv[1])
             return hv[0], 'header'
     if kms is None:
         if mode == 'apply':

@@ -52,16 +52,23 @@ def test_frame_mismatch_warns(caplog):
     assert any('requested' in r.message for r in caplog.records)
 
 
-@pytest.mark.parametrize('key', ['BCV', 'HIERARCH ESO QC VRAD BARYCOR', 'BERV'])
-def test_pipeline_values_are_used_not_taken_as_proof(key):
-    # BCV/BARYCOR/BERV are correction values: used as the correction (source "header"), even without coordinates
-    assert correction(_spec(**{key: -12.3}), 'auto') == (-12.3, 'header')
-    # and in apply mode when the inputs for computing are missing
-    assert correction(_spec(**{key: -12.3}), 'apply') == (-12.3, 'header')
-    # but apply computes when it can
+@pytest.mark.parametrize('key', ['BERV', 'HIERARCH ESO DRS BERV', 'QC BERV'])
+def test_berv_is_fallback_only(key, caplog):
+    # no coordinates: the BERV header value (RV_bary = RV_obs + BERV) is the fallback, with a WARNING
+    with caplog.at_level(logging.WARNING):
+        assert correction(_spec(**{key: -12.3}), 'auto') == (-12.3, 'header')
+        assert correction(_spec(**{key: -12.3}), 'apply') == (-12.3, 'header')
+    assert any(r.levelno == logging.WARNING and key in r.message for r in caplog.records)
+    # with coordinates and a site the correction is always computed, never taken from the header
+    assert correction(_spec(**{key: -12.3}, **FULL), 'auto')[1] == 'computed'
     assert correction(_spec(**{key: -12.3}, **FULL), 'apply')[1] == 'computed'
     # a heliocentric request does not use a barycentric value
     assert correction(_spec(**{key: -12.3}), 'auto', 'heliocentric') == (0., 'skipped')
+
+
+@pytest.mark.parametrize('key', ['BCV', 'HCV', 'HIERARCH ESO QC VRAD BARYCOR'])
+def test_uncited_sign_keywords_ignored(key):
+    assert correction(_spec(**{key: -12.3}), 'auto') == (0., 'skipped')
 
 
 def test_site_alias_is_whole_word():

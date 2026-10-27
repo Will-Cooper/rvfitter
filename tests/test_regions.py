@@ -188,7 +188,7 @@ def test_options_from_config():
     o = SelectOptions.from_config(Cfg())
     assert (o.snr_min, o.telluric) == (7., 'strict')
     o = SelectOptions.from_config({'min_snr': 4., 'k_line': 3.})
-    assert (o.snr_min, o.k_line, o.telluric) == (4., 3., 'standard')
+    assert (o.snr_min, o.k_line, o.telluric) == (4., 3., 1.)
     spec = _synth((7400., 9000.))
     assert select(spec, teff=1800., methods=['linecentre'], options=Cfg())['linecentre'] == select(
         spec, teff=1800., methods=['linecentre'], options=SelectOptions(snr_min=7., telluric='strict'))['linecentre']
@@ -225,3 +225,32 @@ def test_ranking_and_logging(caplog):
     hi = Spectrum(spec.wave, spec.flux, spec.sigma, spec.resolution, {'airmass': 2.5}, 'x')
     assert {r.name for r in select(hi, teff=1800., methods=['linecentre'])['linecentre']} <= {
         r.name for r in res['linecentre']}
+
+
+def test_strictness_float_and_aliases():
+    spec = _synth((7400., 9000.))
+
+    def names(**kw):
+        return {r.name for r in select(spec, teff=1800., methods=['linecentre'],
+                                       options=SelectOptions(**kw))['linecentre']}
+
+    assert names(telluric=1.) == names(telluric='standard')
+    assert names(telluric=0.) == names(telluric='off') and 'K I 7701' in names(telluric=0.)
+    assert names(telluric=2.) == names(telluric='strict')
+    assert names(telluric=0.5) == names(telluric='loose')
+    assert names(telluric=3.) <= names(telluric=1.) <= names(telluric=0.5) <= names(telluric=0.)
+    with pytest.raises(ValueError):
+        select(spec, methods=['ccf'], options=SelectOptions(telluric=-1.))
+
+
+def test_real_config_regions():
+    """The repository's own Config().regions (P1) must be accepted"""
+
+    Config = pytest.importorskip('rvfitter.config').Config
+    cfg = Config().regions
+    spec = _synth((7400., 13500.))
+    res = select(spec, teff=1800., methods=['linecentre', 'ccf', 'template_fit'], overrides=cfg.overrides, options=cfg)
+    assert res['linecentre'] and res['ccf']
+    assert all(len(v) <= cfg.max_regions for v in res.values())
+    o = SelectOptions.from_config(cfg)
+    assert (o.snr_min, o.telluric, o.cont_fwhm) == (cfg.min_snr, cfg.telluric_strictness, cfg.continuum_fwhm)
