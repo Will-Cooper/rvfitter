@@ -1,13 +1,14 @@
 """
 Cross-correlation against a template in log-wavelength, with peak fitting and Monte Carlo errors.
 
-For each window the data (on their own pixels; no resampling) are divided by a smooth continuum
-(normalised Gaussian convolution of FWHM `highpass_kms`, capped at a third of the window so that the
-continuum slope within short feature windows is also removed). The template, broadened to the data
-resolution, is shifted onto the data pixels for each trial velocity and passed through exactly the same filter
-(same kernel and pixel mask), so data and template are normalised identically, including at window edges and
-masked intervals. After a first CCF, the data are divided by a low-order polynomial fitted to data/template at
-the peak (`flatten_degree`), which removes their continuum slope relative to the template, and the CCF is redone.
+For each window the data (on their own pixels; no resampling) are divided by their continuum. Windows of
+≤100 Å with continuum windows (the catalogue feature windows) use an explicit linear continuum fitted to those
+windows; other windows a normalised Gaussian convolution of FWHM `highpass_kms` (capped at a third of the
+window). The template, broadened to the data resolution, is shifted onto the data pixels for each trial
+velocity and normalised in exactly the same way (same pixels, weights or kernel), so data and template are
+treated identically, including at window edges and masked intervals. For the high-pass windows, after a first
+CCF the data are divided by a low-order polynomial fitted to data/template at the peak (`flatten_degree`), which
+removes their continuum slope relative to the template, and the CCF is redone.
 The noise-weighted, mean-subtracted correlation coefficient
 
     C(v) = Σ w d̃ t̃_v / √(Σ w d̃² · Σ w t̃_v²)
@@ -65,32 +66,69 @@ DEFAULTS: dict[str, Any] = dict(
 
 @dataclass
 class _Window:
-    """A prepared window: the high-pass filter and the normalised data and weights on the used pixels"""
+    """A prepared window: its continuum model and the normalised data and weights on the used pixels"""
     prep: C.Prepared
     d: np.ndarray  # normalised data residual on the used pixels
     w: np.ndarray  # weights on the used pixels
     wave: np.ndarray  # used pixel wavelengths
     cont: np.ndarray  # data continuum on the full grid
     used: np.ndarray  # used pixels (boolean on the full grid)
-    mask0: np.ndarray  # pixels entering the continuum filter (boolean on the full grid)
-    kernel: np.ndarray  # high-pass smoothing kernel
-    den: np.ndarray  # filter normalisation: mask0 convolved with the kernel
+    mask0: np.ndarray  # pixels entering the continuum (boolean on the full grid)
+    kernel: np.ndarray | None  # high-pass smoothing kernel ('highpass' mode)
+    den: np.ndarray | None  # filter normalisation: mask0 convolved with the kernel ('highpass' mode)
+    mode: str = 'highpass'  # 'highpass' or 'linear'
+    filter_fwhm: float = np.nan  # [km/s], 'highpass' mode
+    design: np.ndarray | None = None  # [1, x] on the full grid ('linear' mode)
+    proj: np.ndarray | None = None  # (2, n_cont) weighted least-squares projector onto the continuum pixels
+    cont_idx: np.ndarray | None = None  # continuum pixel indices ('linear' mode)
 
 
-def _window(prep: C.Prepared, highpass_kms: float, flux: np.ndarray | None = None) -> _Window:
+def _linear_setup(prep: C.Prepared, mask0: np.ndarray, max_width: float):
+    """Design and projector of a linear continuum from the region's continuum windows, or None if not applicable"""
+    region = prep.region
+    if not region.continuum or prep.wave[-1] - prep.wave[0] > max_width:
+        return None
+    incont = C.in_any(prep.wave, region.continuum) & mask0
+    if incont.sum() < 4:
+        return None
+    x = 2. * (prep.wave - prep.wave[0]) / (prep.wave[-1] - prep.wave[0]) - 1.
+    design = np.vstack([np.ones_like(x), x]).T
+    idx = np.flatnonzero(incont)
+    wts = 1. / prep.sigma[idx] ** 2 if prep.sigma_known else np.ones(len(idx))
+    a = design[idx]
+    proj = np.linalg.solve(a.T @ (a * wts[:, None]), (a * wts[:, None]).T)
+    return design, proj, idx
+
+
+def _window(prep: C.Prepared, highpass_kms: float, flux: np.ndarray | None = None,
+            linear_max_width: float = 100.) -> _Window:
     """
-    Normalise the data by their smooth continuum (normalised Gaussian convolution over the unmasked pixels)
+    Normalise the data by their continuum
 
-    The same filter (kernel and mask) is later applied to every shifted template row, so data and template are
-    high-passed identically, including at the window edges and next to masked intervals.
+    Windows of at most `linear_max_width` Å with continuum windows (e.g. catalogue feature windows) use an
+    explicit linear continuum fitted (σ-weighted) to the continuum pixels; others a normalised Gaussian
+    convolution over the unmasked pixels (FWHM `highpass_kms`, capped at a third of the window). Either way the
+    same operation (same pixels, weights or kernel) is later applied to every shifted template row, so data and
+    template are normalised identically.
     """
     from scipy.signal import fftconvolve
     flux = prep.flux if flux is None else flux
+    mask0 = prep.mask & np.isfinite(flux)
+    lin = _linear_setup(prep, mask0, linear_max_width)
+    if lin is not None:
+        design, proj, idx = lin
+        cont = design @ (proj @ flux[idx])
+        with np.errstate(invalid='ignore', divide='ignore'):
+            d = flux / cont - 1.
+        used = mask0 & np.isfinite(d) & (cont > 0)
+        w = (cont[used] / prep.sigma[used]) ** 2 if prep.sigma_known else np.ones(used.sum())
+        prep.mask = used
+        return _Window(prep, d[used], w, prep.wave[used], cont, used, mask0, None, None, 'linear', np.nan, design,
+                       proj, idx)
     # the filter must be narrower than the window, or it cannot remove the continuum slope within it
     span_kms = float(np.log(prep.wave[-1] / prep.wave[0])) * C_KMS  # pixels: near-uniform in velocity
     fwhm = min(highpass_kms, span_kms / 3.)
     kernel = broadening.gaussian_kernel(fwhm * broadening.FWHM_TO_SIGMA / prep.dv, nsigma=3.)
-    mask0 = prep.mask & np.isfinite(flux)
     den = fftconvolve(mask0.astype(float), kernel, mode='same')
     with np.errstate(invalid='ignore', divide='ignore'):
         cont = fftconvolve(np.where(mask0, flux, 0.), kernel, mode='same') / den
@@ -99,17 +137,22 @@ def _window(prep: C.Prepared, highpass_kms: float, flux: np.ndarray | None = Non
     used = mask0 & np.isfinite(d) & np.isfinite(cont) & (cont > 0) & (den >= 1e-3)
     w = (cont[used] / prep.sigma[used]) ** 2 if prep.sigma_known else np.ones(used.sum())
     prep.mask = used
-    return _Window(prep, d[used], w, prep.wave[used], cont, used, mask0, kernel, den)
+    return _Window(prep, d[used], w, prep.wave[used], cont, used, mask0, kernel, den, 'highpass', float(fwhm))
 
 
 def _template_rows(win: _Window, tpl: C.Template, rv: np.ndarray) -> np.ndarray:
-    """Shifted template rows, high-passed with the data's filter, on the used pixels: shape (len(rv), n_used)"""
+    """Shifted template rows, normalised exactly as the data, on the used pixels: shape (len(rv), n_used)"""
     from scipy.signal import fftconvolve
     raw = np.atleast_2d(tpl.at(win.prep.wave, np.atleast_1d(rv)))
     finite = np.isfinite(raw)
-    num = fftconvolve(np.where(win.mask0[None, :] & finite, raw, 0.), win.kernel[None, :], mode='same', axes=1)
+    if win.mode == 'linear':
+        coef = np.where(np.isfinite(raw[:, win.cont_idx]), raw[:, win.cont_idx], 0.) @ win.proj.T  # (n_v, 2)
+        cont = coef @ win.design.T
+    else:
+        num = fftconvolve(np.where(win.mask0[None, :] & finite, raw, 0.), win.kernel[None, :], mode='same', axes=1)
+        cont = num / win.den[None, :]
     with np.errstate(invalid='ignore', divide='ignore'):
-        t = raw / (num / win.den[None, :]) - 1.
+        t = raw / cont - 1.
     t[~finite] = np.nan
     return t[:, win.used]
 
@@ -320,7 +363,7 @@ def _mc_chunk(args) -> list[float]:
 def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, executor: Executor | None = None,
             rng: np.random.Generator) -> MethodResult:
     """
-    Cross-correlation RVs, one per window, combined with the Birge-inflated weighted mean
+    Cross-correlation RVs, one per window, combined with a random-effects model (combine.combine_regions)
 
     Parameters
     ----------
@@ -389,8 +432,9 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         c = _ccf_on_grid(win, tpl, rv)
         peak = fit_peak(rv, c, opts['peak'])
         coef = None
-        if peak['ok'] and opts['flatten_degree'] >= 0:  # remove the relative continuum slope, then redo the CCF
-            coef = _flatten_fit(prep, tpl, peak['rv'], opts['flatten_degree'])
+        flatten = opts['flatten_degree'] if win.mode == 'highpass' else -1  # a linear continuum already does it
+        if peak['ok'] and flatten >= 0:  # remove the relative continuum slope, then redo the CCF
+            coef = _flatten_fit(prep, tpl, peak['rv'], flatten)
             if coef is not None:
                 prep = _flatten(prep, coef)
                 win = _window(prep, opts['highpass_kms'])
@@ -436,7 +480,9 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
                     rv_grid=rv, ccf=c, peak=peak, zucker_err=zerr, mc_std=mc_std, chi2_scale=chi2_scale,
                     n_mc=int(len(mc)), mc_rvs=mc,
                     chi2=chi2, dof=dof, scale=scale, n_pix=win.prep.n, resolution=resolution,
-                    highpass_kms=opts['highpass_kms'], template=tpl.label, template_params=tpl_raw.params,
+                    highpass_kms=opts['highpass_kms'], continuum_mode=win.mode, filter_fwhm=win.filter_fwhm,
+                    flatten_degree=flatten if coef is not None else -1, template=tpl.label,
+                    template_params=tpl_raw.params,
                     template_scores=dict(zip([c_.label for c_ in cands], map(float, scores), strict=False)),
                     wave=win.wave, data=win.d, model=model, weights=win.w)
         m = Measurement(METHOD, window.name, float(peak['rv']), float(err), int(flag), diag)
