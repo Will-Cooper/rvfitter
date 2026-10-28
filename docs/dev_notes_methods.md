@@ -1,5 +1,66 @@
 # Developer notes: methods package (M)
 
+## Handoff (state at 348d396)
+
+**Modules (public API):**
+- `broadening`: `doppler_factor`, `shift_wave`, `doppler_shift`, `log_wave_grid`, `rebin` (flux-conserving), `resample`, `gaussian_kernel`, `rotation_kernel` (Gray), `convolve`, `broaden_loglam`, `instrumental(spec, R | R(λ) | table)`, `rotational(spec, vsini, ε)`.
+- `combine`: `weighted_mean` (Birge), `combine_regions(meas, details=)` (random effects), `hierarchical(...)` (Woodbury, half-Cauchy, grid), `hierarchical_from_methods(methods, exclude_flags=)`, `mixture_pdf`.
+- `templates`: `GridMeta` (axes teff/logg/met/alpha + extra; coverage, upstream, medium air/vacuum/auto), `TemplateGrid` (`get`, `broadened`, `select`, `nearest`, `bounds`; multilinear N-D), `KNOWN_GRIDS`, `verify_medium`, `measure_medium`, `medium_check_lines` (NIST), `download(source=auto|svo|zenodo)`, `available`, `cli_main`.
+- `grid_sources`: Zenodo records for Bobcat, Diamondback, Elf Owl and SAND; zip members fetched by HTTP range, tar.gz streamed with MD5.
+- `methods/_common`: options, regions, `Prepared`/`prepare`, `Template.at` (pixel-integrated), `candidates`/`open_grid`/`build_template`, `template_summary` (best params, edges, guidance), `segment`, `finish` (random effects + outlier rejection), flags.
+- `methods/ccf`, `methods/template_fit`: `measure(spectrum, regions, cfg, *, executor, rng)`. `template_fit` also has `measure_resolution` and `estimate_resolution`. `methods.REGISTRY[name]` is callable and has `.measure`.
+- `calibration/sky_zeropoint`: `measure` (OH sky, local per-span Δv(λ)), `apply`, `applied_dv`, `oh_lines`, `model_sky`. `calibration/telluric*.py` are still stubs.
+- `systematics`: `template_spread(_details)` (templates, grids, window modes), `wavelength_zero_point` (max of the arc RMS and the sky term).
+- `pipeline` (shared): `wavelength_correction`, `epoch_labels`, `refit_object`, `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
+- `plotting`, `methods/{linecentre,forward,lsd,binary}`: not started.
+
+**Decisions in force:**
+- Per method, regions are combined by random effects (`hierarchical` with one method; Birge is kept in the diagnostics). Across methods, the hierarchical line × method model gives the adopted RV.
+- Several epochs: regions become `<epoch>:<region>`, with a χ² variability test (`rv_epoch_pvalue`; variable when p < 0.001).
+- `results.FLAGS`: fit_failed 1, few_regions 2, error_floor 4, template_grid_edge 8, telluric_contaminated 16, not_converged 32, poor_fit 64, outlier 128, template_param_edge 256, template_grid_hole 512. `EXCLUDE_FLAGS` = 1 | 2 | 32 | 128.
+- Template-method windows come from the catalogue's `model_fidelity` (`regions.template_windows = "features"` by default at R ≤ 5000; "full" for every span). H2O stays masked for spans even when telluric-corrected.
+- `calibration.wavelength_correction` defaults to "none": the sky zero point is measured and reported (zp_sky_*, counted in full in sys_wavezp when unapplied); "sky"/"auto" apply it. `zp_star_sky` is NaN until the telluric term exists.
+- Seeds are `SeedSequence([seed, blake2b(object name)])`. `[[refits]]` patches apply only to their object.
+- Nothing is ever tuned to the J1745 benchmark; choices are fixed before looking.
+
+**J1745 (feature windows, R 2602, BT-Settl, sky from the Science spec1d), at 348d396:**
+
+| Correction | CCF | Template fit | Adopted (τ_line) | Total error |
+|---|---|---|---|---|
+| none | 36.6 ± 4.7 (z 2.00) | 39.3 ± 5.9 (z 2.07) | 37.7 ± 5.0 (8.3), z 2.08 | 23.4 (sys_wavezp 21.7) |
+| sky | 18.9 ± 3.2 (z 1.83) | 18.9 ± 3.4 (z 1.77) | 18.9 ± 3.3 (2.0), z 1.81 | 9.5 |
+
+The z values use the statistical errors. Sky-correcting collapses τ_line, a benchmark-free check, but it does not fix the star's absolute zero point.
+
+**Open items, in order:**
+1. Zenodo fixes (reviewer-p, `review_unit3b_fix.md`):
+   - write to a temporary file and rename only after its checksum passes; remove partial downloads on error;
+   - three retries with backoff; `_RangeFile` must require a 206 response and check Content-Range;
+   - record the licence, record/DOI and citation in the metadata and manifest, and print them;
+   - a `refitted` results column;
+   - mocked tests.
+2. Unit 5: `calibration/telluric.py` and `telluric_zeropoint.py`, plus the `telluric_ref` method.
+   - Measure the star's own Δv(λ) from O2 A/B and H2O (8100–8350 and 8900–9800 Å) in the non-corrected `sciencebk/nopipecorr` spec1d (observatory frame).
+   - Ship a vacuum, verified, redistributable transmission model.
+   - Compare it with the sky segment by segment, and report the star − sky offset, the telluric-only RVs and the sky + telluric RVs.
+   - Then fill `zp_star_sky` and implement the telluric part of "auto".
+3. Unit 4: `methods/linecentre.py`.
+4. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
+5. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
+
+**Gotchas:**
+- Run with `PYTHONPATH=<wt>/src`. Test-data tests need `RVFITTER_TESTDATA=/home/wcooper/Documents/rvfitter-testdata` and are marked `data`; the J1745 files are under `pypeit/R2500I/GTC54-15A0/OB0055/`.
+- Test markers:
+  - `slow` covers the injection tests and J1745-like (about 6 minutes);
+  - `network` (always also `slow`) is skipped offline, and on HTTP 403/timeout from SVO, which currently refuses this host;
+  - CI runs `not data and not gui and not slow and not network`.
+- Injection tests calibrate per window (`segment_res=0`). The method-level random effects are conservative (pull ≈ 0.75–0.9).
+- The local BT-Settl grid has no metadata file: open it with `grid='bt-settl-cifist'` (medium air, verified).
+- `Spectrum.sky` is optional. The tellcorr coadd has no sky: set `calibration.sky_source` to its spec1d.
+- Config `methods.options` keys are validated against each method's `DEFAULTS`; unknown keys raise.
+- In this worktree, chained shell commands with `cd` and heredocs are sometimes refused: write scripts to `tmp/m/` and run them.
+
+
 Here, we record the design decisions, validation and J1745−1640 results of the methods package (`broadening`, `combine`, `templates`, `calibration/*`, `methods/*`, `systematics`, `plotting`).
 
 ## Unit 1: broadening and combination
@@ -327,3 +388,33 @@ Through `pipeline.run`: tellcorr input, sky from the Science spec1d, R = 2602, f
 - **Upstream URLs** are now on every grid. LOWZ is on Harvard Dataverse, and BT-Settl CIFIST and AGSS2009 are on the Lyon server (which times out from here); these are manual downloads, opened with a GridMeta, and `download` says so.
 - SED_Tools / NJM was not used: it serves only R ≈ 1000 BOSZ and BT-Cond spectra, standardised for SED work, and disables SSL verification on failure.
 - **CI:** `-m "not data and not gui and not slow and not network"`.
+
+
+## Unit 3c-fix
+
+- **Epochs (the blocker):** each epoch is measured separately, and its regions are relabelled `<epoch>:<region>` (the file stem, else the MJD, else e1, e2, …). Epoch disagreement therefore enters the random-effects (method) and hierarchical (adopted) scatter.
+  - Two synthetic epochs at 10 and 30 km/s (σ ≈ 1) now give an error above 5 km/s and are flagged variable (`tests/test_epochs.py`); before, they gave 20 ± 0.7.
+  - The per-epoch method and adopted RVs are in each measurement's diagnostics. `adopted['epochs']` holds the χ² test, and the results gain `rv_epoch_pvalue`, `rv_epoch_variable` and `n_epochs`.
+- **Sky curve:**
+  - Segments are cut from the telluric-free spans, so the blue edge starts after the O2 A band.
+  - Each segment is correlated on the data's own pixels against the shifted OH model. Rebinning had biased few-line segments by several km/s (7952–8202 Å on the synthetic: 6.5 against a true 11.1 km/s), and the Zucker N now counts native pixels, so the errors are realistic.
+  - Δv(λ) is piecewise linear within each span and held to the span boundaries. It ramps only inside unmeasured gaps (continuous, so the wavelengths stay monotonic; `apply` refuses a non-monotonic result), and its error grows with distance.
+  - The model spread (interpolation, linear, constant over the main span) is included in `zp_sky_err`.
+- **J1745 sky segments (native pixels):**
+
+  | Segment [Å] | Δv [km/s] |
+  |---|---|
+  | 7451–7592 | −131.6 ± 4.9 (blue edge) |
+  | 7702–7952 | +14.0 ± 3.4 |
+  | 7952–8202 | +6.8 ± 2.0 |
+  | 8202–8452 | +17.5 ± 1.7 |
+  | 8452–8702 | +37.9 ± 8.7 (correlation 0.72) |
+  | 8702–8952 | +22.3 ± 1.5 |
+  | 9903–10 146 | −103.5 ± 3.2 (red edge) |
+
+  The main span gives +20.1 ± 8.2 km/s (model spread 2.3). The earlier −73 and −95 km/s at the red edge came from the old grid-based segmentations (250 Å from 7311 Å, and the reviewer's defaults); the native-pixel value is −103.5. Both array edges lie beyond the arc lines (7437–9926 Å).
+- **Default `wavelength_correction = "none"`** (coordinator decision): the zero point is measured and reported, and an INFO line asks the user to check it when |Δv| > 2σ.
+- **Nits:**
+  - `sky_source` coverage warning;
+  - README credit for the PypeIt and NIST data;
+  - these notes now state which segmentation produced which numbers.
