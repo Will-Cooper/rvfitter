@@ -274,10 +274,61 @@ def test_specutils_fallback(tmp_path):
         io.read_spectrum(tmp_path / 'cube.fits', medium='vacuum')
 
 
+def _multi_spec1d(path: Path, snrs: list[float], names: list[str], objtypes: list[str], target: str = 'My Star',
+                  maskdef: list[str] | None = None) -> Path:
+    """A PypeIt spec1d with one object table per S/N (flux 1, ivar = S/N²)"""
+    prim = fits.PrimaryHDU()
+    prim.header.update({'TARGET': target, 'TELESCOP': 'GTC'})
+    hdus = [prim]
+    for k, (snr, name, ot) in enumerate(zip(snrs, names, objtypes, strict=True)):
+        cols = [fits.Column(name=n, format='D', array=a) for n, a in (
+            ('OPT_WAVE', WAVE), ('OPT_FLAM', np.ones_like(WAVE) * (k + 1)),
+            ('OPT_FLAM_IVAR', np.full_like(WAVE, (snr / (k + 1)) ** 2)))]
+        tab = fits.BinTableHDU.from_columns(cols, name=name)
+        tab.header.update({'NAME': name, 'OBJTYPE': ot})
+        if maskdef:
+            tab.header['MASKDEF_OBJNAME'] = maskdef[k]
+        hdus.append(tab)
+    fits.HDUList(hdus).writeto(path)
+    return path
+
+
+def test_pypeit_multi_object_picks_highest_snr(tmp_path, caplog):
+    path = _multi_spec1d(tmp_path / 'm.fits', [17., 86.], ['SPAT0168-SLIT0457-DET02', 'SPAT0240-SLIT0457-DET02'],
+                         ['science', 'science'])
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    spec = io.read_spectrum(path)
+    assert spec.meta['hdu'] == 2 and spec.meta['extname'] == 'SPAT0240-SLIT0457-DET02' and spec.meta['n_objects'] == 2
+    assert 'highest-S/N science object' in caplog.text and 'HDU 1 SPAT0168' in caplog.text
+    assert io.read_spectrum(path, hdu=1).meta['hdu'] == 1  # input.hdu overrides
+
+
+def test_pypeit_multi_object_prefers_science_and_warns_when_close(tmp_path, caplog):
+    path = _multi_spec1d(tmp_path / 'm.fits', [200., 120., 100.], ['A', 'B', 'C'], ['standard', 'science', 'science'])
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    spec = io.read_spectrum(path)
+    assert spec.meta['hdu'] == 2  # the brightest table is not a science object
+    assert 'less than twice as bright' in caplog.text
+
+
+def test_pypeit_multi_object_matches_target_name(tmp_path):
+    path = _multi_spec1d(tmp_path / 'm.fits', [100., 10.], ['SPAT0100', 'SPAT0200'], ['science', 'science'],
+                         target='J1745-1640', maskdef=['other star', 'J1745-1640'])
+    assert io.read_spectrum(path).meta['hdu'] == 2  # the name wins over S/N
+
+
 @pytest.mark.data
 @pytest.mark.skipif(not TESTDATA, reason='RVFITTER_TESTDATA not set')
 class TestLocalData:
     base = Path(TESTDATA or '.') / 'pypeit/R2500I/GTC54-15A0/OB0055'
+
+    def test_spec1d_target_is_the_bright_trace(self):
+        """J1745's spec1d holds SPAT0168 (S/N 17) first and the target SPAT0240 (S/N 86) second"""
+        path = next((self.base / 'Science').glob('spec1d_*DENIS*.fits'))
+        spec = io.read_spectrum(path)
+        assert spec.meta['hdu'] == 2 and spec.meta['extname'].startswith('SPAT0240')
+        assert np.nanmedian(spec.flux / spec.sigma) > 50.
+        assert io.read_spectrum(path, hdu=1).meta['extname'].startswith('SPAT0168')
 
     def test_tellcorr_empty_header(self):
         path = self.base / 'Science/DENISJ174534.6-164053_tellcorr.fits'

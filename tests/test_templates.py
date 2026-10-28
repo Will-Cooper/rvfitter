@@ -45,8 +45,8 @@ def _clear():
 
 def test_metadata_parse_and_roundtrip(tmp_path):
     meta = T.GridMeta('toy', 'air')
-    assert meta.parse('lte020.0-5.0.txt') == (2000., 5.0, 0.)
-    assert meta.parse('lte015.0-4.5-0.5a+0.0.BT-Settl.spec.7.dat.txt') == (1500., 4.5, -0.5)
+    assert meta.parse('lte020.0-5.0.txt') == (2000., 5.0, 0., 0.)
+    assert meta.parse('lte015.0-4.5-0.5a+0.0.BT-Settl.spec.7.dat.txt') == (1500., 4.5, -0.5, 0.)
     assert meta.parse('readme.md') is None
     T.write_metadata(tmp_path, meta)
     assert T._read_metadata(tmp_path) == meta
@@ -57,9 +57,8 @@ def test_metadata_parse_and_roundtrip(tmp_path):
 def test_grid_scans_and_bounds(tmp_path):
     grid = T.TemplateGrid(_make_grid(tmp_path / 'g'))
     assert len(grid.files) == 6
-    assert grid.bounds() == ((1800., 2000.), (4.5, 5.0), (0., 0.))
-    assert grid.select(teff=1850.) == [(1800., 4.5, 0.), (1800., 5.0, 0.), (1900., 4.5, 0.), (1900., 5.0, 0.),
-                                       (2000., 4.5, 0.), (2000., 5.0, 0.)]
+    assert grid.bounds() == {'teff': (1800., 2000.), 'logg': (4.5, 5.0), 'met': (0., 0.), 'alpha': (0., 0.)}
+    assert grid.select(teff=1850.) == [(t, g, 0., 0.) for t in (1800., 1900., 2000.) for g in (4.5, 5.0)]
     with pytest.raises(FileNotFoundError):
         T.TemplateGrid(_make_grid(tmp_path / 'nometa', with_meta=False))
     assert T.TemplateGrid(tmp_path / 'nometa', grid='bt-settl-cifist').meta.medium == 'air'
@@ -154,11 +153,11 @@ def test_download_mocked_with_checksums(tmp_path):
     grid = T.download('bt-settl-cifist', (1800., 2000.), (5.0, 5.0), directory=tmp_path / 'dl', fetch=fetch)
     assert len(grid.files) == 3 and grid.meta.medium == 'air'
     manifest = json.loads((tmp_path / 'dl' / 'manifest.json').read_text())
-    assert set(manifest) == {'lte018.0-5.0+0.0.txt', 'lte019.0-5.0+0.0.txt', 'lte020.0-5.0+0.0.txt'}
+    assert set(manifest) == {f't{t}_g5.00_m+0.00_a+0.00.txt' for t in (1800, 1900, 2000)}
     n = len(calls)
     T.download('bt-settl-cifist', (1800., 2000.), (5.0, 5.0), directory=tmp_path / 'dl', fetch=fetch)
     assert len(calls) == n + 1  # only the query: every file's checksum matched
-    (tmp_path / 'dl' / 'lte019.0-5.0+0.0.txt').write_text('corrupt')
+    (tmp_path / 'dl' / 't1900_g5.00_m+0.00_a+0.00.txt').write_text('corrupt')
     T.download('bt-settl-cifist', (1800., 2000.), (5.0, 5.0), directory=tmp_path / 'dl', fetch=fetch)
     assert len(calls) == n + 3  # query + the corrupted file
 
@@ -177,6 +176,6 @@ def test_bt_settl_useful_grid_is_air():
     res = T.verify_medium(grid)
     assert res['medium'] == 'air' and res['n_air'] >= 6
     assert np.max(np.abs(res['offsets_air'])) < 0.05
-    assert grid.bounds()[:2] == ((1500., 2500.), (4.5, 5.5))
+    assert grid.bounds()['teff'] == (1500., 2500.) and grid.bounds()['logg'] == (4.5, 5.5)
     spec = grid.broadened(1950., 5.2, resolution=2500., wave_range=(7600., 8000.))
     assert spec.meta['interpolated'] and np.all(np.isfinite(spec.flux))

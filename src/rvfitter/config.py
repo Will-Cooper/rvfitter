@@ -43,6 +43,7 @@ __all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'Templ
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 METHOD_NAMES = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 
@@ -88,15 +89,19 @@ class GroupingConfig:
 @dataclass
 class TemplatesConfig:
     """Model-atmosphere grid and the parameter space searched"""
-    grid: str = 'bt-settl-cifist'
-    local_dir: str | None = None  # use a local directory of templates instead of downloading
+    grid: str | list[str] = 'bt-settl-cifist'  # one grid name, or several (searched together; their spread is a
+    # systematic)
+    local_dir: str | dict[str, str] | None = None  # local template directory (first grid), or {grid: directory}
     medium: str | None = None  # declared medium of the grid; None = take it from the grid's metadata
     teff_range: tuple[float, float] | None = None  # [K]
     logg_range: tuple[float, float] | None = None  # [dex, cgs]
     met_range: tuple[float, float] | None = None  # [dex]
+    alpha_range: tuple[float, float] | None = None  # [dex]
+    ranges: dict[str, tuple[float, float]] = field(default_factory=dict)  # extra grid axes, e.g. {co = [0.5, 1]}
     teff_prior: float | None = None  # expected Teff [K] (e.g. from the spectral type), used to select features
     logg_prior: float | None = None
-    met_prior: float | None = None
+    met_prior: float | None = None  # met, alpha and extra axes without a range are held at their prior/default
+    alpha_prior: float | None = None
 
 
 @dataclass
@@ -148,6 +153,28 @@ class OutputConfig:
 
 
 @dataclass
+class CalibrationConfig:
+    """Wavelength-solution corrections applied to the spectra before any method runs"""
+    # 'sky-if-needed' (default): measure the OH sky zero point Δv(λ) and apply it only when the calibration data
+    # say it is safe and needed (enough measured sky segments covering the regions, a significant offset or
+    # distortion, larger than 0.05 resolution elements); otherwise report it (zp_sky_* columns) and count it in the
+    # zero-point systematic. 'sky': always apply the sky curve; 'auto': sky shape + the star - sky constant from
+    # the tellurics (opt-in); 'telluric': the star's telluric curve; 'none': measure and report only. What was
+    # applied is always logged and recorded (wavelength_correction_applied, zp_flags).
+    wavelength_correction: str = 'sky-if-needed'
+    sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
+    sky_segment_width: float = 250.  # [Å]; segments of the telluric-free spans; Δv(λ) is interpolated between them
+    # a non-telluric-corrected file sharing the input's wavelength solution (e.g. the PypeIt spec1d of a corrected
+    # coadd), whose telluric lines give the star's own zero point; the object best matching the input is used
+    telluric_source: str | None = None
+    telluric_segment_width: float = 250.  # [Å]; maximum width of the telluric-band segments
+    telluric_template: bool = True  # model the star with the template nearest the priors in the telluric fit
+    # [min, max] vacuum Å, observatory frame, where the wavelength solution is constrained (e.g. the range of the
+    # arc lines): sky segments centred outside it are not used, so the curve is never anchored by an extrapolation
+    wave_valid_range: tuple[float, float] | None = None
+
+
+@dataclass
 class Config:
     """The complete description of an analysis"""
     schema_version: int = SCHEMA_VERSION
@@ -159,8 +186,12 @@ class Config:
     methods: MethodsConfig = field(default_factory=MethodsConfig)
     regions: RegionsConfig = field(default_factory=RegionsConfig)
     combine: CombineConfig = field(default_factory=CombineConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    # per-object configuration patches from pipeline.refit_object, in order ({'object': ..., 'patch': {...}});
+    # pipeline.run applies each only to its object (the values above are the defaults for every object)
+    refits: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self, drop_none: bool = True) -> dict[str, Any]:
         """Plain nested dictionary (tuples as lists); ``None`` values are dropped unless ``drop_none`` is False"""
@@ -176,6 +207,7 @@ class Config:
         plain = self.to_dict(drop_none=False)
         plain['input'].pop('paths')
         plain.pop('output')
+        plain.pop('refits', None)  # the per-object configuration (patches applied) is what is hashed
         canonical = json.dumps(plain, sort_keys=True, separators=(',', ':'), allow_nan=False)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -353,6 +385,12 @@ def _validate(cfg: Config) -> list[str]:
     _range(p, 'templates.teff_range', t.teff_range, positive=True)
     _range(p, 'templates.logg_range', t.logg_range)
     _range(p, 'templates.met_range', t.met_range)
+    _range(p, 'templates.alpha_range', t.alpha_range)
+    for axis, r_ in t.ranges.items():
+        _range(p, f'templates.ranges.{axis}', r_)
+    grids = [t.grid] if isinstance(t.grid, str) else list(t.grid)
+    if not grids or len(set(grids)) != len(grids):
+        p.append(f'templates.grid = {t.grid!r} must be a name or a list of distinct names')
     if t.teff_prior is not None and not t.teff_prior > 0:
         p.append(f'templates.teff_prior = {t.teff_prior} must be a positive temperature [K]')
     m = cfg.methods
@@ -398,6 +436,13 @@ def _validate(cfg: Config) -> list[str]:
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
     _choice(p, 'regions.template_windows', r.template_windows, ('features', 'full'))
+    _choice(p, 'calibration.wavelength_correction', cfg.calibration.wavelength_correction,
+            WAVELENGTH_CORRECTIONS)
+    _range(p, 'calibration.wave_valid_range', cfg.calibration.wave_valid_range, positive=True)
+    if not cfg.calibration.sky_segment_width > 0:
+        p.append(f'calibration.sky_segment_width = {cfg.calibration.sky_segment_width} must be > 0 [Å]')
+    if not cfg.calibration.telluric_segment_width > 0:
+        p.append(f'calibration.telluric_segment_width = {cfg.calibration.telluric_segment_width} must be > 0 [Å]')
     c = cfg.combine
     if c.tau_scale is not None and not c.tau_scale > 0:
         p.append(f'combine.tau_scale = {c.tau_scale} must be > 0')

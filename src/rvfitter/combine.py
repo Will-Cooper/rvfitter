@@ -1,8 +1,10 @@
 """
 Combination of per-region and per-method radial velocities.
 
-- `weighted_mean` / `combine_regions`: the inverse-variance mean of one method's regions, with the formal error
-  inflated by the Birge ratio √(χ²/(N − 1)) when the regions scatter more than their errors allow.
+- `combine_regions`: one method's regions combined with a random-effects model (`hierarchical` with a single
+  method), so a region-to-region scatter well above the errors does not let one region set the answer.
+- `weighted_mean`: the inverse-variance mean with the formal error inflated by the Birge ratio √(χ²/(N − 1)),
+  kept for comparison (and for a single region).
 - `hierarchical`: the adopted RV from a line × method model, v_{m,i} = μ + δ_i + β_m + ε_{m,i}, with δ and β
   marginalised analytically (Woodbury identity) and the two scatter terms τ_line and τ_method integrated on a
   deterministic grid under half-Cauchy priors. The adopted value is the posterior median of μ and its error
@@ -59,14 +61,23 @@ def weighted_mean(rvs: Sequence[float], errs: Sequence[float]) -> tuple[float, f
     return float(rv), float(formal * max(1., np.sqrt(chisq / (len(rvs) - 1))))
 
 
-def combine_regions(measurements: Iterable[Measurement]) -> tuple[float, float]:
+def combine_regions(measurements: Iterable[Measurement], *, details: dict | None = None) -> tuple[float, float]:
     """
-    Combine one method's per-region measurements (Birge-inflated inverse-variance mean; see `weighted_mean`)
+    Combine one method's per-region measurements with a random-effects (hierarchical) model
+
+    With two or more usable regions, the regions are the "lines" of `hierarchical` with a single method:
+    v_i = μ + δ_i + ε_i, δ_i ~ N(0, τ²) with a half-Cauchy prior on τ, so that when the region-to-region scatter
+    exceeds the errors (τ ≫ σ_i), the regions are weighted almost equally instead of letting the one with the
+    smallest error set the answer (as inverse-variance weights with a Birge inflation would). The result is the
+    posterior median of μ and half its central 68 per cent interval. A single region returns itself.
 
     Parameters
     ----------
     measurements
         The per-region measurements; every finite one is used, whatever its flag (callers filter first)
+    details
+        If given, filled with 'tau_line', 'birge_rv' and 'birge_err' (the inverse-variance mean with the Birge
+        factor, for comparison) and 'n'
 
     Returns
     -------
@@ -74,7 +85,19 @@ def combine_regions(measurements: Iterable[Measurement]) -> tuple[float, float]:
         The combined RV and its error [km/s]
     """
     measurements = list(measurements)
-    return weighted_mean([m.rv for m in measurements], [m.rv_err for m in measurements])
+    rvs = [m.rv for m in measurements]
+    errs = [m.rv_err for m in measurements]
+    birge = weighted_mean(rvs, errs)
+    good = [m for m in measurements if np.isfinite(m.rv) and np.isfinite(m.rv_err) and m.rv_err > 0]
+    if len(good) < 2:
+        rv, err, tau = birge[0], birge[1], np.nan
+    else:
+        res = hierarchical([m.rv for m in good], [m.rv_err for m in good], [m.region for m in good],
+                           ['method'] * len(good), tau_method=0.)
+        rv, err, tau = float(res['median']), float(res['err']), float(res['tau_line'])
+    if details is not None:
+        details.update(tau_line=tau, birge_rv=float(birge[0]), birge_err=float(birge[1]), n=len(good))
+    return rv, err
 
 
 def _half_cauchy_logpdf(tau: np.ndarray, scale: float) -> np.ndarray:

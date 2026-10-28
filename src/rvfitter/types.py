@@ -33,6 +33,9 @@ class Spectrum:
         Header-derived metadata (object, ra, dec, mjd_mid, site, exptime, airmass, medium_in, frame_in, vel_corr…)
     source
         File path or archive member the spectrum was read from
+    sky
+        Optional sky spectrum on the same pixels (e.g. PypeIt OPT_COUNTS_SKY), used for the sky-line wavelength
+        zero point; None if absent
     """
     wave: np.ndarray
     flux: np.ndarray
@@ -40,6 +43,7 @@ class Spectrum:
     resolution: float | None = None
     meta: Mapping[str, Any] = field(default_factory=dict)
     source: str = ''
+    sky: np.ndarray | None = None
 
     def __post_init__(self):
         wave = np.asarray(self.wave, dtype=float)
@@ -52,6 +56,11 @@ class Spectrum:
         object.__setattr__(self, 'wave', wave)
         object.__setattr__(self, 'flux', flux)
         object.__setattr__(self, 'sigma', sigma)
+        if self.sky is not None:
+            sky = np.asarray(self.sky, dtype=float)
+            if sky.shape != wave.shape:
+                raise ValueError('sky must have the same length as wave')
+            object.__setattr__(self, 'sky', sky)
 
     @property
     def wmin(self) -> float:
@@ -64,7 +73,8 @@ class Spectrum:
     def cut(self, wmin: float, wmax: float) -> 'Spectrum':
         """Return the part of the spectrum within [wmin, wmax]"""
         keep = (self.wave >= wmin) & (self.wave <= wmax)
-        return Spectrum(self.wave[keep], self.flux[keep], self.sigma[keep], self.resolution, self.meta, self.source)
+        return Spectrum(self.wave[keep], self.flux[keep], self.sigma[keep], self.resolution, self.meta, self.source,
+                        None if self.sky is None else self.sky[keep])
 
 
 @dataclass(frozen=True)

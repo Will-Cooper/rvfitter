@@ -37,7 +37,8 @@ class Feature:
     wmin, wmax
         Vacuum band limits [Å] (NaN for lines)
     teff_min, teff_max
-        Teff range [K] where the feature is useful (NaN = unrestricted)
+        Teff range [K] where the feature is useful (NaN = unrestricted); for telluric bands, where the band is a
+        safe wavelength zero-point reference (its absorption is still masked at every Teff)
     r_min
         Minimum resolving power for RV use (for telluric bands: for use as a wavelength reference)
     rest_ref, caveat

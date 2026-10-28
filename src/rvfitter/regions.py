@@ -607,8 +607,11 @@ def _select_feature_windows(ctx: _Context, feats: Sequence[Feature], masks, teff
             reason = (f'feature window {label} (+-{o.template_window_resel:g} resolution elements; model_fidelity '
                       f'good: atomic/CO features, which synthetic grids reproduce well, unlike molecular bands); '
                       f'SNR {snr:.1f}, sigma_RV~{sig:.2f} km/s (Bouchy)')
+            # continuum windows: the outer cont_fwhm resolution elements at each end (for a linear continuum)
+            c = o.cont_fwhm * ctx.fwhm(0.5 * (lo + hi))
+            cont = ((float(lo), float(lo + c)), (float(hi - c), float(hi))) if hi - lo > 3 * c else ()
             out.append((sig, Region(f'{kind.upper() if kind == "ccf" else "BAND"} {label}', kind, float(lo),
-                                    float(hi), None, (), reason)))
+                                    float(hi), None, cont, reason)))
     out.sort(key=lambda t: t[0])
     return [r for _, r in out]
 

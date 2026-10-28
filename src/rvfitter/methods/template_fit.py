@@ -231,7 +231,7 @@ def _rv_grid(spectrum, opts):
 def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, executor: Executor | None = None,
             rng: np.random.Generator) -> MethodResult:
     """
-    Template-fit RVs, one per window, combined with the Birge-inflated weighted mean
+    Template-fit RVs, one per window, combined with a random-effects model (combine.combine_regions)
 
     Parameters
     ----------
@@ -270,6 +270,11 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         best, scores = cands[0], [np.nan]
     tpl = C.build_template(best, resolution, wave_range, pad_kms=opts['pad_kms'])
     flag_grid = C.FLAG_OUTSIDE_GRID if tpl.params.get('outside_grid') else 0
+    flag_grid |= C.FLAG_GRID_HOLE if tpl.params.get('grid_hole') else 0
+    summary = C.template_summary(METHOD, cands, scores, best, sum(len(d.wave) for d in datas),
+                                 C.section(cfg, 'templates'))
+    flag_grid |= C.FLAG_PARAM_EDGE if summary['template_at_edge'] else 0
+    summary_scalars = {k: v for k, v in summary.items() if k.startswith('template_')}
     seeds = C.child_seeds(rng, len(datas) * opts['n_chunks'])
     measurements = []
     for k, (d, window) in enumerate(zip(datas, kept, strict=True)):
@@ -297,7 +302,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         if np.isfinite(chi2_red) and chi2_red > 3. and d.sigma_known:
             flag |= C.FLAG_POOR_FIT
         _, coef, best_model = model.solve(fit['rv'], fit['vsini']) if fit['ok'] else (None, None, None)
-        diag = dict(chi2=fit['chi2'], dof=dof, chi2_red=chi2_red, err_cov=cov_err, err_bootstrap=boot_std,
+        diag = dict(template_summary=summary, **summary_scalars,
+                    chi2=fit['chi2'], dof=dof, chi2_red=chi2_red, err_cov=cov_err, err_bootstrap=boot_std,
                     bootstrap_rvs=boot, vsini=fit['vsini'],
                     vsini_err=float(errs[1] * scale) if opts['fit_vsini'] and len(errs) > 1 else np.nan,
                     rv_grid=rv_grid, chi2_scan=fit['scan'], poly_coef=coef, resolution=resolution,

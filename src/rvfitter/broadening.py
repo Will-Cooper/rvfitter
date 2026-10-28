@@ -234,7 +234,8 @@ def resample(spec: Spectrum, new_wave: np.ndarray) -> Spectrum:
     """
     new_wave = np.asarray(new_wave, dtype=float)
     return replace(spec, wave=new_wave, flux=rebin(spec.wave, spec.flux, new_wave),
-                   sigma=_rebin_sigma(spec.wave, spec.sigma, new_wave))
+                   sigma=_rebin_sigma(spec.wave, spec.sigma, new_wave),
+                   sky=None if spec.sky is None else rebin(spec.wave, spec.sky, new_wave))
 
 
 # ---------------------------------------------------------------------------------------------------------------

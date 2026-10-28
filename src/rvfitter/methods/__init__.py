@@ -35,6 +35,7 @@ class _Lazy:
 REGISTRY: dict[str, Callable[..., MethodResult]] = {
     'ccf': _Lazy('rvfitter.methods.ccf'),
     'template_fit': _Lazy('rvfitter.methods.template_fit'),
+    'telluric_ref': _Lazy('rvfitter.methods.telluric_ref'),
 }
 
 

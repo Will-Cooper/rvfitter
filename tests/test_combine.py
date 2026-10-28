@@ -42,9 +42,20 @@ def test_weighted_mean():
     assert np.isnan(combine.weighted_mean([], [])).all()
 
 
-def test_combine_regions_uses_measurements():
+def test_combine_regions_random_effects():
     ms = [Measurement('ccf', 'a', 0., 1.), Measurement('ccf', 'b', 20., 1.)]
-    np.testing.assert_allclose(combine.combine_regions(ms), [10., 10.])
+    details = {}
+    rv, err = combine.combine_regions(ms, details=details)
+    ref = combine.hierarchical([0., 20.], [1., 1.], ['a', 'b'], ['m', 'm'], tau_method=0.)
+    np.testing.assert_allclose([rv, err], [ref['median'], ref['err']])
+    np.testing.assert_allclose([details['birge_rv'], details['birge_err']], [10., 10.])
+    assert details['tau_line'] > 5.
+    # with tau >> sigma the regions are weighted almost equally, unlike inverse-variance weights
+    ms = [Measurement('x', 'a', 50., 1.), Measurement('x', 'b', 30., 4.), Measurement('x', 'c', 25., 4.),
+          Measurement('x', 'd', 35., 4.)]
+    rv, _ = combine.combine_regions(ms, details=details)
+    assert abs(rv - 35.) < 4. and details['birge_rv'] > 45.
+    assert combine.combine_regions(ms[:1]) == (50., 1.)
 
 
 def test_tau_zero_recovers_inverse_variance():

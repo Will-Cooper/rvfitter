@@ -25,6 +25,8 @@ FLAG_OUTSIDE_GRID = _FLAGS['template_grid_edge']  # template requested outside t
 FLAG_EDGE = _FLAGS['not_converged']  # optimum at the edge of the search range
 FLAG_POOR_FIT = _FLAGS['poor_fit']  # reduced χ² > 3 (the error is scaled; check the template)
 FLAG_OUTLIER = _FLAGS['outlier']  # gross outlier among the method's regions (excluded)
+FLAG_GRID_HOLE = _FLAGS['template_grid_hole']  # template in a hole of the grid (missing corner): nearest used
+FLAG_PARAM_EDGE = _FLAGS['template_param_edge']  # best template at the edge of the searched parameters
 SERIOUS = FLAG_EDGE | FLAG_FIT_FAILED | FLAG_FEW_PIXELS
 
 MASK_KINDS = ('telluric',)
@@ -218,7 +220,8 @@ class Template:
         Template flux at observed pixels for radial velocities v (scalar → 1D, array → (len(v), len(wave)))
 
         By default the shifted template is averaged over each observed pixel (edges half-way between centres in
-        ln λ), matching pixel-integrated data; `integrate=False` point-samples at the pixel centres.
+        ln λ, and extrapolated by half a pixel at the two ends, which makes the first and last pixels very slightly
+        asymmetric; negligible), matching pixel-integrated data; `integrate=False` point-samples at the centres.
         """
         lnw = np.log(np.asarray(wave, dtype=float))
         v = np.asarray(v, dtype=float)
@@ -295,11 +298,25 @@ def template_from_grid_spec(spec: Spectrum, label: str) -> Template:
 
 @dataclass(frozen=True)
 class Candidate:
-    """A template candidate: either a given spectrum or a grid point"""
+    """A template candidate: either a given spectrum or a grid point (params in the grid's axes order)"""
     label: str
     spectrum: Spectrum | None = None
     grid: Any = None
-    params: tuple[float, float, float] | None = None
+    params: tuple[float, ...] | None = None
+
+    @property
+    def param_dict(self) -> dict[str, float]:
+        """{axis: value} for a grid point, {} otherwise"""
+        if self.grid is None or self.params is None:
+            return {}
+        given = dict(zip(self.grid.axes, self.params, strict=False))  # trailing axes may be omitted: defaults
+        return self.grid.params(**given)
+
+
+def grid_names(tcfg: Mapping[str, Any]) -> list[str]:
+    """The configured grid names (templates.grid may be one name or a list)"""
+    g = tcfg.get('grid') or 'bt-settl-cifist'
+    return [g] if isinstance(g, str) else [str(x) for x in g]
 
 
 def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
@@ -308,8 +325,10 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
 
     - opts['template']: a rest-frame Spectrum, or a (wave, flux) tuple, used alone;
     - opts['templates']: a list of such;
-    - otherwise cfg.templates (local_dir, grid, teff_prior, teff/logg/met ranges) opens a TemplateGrid and the
-      candidates are its points within the ranges (default teff_prior ± 300 K).
+    - otherwise every configured grid (templates.grid: a name or a list) is opened and its points within the
+      ranges become candidates: teff within teff_range (default teff_prior ± 300 K), log g within logg_range
+      (default all), and met, alpha and extra axes within their ranges or held at the value nearest their
+      prior/default (templates.met_prior, alpha_prior; extra-axis ranges in templates.ranges).
     """
     def as_spec(t, i):
         if isinstance(t, Spectrum):
@@ -324,38 +343,48 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
         specs = [as_spec(t, i) for i, t in enumerate(opts['templates'])]
         return [Candidate(str(s.meta.get('object', f'template{i}')), spectrum=s) for i, s in enumerate(specs)]
     tcfg = section(cfg, 'templates')
-    grid = open_grid(tcfg)
     teff = tcfg.get('teff_prior')
     teff_range = tcfg.get('teff_range')
     if teff_range is None and teff is not None:
         teff_range = (teff - opts.get('teff_window', 300.), teff + opts.get('teff_window', 300.))
-    points = grid.select(teff_range=teff_range, logg_range=tcfg.get('logg_range'), met_range=tcfg.get('met_range'))
-    if not points:
-        points = [grid.nearest(teff or 2000., tcfg.get('logg_prior') or 5.)]
-        log.warning('no grid points in the prior ranges: using %s', points[0])
-    return [Candidate(f'{grid.name} {t:g}/{g:g}/{m:+g}', grid=grid, params=(t, g, m)) for t, g, m in points]
+    priors = {k: tcfg.get(f'{k}_prior') for k in ('met', 'alpha') if tcfg.get(f'{k}_prior') is not None}
+    out = []
+    for name in grid_names(tcfg):
+        grid = open_grid(tcfg, name)
+        extra = {k: tuple(v) for k, v in dict(tcfg.get('ranges') or {}).items() if k in grid.axes}
+        points = grid.select(teff_range=teff_range, logg_range=tcfg.get('logg_range'),
+                             met_range=tcfg.get('met_range'), alpha_range=tcfg.get('alpha_range'), ranges=extra,
+                             priors=priors)
+        if not points:
+            points = [grid.nearest(teff or 2000., tcfg.get('logg_prior') or 5., **priors)]
+            log.warning('%s: no grid points in the prior ranges: using %s', grid.name, points[0])
+        out += [Candidate(f'{grid.name} ' + '/'.join(f'{v:g}' for v in p), grid=grid, params=p) for p in points]
+    return out
 
 
-def open_grid(tcfg: Mapping[str, Any]):
+def open_grid(tcfg: Mapping[str, Any], name: str | None = None):
     """
-    The TemplateGrid named by a templates config section: `local_dir`, else the downloaded grid in the cache
+    The TemplateGrid for one configured grid: its local directory, else the downloaded grid in the cache
 
-    A `medium` given in the config overrides the grid's declared medium (and is then verified like any other).
+    `templates.local_dir` may be a directory (used for the first grid) or a mapping grid → directory. A `medium`
+    given in the config overrides the first grid's declared medium (and is then verified like any other).
     """
     from dataclasses import replace as _replace
     from pathlib import Path
 
     from .. import templates as T
-    name = tcfg.get('grid') or 'bt-settl-cifist'
-    directory = tcfg.get('local_dir')
+    names = grid_names(tcfg)
+    name = name or names[0]
+    local = tcfg.get('local_dir')
+    directory = local.get(name) if isinstance(local, Mapping) else (local if name == names[0] else None)
     if not directory:
         cached = T.cache_dir() / name
         if not cached.is_dir():
-            raise ValueError(f'no templates: set templates.local_dir, or run "rvfitter templates download --grid '
-                             f'{name}", or give the method option "template"')
+            raise ValueError(f'no templates for grid {name}: set templates.local_dir, or run "rvfitter templates '
+                             f'download --grid {name}", or give the method option "template"')
         directory = cached
     meta = None
-    if tcfg.get('medium'):
+    if tcfg.get('medium') and name == names[0]:
         base = T._read_metadata(Path(directory)) or T.KNOWN_GRIDS.get(name)
         if base is None:
             raise ValueError(f'unknown grid {name!r} and no metadata in {directory}')
@@ -371,10 +400,161 @@ def build_template(cand: Candidate, resolution: float, wave_range: tuple[float, 
                                       pad_kms=pad_kms)
     lo = wave_range[0] * broadening.doppler_factor(-pad_kms)
     hi = wave_range[1] * broadening.doppler_factor(pad_kms)
-    spec = cand.grid.broadened(*cand.params, resolution=resolution, wave_range=(lo, hi), vsini=vsini)
+    spec = cand.grid.broadened(**cand.param_dict, resolution=resolution, wave_range=(lo, hi), vsini=vsini)
     t = template_from_grid_spec(spec, cand.label)
-    t.params.update(teff=cand.params[0], logg=cand.params[1], met=cand.params[2])
+    t.params.update(cand.param_dict)
     return t
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# best template, its parameters and edge guidance
+# ---------------------------------------------------------------------------------------------------------------
+TEMPLATE_COLUMNS = ('teff', 'logg', 'met', 'alpha')
+
+
+def _encoded_axes(grid) -> set[str]:
+    """Axes a grid really has: encoded in its file names, or taking more than one value"""
+    import re
+    named = set(re.compile(grid.meta.pattern).groupindex)
+    return {a for a in grid.axes if a in named or len(grid.axis_values(a)) > 1}
+
+
+def template_summary(method: str, cands: Sequence[Candidate], scores: Sequence[float], best: Candidate,
+                     dof: int, tcfg: Mapping[str, Any] | None = None) -> dict:
+    """
+    The best template, its χ², χ²-weighted parameter estimates and any parameter edge, with guidance
+
+    Weights over the candidates of the best grid are exp(−Δχ²/(2s)), with s = max(1, χ²_min/ν), so that a fit
+    dominated by model mismatch does not give unrealistically sharp parameters.
+    If the best candidate is at the low or high end of a searched axis (one with at least two values), the edge is
+    reported: widening `templates.<axis>_range` if the grid extends further, otherwise a known grid that covers
+    the region, with the download command and the configuration change (both also as data for a GUI).
+
+    Returns
+    -------
+    summary
+        'template_grid', 'template_label', 'template_<axis>' for teff, logg, met and alpha (NaN where the grid has
+        no such axis), 'template_chi2', 'template_at_edge', 'estimate' {axis: (mean, sd)}, 'edges' [dict]
+    """
+    from .. import templates as T
+    tcfg = dict(tcfg or {})
+    scores = np.asarray(scores, dtype=float)
+    ibest = cands.index(best)
+    out: dict[str, Any] = dict(template_grid=best.grid.name if best.grid is not None else 'user',
+                               template_label=best.label,
+                               template_chi2=float(scores[ibest]) if len(scores) > ibest else np.nan,
+                               estimate={}, edges=[])
+    for a in TEMPLATE_COLUMNS:
+        out[f'template_{a}'] = np.nan
+    if best.grid is None:
+        out['template_at_edge'] = False
+        return out
+    grid = best.grid
+    has = _encoded_axes(grid)
+    for a in TEMPLATE_COLUMNS:
+        if a in has:
+            out[f'template_{a}'] = float(best.param_dict[a])
+    same = [i for i, c in enumerate(cands) if c.grid is grid and np.isfinite(scores[i] if len(scores) > i else np.nan)]
+    if len(same) > 1:
+        chi = scores[same]
+        s = max(1., float(np.nanmin(chi)) / max(dof, 1))
+        w = np.exp(-(chi - np.nanmin(chi)) / (2. * s))
+        w /= w.sum()
+        for a in grid.axes:
+            vals = np.array([cands[i].param_dict[a] for i in same])
+            if a in has:
+                mean = float(np.sum(w * vals))
+                out['estimate'][a] = (mean, float(np.sqrt(np.sum(w * (vals - mean) ** 2))))
+    for a in grid.axes:
+        searched = sorted({c.param_dict[a] for c in cands if c.grid is grid})
+        if len(searched) < 2:
+            continue
+        v = best.param_dict[a]
+        direction = 'low' if np.isclose(v, searched[0]) else 'high' if np.isclose(v, searched[-1]) else None
+        if direction is None:
+            continue
+        out['edges'].append(_edge_guidance(grid, a, v, direction, (searched[0], searched[-1]), best, tcfg, T))
+    out['template_at_edge'] = bool(out['edges'])
+    est = ', '.join(f'{a} {m:.4g} ± {sd:.2g}' for a, (m, sd) in out['estimate'].items())
+    log.info('%s: best template %s (χ² %.1f over %d candidates)%s', method, best.label, out['template_chi2'],
+             len(cands), f'; χ²-weighted {est}' if est else '')
+    for e in out['edges']:
+        log.warning('%s: %s', method, e['message'])
+    return out
+
+
+def _range_key(axis: str) -> str:
+    return f'{axis}_range' if axis in ('teff', 'logg', 'met', 'alpha') else f'ranges.{axis}'
+
+
+def _patch(axis: str, rng: tuple[float, float], **extra) -> dict:
+    t = dict(extra)
+    if axis in ('teff', 'logg', 'met', 'alpha'):
+        t[f'{axis}_range'] = [float(rng[0]), float(rng[1])]
+    else:
+        t['ranges'] = {axis: [float(rng[0]), float(rng[1])]}
+    return {'templates': t}
+
+
+def _edge_guidance(grid, axis, v, direction, searched, best, tcfg, T) -> dict:
+    """Guidance for one axis at an edge (see template_summary)"""
+    gvals = grid.axis_values(axis)
+    glo, ghi = float(gvals[0]), float(gvals[-1])
+    step = float(np.median(np.diff(gvals))) if len(gvals) > 1 else T.AXIS_SCALE.get(axis, 1.)
+    e = dict(axis=axis, direction=direction, value=float(v), searched=tuple(map(float, searched)), grid=grid.name,
+             grid_bounds=(glo, ghi), action='', cfg_patch={}, download=None, command='', message='')
+    where = (f'best {axis} {v:g} ({best.label}) is at the {direction} edge of the searched {axis} range '
+             f'{searched[0]:g} to {searched[1]:g}')
+    extends = v < ghi - 1e-9 if direction == 'high' else v > glo + 1e-9
+    if extends:
+        lo, hi = searched
+        lo, hi = (max(glo, lo - 2 * step), hi) if direction == 'low' else (lo, min(ghi, hi + 2 * step))
+        e.update(action='widen', cfg_patch=_patch(axis, (lo, hi)))
+        e['message'] = (f'{where}; grid {grid.name} extends to {glo if direction == "low" else ghi:g}: widen '
+                        f'templates.{_range_key(axis)} to [{lo:g}, {hi:g}] and refit')
+        return e
+    # the grid itself ends here: suggest a known grid that extends further
+    params = best.param_dict
+    options = []
+    for name, meta in T.KNOWN_GRIDS.items():
+        cov = meta.coverage.get(axis)
+        if cov is None or name == grid.name:
+            continue
+        beyond = cov[0] < v - 1e-9 if direction == 'low' else cov[1] > v + 1e-9
+        fits = all(meta.coverage.get(a, (-np.inf, np.inf))[0] - 1e-9 <= params[a] <= meta.coverage.get(
+            a, (-np.inf, np.inf))[1] + 1e-9 for a in ('teff', 'logg') if a != axis)
+        if beyond and fits:
+            options.append((name, meta, cov))
+    if not options:
+        e.update(action='none', message=f'{where}, which is also the edge of grid {grid.name}; no known grid '
+                                        f'extends further: consider a custom local grid (templates.local_dir)')
+        return e
+    name, meta, cov = options[0]
+    width = 3 * T.AXIS_SCALE.get(axis, step)
+    new = (max(cov[0], v - width), v) if direction == 'low' else (v, min(cov[1], v + width))
+    teff = params.get('teff', 2000.)
+    logg = params.get('logg', 5.)
+    dl = {'grid': name, 'teff_range': (teff - 300., teff + 300.), 'logg_range': (logg - 0.5, logg + 0.5)}
+    if axis in ('teff', 'logg', 'met', 'alpha'):
+        dl[f'{axis}_range'] = new
+    else:
+        dl['ranges'] = {axis: new}
+    flag = {'teff': '--teff', 'logg': '--logg', 'met': '--met', 'alpha': '--alpha'}
+    cmd = (f'rvfitter templates download --grid {name} --teff {dl["teff_range"][0]:g} {dl["teff_range"][1]:g} '
+           f'--logg {dl["logg_range"][0]:g} {dl["logg_range"][1]:g}')
+    if axis in ('met', 'alpha'):
+        cmd += f' {flag[axis]} {new[0]:g} {new[1]:g}'
+    elif axis not in ('teff', 'logg'):
+        cmd += f' --range {axis} {new[0]:g} {new[1]:g}'
+    grids = grid_names(tcfg) if tcfg else [grid.name]
+    patch = _patch(axis, (min(new[0], searched[0]), max(new[1], searched[1])), grid=[*grids, name])
+    e.update(action='download', download=dl, command=cmd, cfg_patch=patch)
+    pr = patch['templates'].get(f'{axis}_range') or patch['templates'].get('ranges', {}).get(axis)
+    e['message'] = (f'{where}, which is also the edge of grid {grid.name}. Grid {name} ({meta.reference}) covers '
+                    f'{axis} {cov[0]:g} to {cov[1]:g}: run "{cmd}", then set templates.grid = {[*grids, name]} '
+                    f'and templates.{_range_key(axis)} = [{pr[0]:g}, {pr[1]:g}], and refit'
+                    + ('' if meta.verified else f' (the SVO id of {name} is not yet verified)'))
+    return e
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -454,13 +634,21 @@ def reject_outliers(measurements: list[Measurement], k: float = 5.) -> list[Meas
 
 
 def finish(method: str, measurements: list[Measurement], outlier_k: float | None = 5.) -> MethodResult:
-    """Combine a method's per-region measurements (Birge), ignoring seriously flagged ones and gross outliers"""
+    """Combine a method's per-region measurements (random effects), ignoring seriously flagged ones and outliers"""
     from ..combine import combine_regions
     if outlier_k:
         reject_outliers(measurements, outlier_k)
     bad = SERIOUS | FLAG_OUTLIER
     good = [m for m in measurements if not (m.flag & bad) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
-    rv, err = combine_regions(good)
+    details: dict = {}
+    rv, err = combine_regions(good, details=details)
+    for m in measurements:  # the combination is method-level; recorded on every row for the details table
+        m.diagnostics.update(method_tau=details.get('tau_line', np.nan), method_birge_rv=details.get('birge_rv'),
+                             method_birge_err=details.get('birge_err'))
+    if len(good) > 1:
+        log.info('%s: random-effects %.2f ± %.2f km/s (τ %.1f km/s over %d regions; Birge %.2f ± %.2f km/s)', method,
+                 rv, err, details.get('tau_line', np.nan), len(good), details.get('birge_rv', np.nan),
+                 details.get('birge_err', np.nan))
     return MethodResult(method, rv, err, len(good), measurements)
 
 

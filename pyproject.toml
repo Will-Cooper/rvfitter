@@ -65,4 +65,5 @@ markers = [
     "data: needs local test data (not available in CI)",
     "gui: needs PySide6 and a (possibly offscreen) Qt platform",
     "slow: long-running injection-recovery or MCMC tests (excluded from default CI)",
+    "network: needs internet access (e.g. the SVO theory server); skipped when offline",
 ]

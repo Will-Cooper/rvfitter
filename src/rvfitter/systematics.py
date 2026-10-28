@@ -9,6 +9,7 @@ template-spread and wavelength zero-point terms are reported separately, plus th
 - `wavelength_zero_point`: the velocity equivalent of the wavelength-solution RMS, if known.
 """
 import logging
+from collections.abc import Sequence
 from concurrent.futures import Executor
 from typing import Any
 
@@ -90,14 +91,16 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
             log.debug('template spread variant failed: %s', exc)
             return np.nan
 
-    # (1) every candidate of the (first) grid, pinned
+    # (1) every candidate of every configured grid, pinned (grid and all axes)
     tcfg = C.section(cfg, 'templates')
     cands = C.candidates(cfg, {'teff_window': 300.})
     for k, cand in enumerate(cands):
         if cand.params is None:
             continue
-        t, g, m = cand.params[:3]
-        pinned = _with(cfg, 'templates', teff_range=(t, t), logg_range=(g, g), met_range=(m, m))
+        p = cand.param_dict
+        std = {f'{a}_range': (p[a], p[a]) for a in ('teff', 'logg', 'met', 'alpha')}
+        pinned = _with(cfg, 'templates', grid=cand.grid.name, **std,
+                       ranges={a: (v, v) for a, v in p.items() if a not in ('teff', 'logg', 'met', 'alpha')})
         out['templates'][cand.label] = run(pinned, regs, seeds[0].spawn(len(cands))[k])
     # (2) each enabled grid (when several are configured)
     if len(grids) > 1:
@@ -144,17 +147,75 @@ def template_spread(spectrum: Spectrum, regions: dict[str, list[Region]] | list[
     return float(template_spread_details(spectrum, regions, cfg, executor=executor, rng=rng)['total'])
 
 
-def wavelength_zero_point(spectrum: Spectrum, cfg: Any) -> float:
+def wavelength_zero_point(spectrum: Spectrum, cfg: Any, *, wave: np.ndarray | Sequence[float] | None = None
+                          ) -> float:
     """
-    The velocity equivalent of the wavelength-solution RMS: c × rms / λ_mid [km/s]
+    The wavelength zero-point systematic [km/s]: the larger of the arc-RMS term and the zero-point term
 
-    The RMS [Å] comes from cfg.input.wave_rms or spectrum.meta['wave_rms']; NaN if neither is known.
-    (A telluric-referenced zero point is added with calibration.telluric_zeropoint.)
+    - Arc RMS: c × rms / λ_mid, with the RMS [Å] from cfg.input.wave_rms or spectrum.meta['wave_rms']. This is a
+      lower bound: an internally consistent arc fit can hide a distortion of the whole solution (J1745: arc RMS
+      ≈3 km/s against a +10 to +25 km/s sky-line distortion).
+    - Zero point, evaluated at the measurements' wavelengths `wave` (the RMS over them; the curves vary by tens
+      of km/s across a spectrum, so a single mean offset would misstate it):
+      - a correction applied (meta['wavelength_correction']): its own uncertainty, i.e. the sky curve's error
+        σ_sky(λ) with the spread over reasonable curve models (`zp_sky_model_spread`) in quadrature, plus the
+        star − sky constant's error when 'auto' added one; or the telluric curve's error σ_tell(λ);
+      - nothing applied: the offset itself and its uncertainty, √(Δv(λ)² + σ(λ)²), from the sky curve when it was
+        measured (the star − sky constant is then a separate term, `sys_star_sky`), else from the star's telluric
+        curve.
+      Without `wave`, the curves' summary errors (`zp_sky_err`, `zp_tell_err`) and offsets are used.
+
+    Returns
+    -------
+    sys
+        km/s; NaN if neither is known
     """
+    from .calibration.sky_zeropoint import curve_at
+    meta = spectrum.meta if hasattr(spectrum.meta, 'get') else {}
     rms = _cfg_get(cfg, 'input', 'wave_rms', None)
     if rms is None:
-        rms = spectrum.meta.get('wave_rms') if hasattr(spectrum.meta, 'get') else None
-    if rms is None or not np.isfinite(rms):
-        return np.nan
-    return float(C_KMS * rms / np.median(spectrum.wave))
+        rms = meta.get('wave_rms')
+    arc = float(C_KMS * rms / np.median(spectrum.wave)) if rms is not None and np.isfinite(rms) else np.nan
+    lam = None if wave is None else np.asarray(wave, dtype=float)
+    if lam is not None:
+        lam = lam[np.isfinite(lam)]
+        lam = lam if len(lam) else None
 
+    def rms_of(x: np.ndarray) -> float:
+        x = np.asarray(x, dtype=float)
+        x = x[np.isfinite(x)]
+        return float(np.sqrt(np.mean(x * x))) if len(x) else np.nan
+
+    def observatory(curve: dict) -> np.ndarray:  # the curves are in the observatory frame
+        from .calibration.telluric_zeropoint import frame_factor
+        return lam / frame_factor(meta)
+
+    def spread_of(curve: dict) -> float:
+        v = curve.get('zp_sky_model_spread', np.nan)
+        return float(v) if v is not None and np.isfinite(v) else 0.
+
+    zp = np.nan
+    wc = meta.get('wavelength_correction') or {}
+    if wc.get('sky'):  # applied: its uncertainty remains, with that of any star − sky constant
+        c = wc['sky']
+        zp = (float(np.hypot(rms_of(curve_at(c, observatory(c))[1]), spread_of(c))) if lam is not None
+              else float(c.get('zp_sky_err', np.nan)))
+        const_err = wc.get('constant_err', np.nan)
+        if const_err is not None and np.isfinite(const_err):
+            zp = float(np.hypot(zp, const_err))
+    elif wc.get('telluric'):  # the star's telluric curve applied
+        c = wc['telluric']
+        zp = (rms_of(curve_at(c, observatory(c))[1]) if lam is not None
+              else float(c.get('zp_tell_err', np.nan)))
+    else:  # measured but not applied: the offset itself remains
+        c = meta.get('sky_zeropoint') or meta.get('telluric_zeropoint')
+        if c:
+            sky = bool(meta.get('sky_zeropoint'))
+            if lam is not None:
+                dv, err = curve_at(c, observatory(c))
+                zp = float(np.hypot(rms_of(np.hypot(dv, err)), spread_of(c) if sky else 0.))
+            else:
+                k = 'zp_sky' if sky else 'zp_tell'
+                zp = float(np.hypot(c.get(f'{k}_kms', np.nan), c.get(f'{k}_err', np.nan)))
+    vals = [v for v in (arc, zp) if np.isfinite(v)]
+    return float(max(vals)) if vals else np.nan

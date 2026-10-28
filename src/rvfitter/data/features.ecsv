@@ -59,7 +59,7 @@ name species kind wave_vac wmin wmax teff_min teff_max r_min rest_ref caveat dep
 "H2O 1.4um" H2O band nan 13300.0 14900.0 500.0 3000.0 1000.0 "Cushing et al. 2005, ApJ 623, 1115" "coincides with the opaque telluric 1.33-1.49 um band: unusable from the ground" nan poor
 "H2O 1.9um" H2O band nan 17900.0 20500.0 500.0 3000.0 1000.0 "Cushing et al. 2005, ApJ 623, 1115" "coincides with the opaque telluric 1.79-2.05 um band: unusable from the ground" nan poor
 "O2 B" O2 telluric nan 6862.0 6902.0 nan nan 5000.0 "Lord 1992, NASA TM 103957" "saturated core; limits approximate" 0.3 n/a
-"O2 A" O2 telluric nan 7592.0 7702.0 nan nan 5000.0 "Lord 1992, NASA TM 103957" "saturated core; band head at 7600 A (air)" 0.5 n/a
+"O2 A" O2 telluric nan 7592.0 7702.0 2800.0 nan 5000.0 "Lord 1992, NASA TM 103957" "saturated core; band head at 7600 A (air); teff_min: not a safe wavelength zero-point reference below 2800 K, where the pressure-broadened K I 7667/7701 wings fill the band (injection: template-dependent biases of +5 to +31 km/s for L dwarfs)" 0.5 n/a
 "H2O 7250" H2O telluric nan 7162.0 7342.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "variable with precipitable water vapour" 0.15 n/a
 "H2O 8200" H2O telluric nan 8122.0 8352.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "weak; variable with precipitable water vapour" 0.08 n/a
 "H2O 9300" H2O telluric nan 8952.0 9903.0 nan nan 10000.0 "Lord 1992, NASA TM 103957" "strong and very variable with precipitable water vapour" 0.4 n/a
