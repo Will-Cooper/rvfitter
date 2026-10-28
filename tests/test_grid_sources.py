@@ -1,10 +1,15 @@
 """Tests of the Zenodo grid source (mocked archives; one live test marked network + slow)."""
 import hashlib
 import io
+import json
 import logging
 import socket
 import tarfile
+import tomllib
+import urllib.error
+import urllib.request
 import zipfile
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -96,7 +101,6 @@ def test_sand_from_zip_members(fake_zenodo, tmp_path):
     tg = T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', source='zenodo')
     assert len(tg.files) == 2 and tg.meta.medium == 'vacuum'
     assert tg.bounds()['met'] == (0.1, 0.1) and tg.bounds()['alpha'] == (0.15, 0.15)
-    import json
     man = json.loads((tmp_path / 'sand' / 'manifest.json').read_text())
     assert all(v['source'] == 'zenodo' and v['record'] == '11582126' and 'crc32' in v for v in man.values())
 
@@ -139,3 +143,187 @@ def test_live_sand_from_zenodo(tmp_path):
         pytest.skip('Zenodo not reachable')
     tg = T.download('sand', (2000., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', source='zenodo')
     assert len(tg.files) >= 1 and tg.meta.medium == 'vacuum'
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# atomic writes, retries, range requests and provenance (all mocked)
+# ---------------------------------------------------------------------------------------------------------------
+class _Resp:
+    """A minimal urlopen response"""
+
+    def __init__(self, body=b'', status=206, headers=None):
+        self.body, self.status, self.headers = body, status, headers or {}
+
+    def read(self, n=-1):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    waits = []
+    monkeypatch.setattr(G, '_sleep', waits.append)
+    return waits
+
+
+def _no_files(directory):
+    return not [p for p in directory.iterdir() if p.suffix in ('.txt', '.part')]
+
+
+def test_targz_files_appear_only_after_md5(fake_zenodo, tmp_path, monkeypatch):
+    seen = []
+    commit = G._Staging.commit
+
+    def spy(self, paths):
+        seen.append((sorted(p.suffix for p in (tmp_path / 'bob').iterdir()), len(paths)))
+        return commit(self, paths)
+    monkeypatch.setattr(G._Staging, 'commit', spy)
+    T.download('sonora-bobcat', (1800., 1900.), (5.0, 5.0), directory=tmp_path / 'bob', source='zenodo')
+    assert seen == [(['.part', '.part'], 2)]  # staged under temporary names until the checksum had passed
+    assert not list((tmp_path / 'bob').glob('*.part'))
+
+
+def test_md5_mismatch_leaves_no_part_files(fake_zenodo, tmp_path):
+    fake_zenodo['5063476'][0]['checksum'] = 'md5:' + '0' * 32
+    (tmp_path / 'bob').mkdir()
+    with pytest.raises(OSError, match='MD5 mismatch'):
+        T.download('sonora-bobcat', (1800., 1900.), (5.0, 5.0), directory=tmp_path / 'bob', source='zenodo')
+    assert _no_files(tmp_path / 'bob') and not (tmp_path / 'bob' / 'manifest.json').exists()
+
+
+def test_dropped_stream_retried_then_cleaned(fake_zenodo, tmp_path, sleeps, monkeypatch):
+    path = fake_zenodo['5063476'][0]['url']
+    calls = []
+
+    class Dropping(io.RawIOBase):
+        def __init__(self):
+            self.f = open(path, 'rb')
+
+        def readable(self):
+            return True
+
+        def readinto(self, b):
+            data = self.f.read(min(len(b), 100000))
+            if self.f.tell() > 200000:
+                raise ConnectionResetError('connection dropped')
+            b[:len(data)] = data
+            return len(data)
+
+        def read(self, n=-1):
+            data = self.f.read(min(n, 100000))
+            if self.f.tell() > 200000:
+                raise ConnectionResetError('connection dropped')
+            return data
+    monkeypatch.setattr(G, '_open_stream', lambda url: calls.append(1) or Dropping())
+    (tmp_path / 'bob').mkdir()
+    with pytest.raises(ConnectionResetError):
+        T.download('sonora-bobcat', (1800., 1900.), (5.0, 5.0), directory=tmp_path / 'bob', source='zenodo')
+    assert len(calls) == 3 and sleeps == [2., 4.]
+    assert _no_files(tmp_path / 'bob')
+
+
+def test_zip_failure_removes_verified_members(fake_zenodo, tmp_path, monkeypatch):
+    spec = G.ZENODO_GRIDS['sand']
+    n = []
+
+    def flaky(data):
+        n.append(1)
+        if len(n) == 2:
+            raise ValueError('bad member')
+        return spec.read(data)
+    monkeypatch.setitem(G.ZENODO_GRIDS, 'sand', replace(spec, read=flaky))
+    (tmp_path / 'sand').mkdir()
+    with pytest.raises(ValueError, match='bad member'):
+        T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', source='zenodo')
+    assert len(n) == 2 and _no_files(tmp_path / 'sand')  # the first (already renamed) model was removed too
+
+
+def _http(code):
+    return urllib.error.HTTPError('u', code, 'x', {}, None)
+
+
+def _sequence(errors):
+    it = iter(errors)
+
+    def f():
+        e = next(it)
+        if e is not None:
+            raise e
+        return 'ok'
+    return f
+
+
+def test_retry_transient_only(sleeps):
+    assert G._retry(_sequence([_http(503), TimeoutError(), None]), 'x') == 'ok' and sleeps == [2., 4.]
+    assert G._retry(_sequence([_http(429), urllib.error.URLError('refused'), None]), 'x') == 'ok'
+    with pytest.raises(urllib.error.HTTPError):  # three attempts, then the last error is raised
+        G._retry(_sequence([_http(500)] * 3), 'x')
+    calls = []
+
+    def not_found():
+        calls.append(1)
+        raise _http(404)
+    with pytest.raises(urllib.error.HTTPError):
+        G._retry(not_found, 'x')
+    assert len(calls) == 1  # a 4xx other than 429 is final
+
+
+def test_fetch_json_retries(monkeypatch, sleeps):
+    n = []
+
+    def urlopen(req, timeout):
+        n.append(1)
+        if len(n) < 3:
+            raise urllib.error.HTTPError(req.full_url, 502, 'bad gateway', {}, None)
+        return _Resp(b'{"files": []}', status=200)
+    monkeypatch.setattr(urllib.request, 'urlopen', urlopen)
+    assert G._fetch_json('https://zenodo.org/api/records/1') == {'files': []} and len(n) == 3
+
+
+def test_rangefile_requires_206(monkeypatch, sleeps):
+    monkeypatch.setattr(urllib.request, 'urlopen', lambda req, timeout: _Resp(b'x' * 100, status=200))
+    with pytest.raises(G.RangeError, match='HTTP 200, not 206'):
+        G._RangeFile('https://z/f', 100).readinto(bytearray(10))
+    assert not sleeps  # not a transient error
+
+
+def test_rangefile_checks_content_range(monkeypatch, sleeps):
+    def serve(content_range):
+        monkeypatch.setattr(urllib.request, 'urlopen', lambda req, timeout: _Resp(
+            b'a' * 10, headers={'Content-Range': content_range} if content_range else {}))
+        return G._RangeFile('https://z/f', 100).readinto(bytearray(10))
+    assert serve('bytes 0-9/100') == 10 and serve(None) == 10
+    for bad in ('bytes 5-14/100', 'bytes 0-9/999', 'garbage'):
+        with pytest.raises(G.RangeError, match='Content-Range'):
+            serve(bad)
+
+
+def test_rangefile_retries_timeouts(monkeypatch, sleeps):
+    n = []
+
+    def urlopen(req, timeout):
+        n.append(1)
+        if len(n) == 1:
+            raise TimeoutError('timed out')
+        return _Resp(b'b' * 10, headers={'Content-Range': 'bytes 0-9/100'})
+    monkeypatch.setattr(urllib.request, 'urlopen', urlopen)
+    buf = bytearray(10)
+    assert G._RangeFile('https://z/f', 100).readinto(buf) == 10 and bytes(buf) == b'b' * 10 and len(sleeps) == 1
+
+
+def test_provenance_recorded(fake_zenodo, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    tg = T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', source='zenodo')
+    man = json.loads((tmp_path / 'sand' / 'manifest.json').read_text())
+    assert all(v['license'] == 'CC-BY-4.0' and v['doi'] == '10.5281/zenodo.11582126' for v in man.values())
+    meta = tomllib.loads((tmp_path / 'sand' / T.METADATA_FILE).read_text())
+    assert meta['license'] == 'CC-BY-4.0' and meta['record'] == '11582126'
+    assert meta['doi'] == '10.5281/zenodo.11582126' and 'Alvarado' in meta['citation']
+    assert tg.meta.license == 'CC-BY-4.0'
+    assert 'licence CC-BY-4.0' in caplog.text and '11582126' in caplog.text and 'please cite' in caplog.text
+    assert T.TemplateGrid(tmp_path / 'sand').meta.doi == '10.5281/zenodo.11582126'

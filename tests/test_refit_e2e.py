@@ -50,6 +50,8 @@ def test_refit_reproduced_byte_for_byte(tmp_path):
     rerun = pipeline.run(config.load(toml), files, n_procs=1)
     table_rerun = results.to_table(rerun).to_csv(index=False)
     assert table_rerun == table_refit
+    assert results.to_table(first)['refitted'].tolist() == [False, False]
+    assert results.to_table(rerun)['refitted'].tolist() == [False, True]  # the TOML's [[refits]] mark objB
     # the patch changed only objB; objA is identical to the first run
     assert results.to_table(first).iloc[0].equals(results.to_table(rerun).iloc[0])
     # and objB alone (a different input set) gives the same object result

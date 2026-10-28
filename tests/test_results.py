@@ -116,3 +116,10 @@ def test_dotted_stem_and_floor(tmp_path):
     assert results.to_table([res]).loc[0, 'rv_total_err'] == pytest.approx(np.sqrt(1.5**2 + 0.8**2 + 0.6**2 + 0.5**2))
     w = results.write([res], tmp_path / 'run.v2', formats='json')
     assert (tmp_path / 'run.v2.json') in w
+
+
+def test_refitted_column():
+    plain, refit = make_result(), make_result('B')
+    refit.refitted = True
+    df = results.to_table([plain, refit])
+    assert df['refitted'].tolist() == [False, True] and df['refitted'].dtype == bool
