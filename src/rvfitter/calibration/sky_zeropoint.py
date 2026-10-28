@@ -148,6 +148,7 @@ class SkyZeroPoint:
     birge: float = 1.
     main_span: tuple[float, float] = (np.nan, np.nan)
     span_bounds: dict = field(default_factory=dict)  # span id → (wmin, wmax) of its segments
+    kind: str = 'sky'
 
     @property
     def n_used(self) -> int:
@@ -377,7 +378,7 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
     return zp
 
 
-def apply(spectrum: Spectrum, zp: SkyZeroPoint | None = None, *, constant_kms: float = 0.,
+def apply(spectrum: Spectrum, zp: Any = None, *, constant_kms: float = 0., constant_err: float = np.nan,
           source: str = 'sky') -> Spectrum:
     """
     Correct the wavelengths for a zero point: λ' = λ / D(Δv(λ) + constant), D the relativistic Doppler factor
@@ -387,16 +388,20 @@ def apply(spectrum: Spectrum, zp: SkyZeroPoint | None = None, *, constant_kms: f
     spectrum
         The spectrum (in any frame: the correction is a multiplicative factor)
     zp
-        The sky zero-point curve (None: only the constant)
+        A zero-point curve with `dv(λ)` and `as_dict()` (`SkyZeroPoint`, or a `TelluricZeroPoint`, whose `kind`
+        is 'telluric'); None: only the constant
     constant_kms
-        An additional constant offset [km/s] (e.g. the star's own offset from tellurics)
+        An additional constant offset [km/s] (e.g. the star − sky offset from the tellurics)
+    constant_err
+        Its uncertainty [km/s] (recorded for the zero-point systematic)
     source
         Label recorded in meta['wavelength_correction']['source']
 
     Returns
     -------
     corrected
-        The spectrum with corrected wavelengths; meta['wavelength_correction'] records what was applied
+        The spectrum with corrected wavelengths; meta['wavelength_correction'] records what was applied (the
+        curve under 'sky' or 'telluric')
     """
     dv = np.full(len(spectrum.wave), float(constant_kms))
     if zp is not None:
@@ -405,8 +410,11 @@ def apply(spectrum: Spectrum, zp: SkyZeroPoint | None = None, *, constant_kms: f
     if np.any(np.diff(new_wave) <= 0):
         raise ValueError('the zero-point correction would make the wavelengths non-monotonic; not applied')
     meta = dict(spectrum.meta)
+    kind = getattr(zp, 'kind', 'sky')
     meta['wavelength_correction'] = dict(source=source, constant_kms=float(constant_kms),
-                                         sky=None if zp is None else zp.as_dict(),
+                                         constant_err=float(constant_err),
+                                         sky=zp.as_dict() if zp is not None and kind == 'sky' else None,
+                                         telluric=zp.as_dict() if zp is not None and kind == 'telluric' else None,
                                          dv_min=float(dv.min()), dv_max=float(dv.max()))
     return replace(spectrum, wave=new_wave, meta=meta)
 
@@ -417,9 +425,10 @@ def applied_dv(meta: Any, wave: float | np.ndarray) -> np.ndarray:
     if not wc:
         return np.zeros_like(np.asarray(wave, dtype=float))
     dv = np.full_like(np.asarray(wave, dtype=float), wc.get('constant_kms', 0.))
-    sky = wc.get('sky')
-    if sky:
-        bounds = {int(k): tuple(v) for k, v in (sky.get('span_bounds') or {}).items()} or None
-        dv = dv + _curve(wave, sky['node_wave'], sky['node_dv'], sky['node_err'], sky['node_span'],
-                         sky.get('inflate', 0.), bounds)[0].reshape(np.shape(dv))
+    for key in ('sky', 'telluric'):
+        curve = wc.get(key)
+        if curve:
+            bounds = {int(k): tuple(v) for k, v in (curve.get('span_bounds') or {}).items()} or None
+            dv = dv + _curve(wave, curve['node_wave'], curve['node_dv'], curve['node_err'], curve['node_span'],
+                             curve.get('inflate', 0.), bounds)[0].reshape(np.shape(dv))
     return dv
