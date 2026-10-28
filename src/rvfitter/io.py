@@ -9,6 +9,7 @@ Further readers can be added with `register_reader`.
 Conventions applied to every spectrum, whatever the reader:
 
 * σ = 1/√ivar, with NaN where ivar ≤ 0.
+* PypeIt pixels masked in ``OPT_MASK`` (``BOX_MASK`` for box extraction) are dropped.
 * Non-finite (or non-positive) wavelengths and non-finite fluxes are dropped, the rest is sorted by wavelength and
   duplicate wavelengths are removed (the first is kept).
 * The wavelength medium is never guessed silently.
@@ -36,6 +37,9 @@ medium_in   'air' or 'vacuum': the medium of the file as read (before conversion
 frame_in    ``VEL_TYPE`` (e.g. 'barycentric', 'heliocentric') if present, else None
 vel_corr    ``VEL_CORR`` if present (PypeIt: the multiplicative factor already applied to the wavelengths);
             ``vel_corr_kms`` is the same as a velocity, c(f²-1)/(f²+1)
+arc_range   (PypeIt only) [min, max] vacuum Å of the fitted arc lines of a ``wvcalib.fits`` / ``WaveCalib*.fits`` found
+            next to the file or in ``Calibrations/`` (`find_wvcalib`); ``arc_file`` is its path.
+            PypeIt stores vacuum wavelengths; they are converted like the spectrum if it was read as air.
 ========== =============================================================================================
 
 ``meta['velocity_keywords']`` additionally holds any of the velocity-correction keywords found in the headers
@@ -581,6 +585,13 @@ def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any =
             wave = np.asarray(data[wcol], dtype=float)
             flux = np.asarray(data[fcol], dtype=float)
             ivar = np.asarray(data[icol], dtype=float)
+            mcol = f'{prefix}_MASK'
+            if mcol in names:  # PypeIt: True = good pixel; masked pixels can hold wild fluxes with finite ivar
+                bad = ~np.asarray(data[mcol], dtype=bool)
+                if bad.any():
+                    log.debug('%s: dropping %d pixels masked by %s', path.name, int(bad.sum()), mcol)
+                    flux = np.where(bad, np.nan, flux)  # dropped with the other non-finite pixels
+                    ivar = np.where(bad, 0., ivar)
             if np.any(np.isfinite(wave) & (wave > 0) & np.isfinite(flux)):
                 skycol = f'{prefix}_COUNTS_SKY'
                 sky = np.asarray(data[skycol], dtype=float) if skycol in names else None
@@ -594,6 +605,58 @@ def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any =
     medium, source = _medium_from_header(header)
     return RawSpectrum(wave, flux, _ivar_to_sigma(ivar), header, medium, source, PYPEIT_DEFAULT_MEDIUM,
                        _header_resolution(header), 'pypeit_spec1d', sky)
+
+
+def find_wvcalib(path: str | Path) -> Path | None:
+    """
+    The PypeIt wavelength-calibration file belonging to a spectrum, or None
+
+    Looked for in the spectrum's directory and up to three parents, each also as ``Calibrations/``, as
+    ``wvcalib*.fits`` or ``WaveCalib*.fits`` (the first directory with exactly one match wins; with several, the
+    lexically first is used and the choice is logged).
+    """
+    here = Path(path).resolve().parent
+    for d in [here, *here.parents[:3]]:
+        for sub in (d, d / 'Calibrations'):
+            if not sub.is_dir():
+                continue
+            hits = sorted(p for p in sub.iterdir()
+                          if p.is_file() and p.suffix == '.fits'
+                          and p.name.lower().startswith(('wvcalib', 'wavecalib')))
+            if hits:
+                if len(hits) > 1:
+                    log.info('%s: %d wavelength-calibration files in %s; using %s', Path(path).name, len(hits), sub,
+                             hits[0].name)
+                return hits[0]
+    return None
+
+
+def arc_line_range(wvcalib: str | Path, extname: str | None = None) -> tuple[float, float] | None:
+    """
+    Span [Å, as stored by PypeIt: vacuum] of the arc lines fitted in a PypeIt ``wvcalib.fits``
+
+    Reads ``wave_fit`` of the ``SPAT_ID-*_WAVEFIT`` tables.
+    If ``extname`` is a spec1d table name such as ``SPAT0240-SLIT0457-DET02`` and a table with that spatial ID
+    exists, only that slit is used; otherwise (e.g. a long slit whose calibration has a different ID) all tables are.
+    """
+    spat = re.match(r'SPAT0*(\d+)', str(extname or ''))
+    lines: list[np.ndarray] = []
+    matched: list[np.ndarray] = []
+    with fits.open(wvcalib) as hdul:
+        for ext in hdul[1:]:
+            m = re.fullmatch(r'SPAT_ID-(\d+)_WAVEFIT', str(ext.name))
+            if not m or 'wave_fit' not in [c.lower() for c in (ext.columns.names or [])]:
+                continue
+            col = next(c for c in ext.columns.names if c.lower() == 'wave_fit')
+            w = np.asarray(ext.data[col], dtype=float).ravel()
+            w = w[np.isfinite(w) & (w > 0)]
+            lines.append(w)
+            if spat and int(m.group(1)) == int(spat.group(1)):
+                matched.append(w)
+    pool = np.concatenate(matched or lines) if (matched or lines) else np.array([])
+    if len(pool) < 2:
+        return None
+    return float(pool.min()), float(pool.max())
 
 
 def _coadd_hdu(hdul: fits.HDUList, hdu: int | str | None) -> int | None:
@@ -905,6 +968,23 @@ def _clean_arrays(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray, sky: np
     return wave[keep], flux[keep], sigma[keep], None if sky is None else sky[keep]
 
 
+def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None, medium_in: str,
+                      medium_method: str) -> None:
+    """Set ``meta['arc_range']`` (vacuum Å) and ``meta['arc_file']`` from a neighbouring PypeIt wavecal file"""
+    try:
+        calib = find_wvcalib(path)
+        span = None if calib is None else arc_line_range(calib, extname)
+    except Exception as exc:  # an unreadable calibration file is never fatal
+        log.debug('%s: could not read the arc-line range: %s', path.name, exc)
+        return
+    if calib is None or span is None:
+        return
+    # PypeIt stores vacuum wavelengths; they are in the file's medium, so convert them as the spectrum was
+    lo, hi = (float(x) for x in to_vacuum(np.array(span), medium_in, medium_method))
+    meta.update(arc_range=(lo, hi), arc_file=str(calib))
+    log.debug('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, lo, hi, calib)
+
+
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
                   hdu: int | str | None = None,
                   columns: Mapping[str, str | int] | None = None, resolution: float | None = None) -> Spectrum:
@@ -1005,6 +1085,8 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     r = resolution if resolution is not None else raw.resolution
     if r is not None and not (np.isfinite(r) and r > 0):
         raise ValueError(f'resolution must be positive, not {r}')
+    if raw.reader in ('pypeit_spec1d', 'pypeit_coadd'):
+        _attach_arc_range(meta, path, raw.header.get('RVF_EXTNAME'), medium_in, medium_method)
     log.debug('%s: %d pixels, %.1f-%.1f Å (vacuum), medium_in=%s (%s)', path.name, len(wave), wave[0], wave[-1],
               medium_in, source)
     return Spectrum(wave, flux, sigma, None if r is None else float(r), meta, str(path), sky)

@@ -509,14 +509,29 @@ def _object_tables(spec: Spectrum, cfg: Any) -> list[tuple[int, Spectrum]]:
     return out
 
 
-def _measure_sky(src: Spectrum, cfg: Any, name: str):
+def _valid_range(cfg: Any, name: str, *spectra: Spectrum | None) -> tuple[float, float] | None:
+    """``calibration.wave_valid_range`` if set, else the arc-line range found next to a PypeIt file (INFO-logged)"""
+    cal = getattr(cfg, 'calibration', None)
+    given = getattr(cal, 'wave_valid_range', None)
+    if given:
+        return given
+    for s in spectra:
+        arc = (getattr(s, 'meta', None) or {}).get('arc_range')
+        if arc:
+            log.info('%s: calibration.wave_valid_range not set; using the arc-line range %.0f-%.0f Å of %s', name,
+                     arc[0], arc[1], s.meta.get('arc_file', 'wvcalib'))
+            return (float(arc[0]), float(arc[1]))
+    return None
+
+
+def _measure_sky(src: Spectrum, cfg: Any, name: str, fallback: Spectrum | None = None):
     """
     The sky zero point of `src`; for a multi-object PypeIt file, every object's sky is measured (the same slit and
     wavelength solution) and the best measured (most usable segments, then the smallest node errors) is used
     """
     cal = getattr(cfg, 'calibration', None)
     kw = dict(seg_width=getattr(cal, 'sky_segment_width', 250.),
-              valid_range=getattr(cal, 'wave_valid_range', None))
+              valid_range=_valid_range(cfg, name, src, fallback))
     tables = [(h, s) for h, s in _object_tables(src, cfg) if s.sky is not None]
     if len(tables) < 2:
         zp = sky_zeropoint.measure(src, **kw)
@@ -664,7 +679,7 @@ def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '
             _check_sky_source(raw, other, name, sky_source)
             src = other
     if src is not None:
-        zp = _measure_sky(src, cfg, name)
+        zp = _measure_sky(src, cfg, name, raw)
     else:
         info['zp_flags'] |= ZP_FLAGS['no_sky']
         log.info('%s: no sky spectrum: the sky zero point is not measured%s', name,
