@@ -357,3 +357,77 @@ class TestLocalData:
         else:
             assert m['vel_corr'] == pytest.approx(0.99993, abs=1e-5)
         assert np.isfinite(spec.sigma).sum() > 1000
+
+
+# ---- PypeIt masks and arc-line range ---------------------------------------------------------------------------
+def test_pypeit_opt_mask_drops_masked_pixels(tmp_path):
+    path = _spec1d(tmp_path / 's.fits')
+    bad = np.zeros(len(WAVE), bool)
+    bad[[10, 11, 300]] = True
+    with fits.open(path, mode='update') as h:
+        t = h[1].data
+        cols = [fits.Column(name=n, format='D', array=t[n]) for n in t.columns.names]
+        cols += [fits.Column(name='OPT_MASK', format='L', array=~bad),
+                 fits.Column(name='BOX_MASK', format='L', array=np.ones(len(WAVE), bool))]
+        t['OPT_FLAM'][bad] = -2.4e4  # a wild flux with a finite ivar, as PypeIt leaves it
+        new = fits.BinTableHDU.from_columns(cols)
+        new.data['OPT_FLAM'][:] = t['OPT_FLAM']
+        h[1] = new
+    spec = io.read_spectrum(path)
+    assert len(spec.wave) == len(WAVE) - 3
+    assert not np.any(np.isin(spec.wave, WAVE[bad])) and spec.flux.min() > 0
+    # box extraction uses BOX_MASK, which is all good here
+    with fits.open(path, mode='update') as h:
+        h[1].data['OPT_WAVE'][:] = 0.
+    assert len(io.read_spectrum(path).wave) == len(WAVE)
+
+
+def _wvcalib(path: Path, waves=(7500., 8000., 9000.), spat_id=0, extra=None) -> Path:
+    exts = [fits.PrimaryHDU()]
+    for sid, w in [(spat_id, waves), *(extra or [])]:
+        col = fits.Column(name='wave_fit', format=f'{len(w)}D', array=np.array([w]))
+        exts.append(fits.BinTableHDU.from_columns([col], name=f'SPAT_ID-{sid}_WAVEFIT'))
+        exts.append(fits.BinTableHDU.from_columns([fits.Column(name='xval', format='D', array=np.zeros(1))],
+                                                  name=f'SPAT_ID-{sid}_PYPEITFIT'))  # ignored
+    fits.HDUList(exts).writeto(path)
+    return path
+
+
+def test_arc_range_from_calibrations_dir(tmp_path):
+    (tmp_path / 'Science').mkdir()
+    (tmp_path / 'Calibrations').mkdir()
+    _wvcalib(tmp_path / 'Calibrations' / 'WaveCalib_A_0_DET01.fits')
+    spec = io.read_spectrum(_spec1d(tmp_path / 'Science' / 's.fits'))
+    assert spec.meta['arc_range'] == (7500., 9000.)
+    assert spec.meta['arc_file'].endswith('WaveCalib_A_0_DET01.fits')
+
+
+def test_arc_range_absent_without_calibration(tmp_path):
+    assert 'arc_range' not in io.read_spectrum(_spec1d(tmp_path / 's.fits')).meta
+
+
+def test_arc_range_same_directory_slit_match_and_air(tmp_path):
+    _wvcalib(tmp_path / 'wvcalib.fits', waves=(7000., 7100.), spat_id=168, extra=[(240, (7600., 9400.))])
+    path = _spec1d(tmp_path / 's.fits')
+    with fits.open(path, mode='update') as h:
+        h[1].name = 'SPAT0240-SLIT0457-DET02'
+    assert io.read_spectrum(path).meta['arc_range'] == (7600., 9400.)  # the slit's own lines only
+    air = io.read_spectrum(path, medium='air').meta['arc_range']
+    np.testing.assert_allclose(air, air_to_vac(np.array([7600., 9400.])))
+    assert air[0] > 7600.
+
+
+@pytest.mark.data
+@pytest.mark.skipif(not TESTDATA, reason='RVFITTER_TESTDATA not set')
+def test_j1745_arc_range_and_mask():
+    base = Path(TESTDATA) / 'pypeit/R2500I/GTC54-15A0/OB0055'
+    path = next((base / 'Science').glob('spec1d_*DENIS*.fits'))
+    spec = io.read_spectrum(path)
+    lo, hi = spec.meta['arc_range']
+    assert lo == pytest.approx(7437.416, abs=1e-3) and hi == pytest.approx(9925.919, abs=1e-3)
+    assert spec.meta['arc_file'].endswith('OB0055/wvcalib.fits')
+    assert spec.flux.min() > -100.  # HDU 2's OPT_MASK removes the pixel at -7e7 (flux/sigma -24745)
+    nopipe = next((base / 'sciencebk/nopipecorr').glob('spec1d_*DENIS*.fits'))
+    assert io.read_spectrum(nopipe).meta['arc_range'] == (lo, hi)  # found three levels up
+    tell = io.read_spectrum(base / 'Science/DENISJ174534.6-164053_tellcorr.fits')
+    assert tell.meta['arc_range'] == (lo, hi)

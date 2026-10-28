@@ -54,6 +54,10 @@ class Backend(Protocol):
 
     def plot(self, kind: str, result: Any) -> Any | None: ...
 
+    def suggested_refits(self, result: Any) -> list[dict]: ...
+
+    def refit(self, result: Any, cfg: Any, suggestion: Mapping[str, Any]) -> tuple[Any, Any]: ...
+
 
 class LazyBackend:
     """The real backend: imports each core module on first use."""
@@ -189,3 +193,22 @@ class LazyBackend:
         except Exception as exc:
             log.warning('Could not draw %s for %s: %s', kind, getattr(result, 'object', '?'), exc)
             return None
+
+    def suggested_refits(self, result: Any) -> list[dict]:
+        """The template-edge guidance of ``result`` as actions (``pipeline.suggested_refits``)."""
+        from rvfitter import pipeline
+        return list(pipeline.suggested_refits(result))
+
+    def refit(self, result: Any, cfg: Any, suggestion: Mapping[str, Any]) -> tuple[Any, Any]:
+        """
+        Download the grid of ``suggestion`` (if it needs one), then refit the object with its configuration patch
+
+        Returns ``(new ObjectResult, new Config)``; the new Config records the refit in its ``[[refits]]``.
+        """
+        from rvfitter import pipeline, templates
+        if suggestion.get('download'):
+            log.info('Downloading template grid: %s', suggestion['download'])
+            templates.download(**suggestion['download'])
+            log.info('Download finished.')
+        n_procs = get_path(cfg, 'parallel.n_procs') or 1
+        return pipeline.refit_object(result, cfg, suggestion['cfg_patch'], n_procs=int(n_procs))

@@ -98,6 +98,9 @@ class FakeBackend:
         self.runs: list[dict] = []
         self.written: list[tuple] = []
         self.tmp = tmp
+        self.edge_objects: set[str] = set()
+        self.downloads: list[dict] = []
+        self.refits: list[tuple] = []
 
     def version(self):
         return '0.0-test'
@@ -170,3 +173,24 @@ class FakeBackend:
         fig = Figure()
         fig.add_subplot(111).plot([0, 1], [0, 1])
         return fig
+
+    def suggested_refits(self, result):
+        if result.object not in self.edge_objects:
+            return []
+        return [dict(method='template_fit', axis='met', direction='low', action='download',
+                     message=f'{result.object}: best met is at the low edge',
+                     cfg_patch={'templates': {'grid': 'elf-owl'}},
+                     download={'grid': 'elf-owl', 'teff_range': (1500., 2100.)}, command='rvfitter templates download'),
+                dict(method='template_fit', axis='logg', direction='high', action='none',
+                     message='logg edge: no grid extends further', cfg_patch={}, download=None, command='')]
+
+    def refit(self, result, cfg, suggestion):
+        import copy
+        self.downloads.append(dict(suggestion['download'] or {}))
+        self.refits.append((result.object, suggestion['cfg_patch']))
+        new_cfg = copy.deepcopy(cfg)
+        new_cfg.templates.grid = 'elf-owl'
+        new_cfg.refits = [{'object': result.object, 'patch': suggestion['cfg_patch']}]
+        new = make_result(result.object, 99.0)
+        self.edge_objects.discard(result.object)
+        return new, new_cfg

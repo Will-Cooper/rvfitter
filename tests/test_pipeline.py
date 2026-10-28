@@ -157,3 +157,18 @@ def test_cancel_between_methods(fakes, monkeypatch):
     seen = []
     res = pipeline.run(CFG, INPUTS, n_procs=1, on_object=seen.append, cancel=cancel)
     assert res == [] and seen == []
+
+
+def test_valid_range_config_overrides_arc_range(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from rvfitter import pipeline
+    spec = SimpleNamespace(meta={'arc_range': (7437., 9926.), 'arc_file': 'wvcalib.fits'})
+    cfg = SimpleNamespace(calibration=SimpleNamespace(wave_valid_range=None))
+    with caplog.at_level(logging.INFO, logger='rvfitter.pipeline'):
+        assert pipeline._valid_range(cfg, 'obj', None, spec) == (7437., 9926.)
+    assert 'arc-line range' in caplog.text
+    cfg.calibration.wave_valid_range = (7600., 9000.)
+    assert pipeline._valid_range(cfg, 'obj', spec) == (7600., 9000.)
+    assert pipeline._valid_range(SimpleNamespace(), 'obj', SimpleNamespace(meta={})) is None
