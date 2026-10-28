@@ -412,9 +412,8 @@ def test_arc_range_same_directory_slit_match_and_air(tmp_path):
     with fits.open(path, mode='update') as h:
         h[1].name = 'SPAT0240-SLIT0457-DET02'
     assert io.read_spectrum(path).meta['arc_range'] == (7600., 9400.)  # the slit's own lines only
-    air = io.read_spectrum(path, medium='air').meta['arc_range']
-    np.testing.assert_allclose(air, air_to_vac(np.array([7600., 9400.])))
-    assert air[0] > 7600.
+    # PypeIt arc solutions are vacuum whatever the spectrum's medium, so they are never converted
+    assert io.read_spectrum(path, medium='air').meta['arc_range'] == (7600., 9400.)
 
 
 @pytest.mark.data

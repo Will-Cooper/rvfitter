@@ -39,7 +39,7 @@ vel_corr    ``VEL_CORR`` if present (PypeIt: the multiplicative factor already a
             ``vel_corr_kms`` is the same as a velocity, c(f²-1)/(f²+1)
 arc_range   (PypeIt only) [min, max] vacuum Å of the fitted arc lines of a ``wvcalib.fits`` / ``WaveCalib*.fits`` found
             next to the file or in ``Calibrations/`` (`find_wvcalib`); ``arc_file`` is its path.
-            PypeIt stores vacuum wavelengths; they are converted like the spectrum if it was read as air.
+            PypeIt stores arc wavelengths in vacuum, so they are never converted.
 ========== =============================================================================================
 
 ``meta['velocity_keywords']`` additionally holds any of the velocity-correction keywords found in the headers
@@ -979,10 +979,10 @@ def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None, med
         return
     if calib is None or span is None:
         return
-    # PypeIt stores vacuum wavelengths; they are in the file's medium, so convert them as the spectrum was
-    lo, hi = (float(x) for x in to_vacuum(np.array(span), medium_in, medium_method))
+    # PypeIt's arc solutions are always vacuum, whatever medium the spectrum itself was written in
+    lo, hi = span
     meta.update(arc_range=(lo, hi), arc_file=str(calib))
-    log.debug('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, lo, hi, calib)
+    log.info('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, lo, hi, calib)
 
 
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
