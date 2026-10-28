@@ -1,43 +1,48 @@
 # Developer notes: methods package (M)
 
-## Handoff (state at unit5-telluric)
+## Handoff (state at unit5-fix)
 
 **Modules (public API):**
 - `broadening`: `doppler_factor`, `shift_wave`, `doppler_shift`, `log_wave_grid`, `rebin` (flux-conserving), `resample`, `gaussian_kernel`, `rotation_kernel` (Gray), `convolve`, `broaden_loglam`, `instrumental(spec, R | R(λ) | table)`, `rotational(spec, vsini, ε)`.
 - `combine`: `weighted_mean` (Birge), `combine_regions(meas, details=)` (random effects), `hierarchical(...)` (Woodbury, half-Cauchy, grid), `hierarchical_from_methods(methods, exclude_flags=)`, `mixture_pdf`.
-- `templates`: `GridMeta` (axes teff/logg/met/alpha + extra; coverage, upstream, medium air/vacuum/auto), `TemplateGrid` (`get`, `broadened`, `select`, `nearest`, `bounds`; multilinear N-D), `KNOWN_GRIDS`, `verify_medium`, `measure_medium`, `medium_check_lines` (NIST), `download(source=auto|svo|zenodo)`, `available`, `cli_main`.
+- `templates`: `GridMeta` (axes teff/logg/met/alpha + extra; coverage, upstream, medium air/vacuum/auto), `TemplateGrid` (`get`, `broadened`, `select`, `nearest`, `bounds`; multilinear N-D), `KNOWN_GRIDS`, `verify_medium`, `measure_medium`, `medium_check_lines` (NIST), `download(source=auto|svo|zenodo)`, `available`, `cli_main` (`download | list | verify | telluric [--build]`).
 - `grid_sources`: Zenodo records for Bobcat, Diamondback, Elf Owl and SAND; zip members fetched by HTTP range, tar.gz streamed with MD5.
 - `methods/_common`: options, regions, `Prepared`/`prepare`, `Template.at` (pixel-integrated), `candidates`/`open_grid`/`build_template`, `template_summary` (best params, edges, guidance), `segment`, `finish` (random effects + outlier rejection), flags.
 - `methods/ccf`, `methods/template_fit`: `measure(spectrum, regions, cfg, *, executor, rng)`. `template_fit` also has `measure_resolution` and `estimate_resolution`. `methods.REGISTRY[name]` is callable and has `.measure`.
-- `calibration/sky_zeropoint`: `measure` (OH sky, local per-span Δv(λ)), `apply` (any curve: sky or telluric, plus a constant), `applied_dv`, `oh_lines`, `model_sky`.
-- `calibration/telluric`: `model()` (HITRAN, vacuum, 6000–25 000 Å, τ_dry and τ_H2O), `transmission(wave, airmass, pwv, resolution=, dv=)`, `mask(wave, threshold)`.
-- `calibration/telluric_zeropoint`: `measure(spectrum, regions, resolution=, template=)` → `TelluricZeroPoint` (unpacks as (zp, err); `dv(λ)`), `star_minus_sky(tell, sky)`, `frame_factor`.
-- `methods/telluric_ref`: v_star − v_tell per telluric segment (`prior_template`).
-- `systematics`: `template_spread(_details)` (templates, grids, window modes), `wavelength_zero_point` (max of the arc RMS and the sky term).
-- `pipeline` (shared): `wavelength_correction` (sky, telluric, auto), `epoch_labels`, `refit_object`, `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
+- `calibration/sky_zeropoint`: `measure(..., valid_range=)` (OH sky, local per-span Δv(λ)), `SkyZeroPoint.measured_fraction`/`measured_ranges`, `apply` (any curve: sky or telluric, plus a constant), `applied_dv`, `curve_at(curve_dict, λ)`, `oh_lines`, `model_sky`.
+- `calibration/telluric`: `model()` (HITRAN, vacuum, 6000–25 000 Å, τ_dry and τ_H2O; read from `cache_path()`, never shipped; raises `TelluricModelUnavailable`), `available`, `cache_path` (`$RVFITTER_TELLURIC_MODEL` overrides), `reload`, `transmission(wave, airmass, pwv, resolution=, dv=)`, `mask(wave, threshold)`.
+- `calibration/telluric_build`: `build(out=None, *, line_cache=, force=, get=)` (HITRANonline → cache; provenance, citation and terms in the metadata and a JSON sidecar). `tools/build_telluric_model.py` is a thin wrapper.
+- `calibration/telluric_zeropoint`: `measure(spectrum, regions, resolution=, template=, teff=, spread_templates=)` → `TelluricZeroPoint` (unpacks as (zp, err); `dv(λ)`), `star_minus_sky(tell, sky)` (measured sky only; `n_nodes`), `frame_factor`.
+- `methods/telluric_ref`: v_star − v_tell per telluric segment (`prior_template`, `neighbour_templates`).
+- `io.read_spectrum`: multi-object PypeIt spec1d → the name-matched table, else the highest-S/N science object (logged; `input.hdu` overrides; `meta['hdu'|'extname'|'n_objects']`).
+- `systematics`: `template_spread(_details)` (templates, grids, window modes), `wavelength_zero_point(spectrum, cfg, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
+- `pipeline` (shared): `wavelength_correction(raw, spec, cfg, name, regions=)` (sky-if-needed, sky, auto, telluric, none), `ZP_FLAGS`, `zp_flag_names`, `epoch_labels`, `refit_object`, `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
 - `plotting`, `methods/{linecentre,forward,lsd,binary}`: not started.
 
 **Decisions in force:**
 - Per method, regions are combined by random effects (`hierarchical` with one method; Birge is kept in the diagnostics). Across methods, the hierarchical line × method model gives the adopted RV.
-- Several epochs: regions become `<epoch>:<region>`, with a χ² variability test (`rv_epoch_pvalue`; variable when p < 0.001).
-- `results.FLAGS`: fit_failed 1, few_regions 2, error_floor 4, template_grid_edge 8, telluric_contaminated 16, not_converged 32, poor_fit 64, outlier 128, template_param_edge 256, template_grid_hole 512. `EXCLUDE_FLAGS` = 1 | 2 | 32 | 128.
+- Several epochs: regions → epoch (each epoch measured and combined on its own), then random effects over the epochs, for each method and for the adopted RV (`tau_epoch`). Regions are still labelled `<epoch>:<region>`. The χ² variability test uses each epoch's statistical error ⊕ its sys_wavezp (`rv_epoch_pvalue`; variable when p < 0.001; the statistical-only p is `adopted['epochs']['pvalue_stat']`). Zero-point terms over epochs: offsets averaged, errors and systematics as RMS, flags OR-ed, per-epoch values in `barycentric['wavelength_correction_epochs']`.
+- `results.FLAGS`: fit_failed 1, few_regions 2, error_floor 4, template_grid_edge 8, telluric_contaminated 16, not_converged 32, poor_fit 64, outlier 128, template_param_edge 256, template_grid_hole 512. `EXCLUDE_FLAGS` = 1 | 2 | 32 | 128. Object-level `zp_flags` (`pipeline.ZP_FLAGS`): sky_applied 1, telluric_applied 2, star_sky_applied 4, sky_not_needed 8, sky_unsafe 16, telluric_unavailable 32, telluric_refused 64, star_sky_unmeasured 128, no_sky 256.
 - Template-method windows come from the catalogue's `model_fidelity` (`regions.template_windows = "features"` by default at R ≤ 5000; "full" for every span). H2O stays masked for spans even when telluric-corrected.
-- `calibration.wavelength_correction` defaults to "none": the sky zero point is measured and reported (zp_sky_*, counted in full in sys_wavezp when unapplied). "sky" applies the sky curve, "telluric" the star's telluric curve, "auto" the sky shape plus the star − sky constant (`zp_star_sky`) when both exist, else whichever exists. The telluric term is measured for "telluric"/"auto" or whenever `calibration.telluric_source` is set (the object best matching the input is used).
+- `calibration.wavelength_correction` defaults to **"sky-if-needed"** (user/orchestrator decision): the sky curve is applied only when (a) ≥ 3 sky segments are measured and every region (before correction) is > 50 per cent inside measured segments, (b) |weighted mean Δv| > 3σ (curve ⊕ model spread ⊕ arc RMS) or the segment χ² gives p < 0.001, and (c) the largest correction at the regions exceeds 0.05 resolution elements. Calibration data only. Otherwise the zero point is reported and counted in sys_wavezp. "sky" always applies; "auto" (sky shape + star − sky constant) is opt-in; "telluric" is refused when a region is > 250 Å from every telluric node or only O2 nodes exist; "none" measures only. Columns: `wavelength_correction` (mode), `wavelength_correction_applied`, `zp_flags`.
+- `sys_wavezp` at the measurements' wavelengths (RMS over them): an applied curve's own error σ(λ) ⊕ `zp_sky_model_spread` (⊕ the constant's error in "auto"); an unapplied curve's √(Δv² + σ²) (the sky's if measured, else the telluric curve's). `sys_star_sky` = |zp_star_sky| ⊕ its error whenever the constant is measured but not applied (all modes except auto/telluric) and enters `rv_total_err`.
+- `zp_star_sky` uses only telluric nodes inside used sky segments; NaN (flag star_sky_unmeasured) when none. O2 A is not a zero-point node below 2800 K (catalogue `teff_min`). Node errors include the ±1 Teff-step template spread.
+- `calibration.wave_valid_range` (e.g. the arc-line range): sky segments centred outside it are not used.
+- The HITRAN-derived model is never shipped or committed (`.gitignore`); it is built into the user cache. Tests use `tests/telluric_synth.py` via `tests/conftest.py`; `real_telluric_model` skips without the cache.
 - Seeds are `SeedSequence([seed, blake2b(object name)])`. `[[refits]]` patches apply only to their object.
 - Nothing is ever tuned to the J1745 benchmark; choices are fixed before looking.
 
-**J1745 (feature windows, R 2602, BT-Settl, sky from the Science spec1d, tellurics from the nopipecorr spec1d HDU 2), unit 5:**
+**J1745 (feature windows, R 2602, BT-Settl, sky from the Science spec1d, tellurics from the nopipecorr spec1d (target trace), wave_valid_range = arc lines 7437–9926 Å), unit5-fix.** z = |RV − 26.2|/√(2.3² + σ²):
 
-| Correction | CCF | Template fit | Adopted (τ_line) | Total error |
-|---|---|---|---|---|
-| none | 36.6 ± 4.7 (z 2.00) | 39.3 ± 5.9 (z 2.07) | 37.7 ± 5.0 (8.3), z 2.08 | 23.4 (sys_wavezp 21.7) |
-| sky | 18.9 ± 3.2 (z 1.83) | 18.9 ± 3.4 (z 1.77) | 18.9 ± 3.3 (2.0), z 1.81 | 9.5 |
-| telluric | 58.4 ± 5.9 (z 5.08) | 59.7 ± 6.2 (z 5.04) | 58.9 ± 5.5 (10.2), z 5.46 | 10.5 |
-| auto (sky + star − sky −10.2 ± 14.2) | 29.1 ± 3.2 (z 0.72) | 29.3 ± 3.3 (z 0.77) | 29.1 ± 3.3 (2.0), z 0.73 | 17.1 |
+| Mode | Applied | Adopted [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_wavezp | sys_star_sky |
+|---|---|---|---|---|---|---|---|
+| none | none | 37.73 | 5.03 (2.08) | 31.78 (0.36) | 8.3 | 22.3 | 21.0 |
+| sky-if-needed | sky | 18.88 | 3.32 (1.81) | 24.72 (0.29) | 2.0 | 10.2 | 21.0 |
+| sky | sky | 18.88 | 3.32 (1.81) | 24.72 (0.29) | 2.0 | 10.2 | 21.0 |
+| auto | sky + (−19.6) | 38.86 | 3.24 (3.18) | 14.97 (0.84) | 2.0 | 12.5 | — |
+| telluric | refused | 37.73 | 5.03 (2.08) | 31.78 (0.36) | 8.3 | 22.3 | 21.0 |
 
-telluric_ref (nopipecorr spec1d, HDU 2): 47.5 ± 7.7 km/s (z 2.65).
-
-The z values use the statistical errors. Sky-correcting collapses τ_line, a benchmark-free check; the star's tellurics show it sits 10–20 km/s bluer than the sky (see Unit 5).
+zp_star_sky = −19.6 ± 7.3 km/s (1 node: H2O 8200). sky-if-needed tests: 6 segments, regions 100 per cent measured, +12.1 ± 3.1 km/s (3.9σ; no arc RMS in the tellcorr header), segment χ² 176/5 (p = 4 × 10⁻³⁶), max correction 33.6 km/s against a 5.8 km/s floor → applied.
 
 **Open items, in order:**
 1. Zenodo fixes (reviewer-p, `review_unit3b_fix.md`):
@@ -46,24 +51,28 @@ The z values use the statistical errors. Sky-correcting collapses τ_line, a ben
    - record the licence, record/DOI and citation in the metadata and manifest, and print them;
    - a `refitted` results column;
    - mocked tests.
-2. Unit 5 follow-ups: P1 should make `io.read_spectrum` choose (or warn about) the object of multi-object PypeIt spec1d files and apply `OPT_MASK`; the HITRAN redistribution question (below) needs the orchestrator's decision; `template_fit`'s `telluric_model` option can now use `calibration.telluric`.
+2. Unit 5 left-overs:
+   - `io` does not apply PypeIt's `OPT_MASK` (J1745 HDU 2 has a pixel at flux/σ = −24 745; the telluric fit clips it);
+   - `docs/architecture.md` (shared) should list `wavelength_zero_point(spectrum, cfg, *, wave=None)` and `telluric_zeropoint.measure(..., teff=, spread_templates=)`;
+   - the arc-line range is not read automatically from `wvcalib.fits` (set `calibration.wave_valid_range`);
+   - `template_fit`'s `telluric_model` option could use `calibration.telluric`.
 3. Unit 4: `methods/linecentre.py`.
 4. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
 5. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
 
 **Gotchas:**
 - Run with `PYTHONPATH=<wt>/src`. Test-data tests need `RVFITTER_TESTDATA=/home/wcooper/Documents/rvfitter-testdata` and are marked `data`; the J1745 files are under `pypeit/R2500I/GTC54-15A0/OB0055/`.
+- The real telluric model must be built once (`rvfitter templates telluric --build`; with `--line-cache <dir>` an existing HITRAN line cache is reused offline, ~20 s). The build from the unit-5 line files reproduces the former packaged npz bit for bit.
 - Test markers:
   - `slow` covers the injection tests and J1745-like (about 6 minutes);
-  - `network` (always also `slow`) is skipped offline, and on HTTP 403/timeout from SVO, which currently refuses this host;
+  - `network` (always also `slow`) is skipped offline, and on HTTP 403/timeout from SVO, which currently refuses this host; it now includes the real HITRAN build;
   - CI runs `not data and not gui and not slow and not network`.
 - Injection tests calibrate per window (`segment_res=0`). The method-level random effects are conservative (pull ≈ 0.75–0.9).
 - The local BT-Settl grid has no metadata file: open it with `grid='bt-settl-cifist'` (medium air, verified).
-- `Spectrum.sky` is optional. The tellcorr coadd has no sky: set `calibration.sky_source` to its spec1d.
+- `Spectrum.sky` is optional. The tellcorr coadd has no sky: set `calibration.sky_source` to its spec1d. For a multi-object spec1d, every object's sky is measured and the best (most segments) is used and logged; on J1745 only HDU 1's sky is measurable (HDU 2's fails), so HDU 1's is used.
 - Config `methods.options` keys are validated against each method's `DEFAULTS`; unknown keys raise.
-- In this worktree, chained shell commands with `cd` and heredocs are sometimes refused: write scripts to `tmp/m/` and run them.
-- PypeIt spec1d files hold one table per object in the slit. `io.read_spectrum` takes the first: for J1745 that is SPAT0168 (S/N 17), not the target SPAT0240 (HDU 2, S/N 86). The sky curve is the same at either trace (within 1 km/s with the FWHM fixed), but the sky FWHM estimate fails on HDU 2's sky, so `sky_source` still reads HDU 1. Telluric sources are matched to the input object.
-- io does not apply PypeIt's `OPT_MASK`: J1745 HDU 2 has a masked pixel at flux/σ = −24 745; the telluric fit clips such pixels (5 × robust scatter).
+- In this worktree, chained shell commands with `cd` and heredocs are sometimes refused: write scripts to `tmp/<name>/` and run them.
+- The fitted H2O scaling on J1745 (a_H2O ≈ 21 at airmass 1.88) means PWV ≈ 11 mm, high for La Palma. It is probably real absorption, but the H2O τ profile (one 1.5 km scale height) is then extrapolated.
 
 
 Here, we record the design decisions, validation and J1745−1640 results of the methods package (`broadening`, `combine`, `templates`, `calibration/*`, `methods/*`, `systematics`, `plotting`).
@@ -427,11 +436,11 @@ Through `pipeline.run`: tellcorr input, sky from the Science spec1d, R = 2602, f
 
 ## Unit 5: telluric zero point and telluric_ref
 
-### Transmission model (`calibration/telluric.py`, `data/telluric_hitran.npz`, 1.1 MB)
+### Transmission model (`calibration/telluric.py`; built into the user cache since unit5-fix, never shipped)
 - `tools/build_telluric_model.py` fetches HITRAN line-by-line data (H2O, CO2, O2, CH4; vacuum wavenumbers) from the HITRANonline API (fetched 2026-10-28; the API's Content-Length counts CRLF but it sends LF, and it answers 404 for empty intervals, both handled), and integrates them through a US Standard 1976 atmosphere above a 2.4 km site: dry gases in 24 layers, H2O with a 1.5 km scale height normalised to 1 mm PWV. It uses Voigt profiles with the air pressure shift, and wings cut at τ < 10⁻³ or 25 cm⁻¹.
 - The zenith τ_dry and τ_H2O are stored at R_s = 300 000 (computed at 1.2 M, equivalent-width-preserving averages), 6000–25 000 Å. T = exp(−X(τ_dry + w·τ_H2O)).
 - **Vacuum check:** at R = 20 000, the O2 A and B blue edges lie 1.0–1.3 Å redward of the Fraunhofer A/B lines in vacuum, and 2.8–3.4 Å from the air values (tested). An independent ESO SkyCalc/LBLRTM transmission (splat resources; vacuum; airmass 3, R = 60 000) agrees within 0.2 km/s in O2 B, O2 A, H2O 8200 and both halves of H2O 9300 (cross-correlation peaks 0.96–0.997).
-- **Licence:** HITRAN states no redistribution licence; it is free and must be cited (citepolicy, read 2026-10-28). We ship only the derived transmission, with the citation in its metadata and the README. **The orchestrator should confirm this is acceptable**; the alternative is to build it into the cache on first use with the same script.
+- **Licence:** HITRAN states no redistribution licence; it is free and must be cited (citepolicy, read 2026-10-28). Superseded in unit5-fix: the model is no longer shipped, but built on demand into the user cache (`rvfitter templates telluric --build`).
 - Omitted: O3, N2O, collision-induced and continuum absorption, Rayleigh and aerosols (smooth; absorbed by the continuum polynomial).
 
 ### Zero point (`calibration/telluric_zeropoint.py`)
@@ -489,3 +498,54 @@ All choices (segments, padding, degree, depth threshold, the template rule, and 
 - telluric_ref gives 47.5 ± 7.7 km/s (z 2.65). The Na I (8200) segment alone gives 38.2 ± 9.4; the 9300 Å segments rely on FeH/H2O stellar features that BT-Settl models poorly (56–63 km/s); O2 A gives 30.7 ± 50.5.
 
 **Verdict:** the sky correction is valid for the *shape* of the wavelength solution within its measured span (τ_line collapses whether or not a constant is added). It is not valid for the star's absolute zero point: both stars observed that night sit 10–40 km/s bluer than the sky, and the telluric constant is needed. On J1745 that constant is only weakly measured (±14 km/s), because the strong telluric bands lie outside the alkali-line span. The default stays "none"; "auto" is the best-motivated correction, with an error dominated by the star − sky term.
+
+
+## Unit 5 review fixes (unit5-fix; review_3cfix_unit5.md)
+
+All choices below were fixed before the J1745 benchmark was run, and none was changed afterwards.
+
+### Blocker 1: the star − sky constant
+- `star_minus_sky` now compares only telluric nodes that fall inside a used (measured) sky segment. It never uses a sky value that is interpolated across a gap, held flat beyond the last node or ramped towards an edge node.
+- With no such node it returns NaN, logs why and sets the `star_sky_unmeasured` flag.
+- The sky's curve-model spread is added to the error, and `n_nodes` is reported (`zp_star_sky_n`).
+- `calibration.wave_valid_range` drops sky segments centred outside the arc coverage. For J1745 we set it to the arc lines in `wvcalib.fits` (7437–9926 Å), which removes the red-edge node (−103.5 km/s).
+- The constant is always reported. When it is not applied, |zp_star_sky| ⊕ its error enters `rv_total_err` as `sys_star_sky`; in "auto" its error is in `sys_wavezp`.
+- J1745: **−19.6 ± 7.3 km/s from one node** (H2O 8200; the four 9000–9900 Å nodes lie in the sky gap). Before the fix it was −10.2 ± 14.2 from six nodes.
+
+### Blocker 2: licence
+- `src/rvfitter/data/telluric_hitran.npz` is deleted (a normal commit; history is not rewritten) and ignored.
+- `calibration.telluric_build.build` builds the model into the platformdirs cache. It is run with `rvfitter templates telluric --build [--line-cache DIR] [--out PATH] [--force]`, and `rvfitter templates telluric` alone shows the status and provenance.
+- The metadata and a JSON sidecar record the source, the fetch date and SHA-256 of each line file, the output SHA-256, the citation and the terms (free of charge; must be cited; not to be redistributed).
+- Without the model, `telluric_zeropoint.measure` returns None and `telluric_ref` returns a fit_failed measurement. Both log the build command, and the pipeline sets the `telluric_unavailable` flag. Nothing crashes.
+- Tests:
+  - `tests/telluric_synth.py`, a synthetic model with the real format and band layout, autoused via `tests/conftest.py`;
+  - an offline build with a faked HTTP layer, which checks provenance, line-cache reuse and an identical rebuild;
+  - a network + slow test of the real build, with the vacuum (Fraunhofer A/B) checks;
+  - a cache test that skips without the model.
+
+### Decision 1 (amended): "sky-if-needed" is the default
+The tests and their thresholds are listed in the Handoff.
+They use only the sky segments, their errors and model spread, the arc RMS, the resolution and the region positions (selected before correction). They never use the stellar line scatter.
+The decision and every test value are logged at INFO, and recorded in `barycentric['sky_tests']`, `wavelength_correction_applied` and `zp_flags`.
+For J1745 all three tests pass, so the sky correction is applied.
+
+### Should-fix
+1. **O2 A for cool targets.** The catalogue's O2 A row has `teff_min` = 2800 K (its caveat names the K I wings and the injection biases). `telluric_zeropoint.measure(teff=)` and `telluric_ref` skip catalogue bands whose Teff range excludes the prior. Each node's error now includes the SD of Δv over the template and its ±1 Teff-step neighbours (`err_template`; `neighbour_templates`).
+2. **"telluric" coverage and error.** The curve is refused (with the `telluric_refused` flag) when a region lies more than 250 Å from every node, or when only O2 nodes exist. Its error is σ_tell(λ) at the measurements' wavelengths. J1745: refused, because Rb I 7802, Rb I 7949 and Cs I 8523 lie 434, 286 and 287 Å from the nearest node.
+3. **Within-epoch correlation.** Epochs are now combined in two levels: regions → epoch, then random effects over the epochs' RVs, both per method (`_combine_epochs`) and for the adopted RV (`_adopted_over_epochs`, `tau_epoch`). Two epochs at 10 and 30 km/s now give an error above 5 km/s with 1 or 8 regions per epoch (tested). The variability χ² includes each epoch's sys_wavezp, and the statistical-only p-value is reported too.
+4. **Multi-epoch zero point.** The zero-point terms are combined over epochs (mean offsets, RMS errors and systematics), and the per-epoch values are recorded.
+5. **io HDU selection.** See the Handoff. J1745 now reads SPAT0240 (S/N 86); this is tested on the data and on synthetic files (name match, highest S/N, science preferred, a warning when the S/N ratio is below two). `sky_source` uses the best-measured object's sky and records its HDU (`sky_zeropoint['source_hdu']`). `_matching_object` reuses the same table reader and logs failures at debug level.
+6. **"none" with a telluric source.** The unapplied term is now evaluated at the measurements' wavelengths. It uses the sky curve when one is measured (the star − sky offset is then `sys_star_sky`), else the telluric curve.
+
+### Nits
+- The telluric `span_bounds` now use the used segments only.
+- `zp_kms` is logged and documented as the node-weighted mean, which is not "the" zero point.
+- The previous Handoff table's "none" row (total error 23.4, sys_wavezp 21.7) was computed **without** `telluric_source`, and the Unit 5 table's row (45.3, 44.4) with it. Both are superseded by the table above.
+- The PWV note is in the Gotchas.
+- `_matching_object`'s per-HDU failures are logged at debug level.
+
+### J1745 telluric segments (unit5-fix; target trace, 2100/5.0 template ± 100 K)
+The telluric curve runs from −55.3 to −6.0 km/s over 8236–9779 Å (5 of 6 segments used; O2 A skipped at 2100 K).
+Its node-weighted mean is −43.9 ± 5.9 km/s (Birge 5.5), but this is only a summary.
+The RVs per mode are in the Handoff table.
+"auto" moves the RV to 38.9 km/s with the one-node constant; this is why "auto" stays opt-in.
