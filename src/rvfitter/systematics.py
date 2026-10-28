@@ -153,8 +153,10 @@ def wavelength_zero_point(spectrum: Spectrum, cfg: Any) -> float:
     - Arc RMS: c × rms / λ_mid, with the RMS [Å] from cfg.input.wave_rms or spectrum.meta['wave_rms']. This is a
       lower bound: an internally consistent arc fit can hide a distortion of the whole solution (J1745: arc RMS
       ≈3 km/s against a +10 to +25 km/s sky-line distortion).
-    - Sky: if the sky zero point was applied, its uncertainty (meta['wavelength_correction']); if it was measured
-      but not applied (meta['sky_zeropoint']), the offset itself and its uncertainty in quadrature.
+    - Zero point: if a correction was applied (meta['wavelength_correction']), its uncertainty: the sky curve's
+      (with the star − sky constant's in quadrature when 'auto' added one) or the telluric curve's. If one was
+      measured but not applied, the offset itself and its uncertainty in quadrature: the star's own telluric zero
+      point (meta['telluric_zeropoint']) when measured, else the sky's (meta['sky_zeropoint']).
 
     Returns
     -------
@@ -168,8 +170,16 @@ def wavelength_zero_point(spectrum: Spectrum, cfg: Any) -> float:
     arc = float(C_KMS * rms / np.median(spectrum.wave)) if rms is not None and np.isfinite(rms) else np.nan
     sky = np.nan
     wc = meta.get('wavelength_correction') or {}
-    if wc.get('sky'):  # applied: its uncertainty remains
+    if wc.get('sky'):  # applied: its uncertainty remains, with that of any star − sky constant
         sky = float(wc['sky'].get('zp_sky_err', np.nan))
+        const_err = wc.get('constant_err', np.nan)
+        if const_err is not None and np.isfinite(const_err):
+            sky = float(np.hypot(sky, const_err))
+    elif wc.get('telluric'):  # the star's telluric curve applied
+        sky = float(wc['telluric'].get('zp_tell_err', np.nan))
+    elif meta.get('telluric_zeropoint'):  # the star's own zero point measured but not applied
+        zp = meta['telluric_zeropoint']
+        sky = float(np.hypot(zp.get('zp_tell_kms', np.nan), zp.get('zp_tell_err', np.nan)))
     elif meta.get('sky_zeropoint'):  # measured but not applied: the offset itself remains
         zp = meta['sky_zeropoint']
         sky = float(np.hypot(zp.get('zp_sky_kms', np.nan), zp.get('zp_sky_err', np.nan)))

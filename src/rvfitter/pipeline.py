@@ -11,6 +11,7 @@ import multiprocessing
 import threading
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Executor, ProcessPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -98,13 +99,17 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     for spec in spectra:
         kms, source = barycentric.correction(spec, mode=mode, frame=frame, overrides=overrides)
         log.info('%s: barycentric correction %.3f km/s (%s)', name, kms, source)
-        corrected.append(barycentric.apply(spec, kms) if source != 'skipped' and kms else spec)
+        if source != 'skipped' and kms:  # recorded, so the telluric zero point can return to the observatory frame
+            shifted = barycentric.apply(spec, kms)
+            corrected.append(replace(shifted, meta={**shifted.meta, 'barycentric_applied_kms': float(kms)}))
+        else:
+            corrected.append(spec)
         kmss.append(float(kms))
         sources.append(source)
     # several epochs: report the mean correction applied, and the source of the first
     bary_info = {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
-    # wavelength zero point (sky shape, later + telluric constant), applied once to the wavelengths
+    # wavelength zero point (sky shape and/or the star's telluric zero point), applied once to the wavelengths
     cal_infos = []
     for k, (raw, spec) in enumerate(zip(spectra, corrected, strict=True)):
         corrected[k], info = wavelength_correction(raw, spec, cfg, name)
@@ -199,8 +204,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     else:
         log.warning('%s: no adopted RV', name)
 
-    sysd: dict[str, float] = {k: cal_infos[0][k] for k in ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope',
-                                                            'zp_sky_model_spread', 'zp_star_sky')}
+    sysd: dict[str, float] = {k: cal_infos[0][k] for k in ZP_KEYS}
     try:
         sysd['wavelength_zero_point'] = float(systematics.wavelength_zero_point(corrected[0], cfg))
     except Exception as exc:  # noqa: BLE001
@@ -229,71 +233,196 @@ def _measurement_wave(meas: Measurement) -> float:
     return float('nan')
 
 
+ZP_KEYS = ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_tell_kms', 'zp_tell_err',
+           'zp_star_sky', 'zp_star_sky_err')
+
+
+def _read_source(path: str, cfg: Any, what: str, name: str) -> Spectrum | None:
+    """Read a calibration file (sky_source, telluric_source); a failure is logged, not fatal"""
+    from . import io
+    try:
+        return io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method)
+    except Exception as exc:  # noqa: BLE001
+        log.warning('%s: could not read calibration.%s %s: %s', name, what, path, exc)
+        return None
+
+
+def _matching_object(path: str, raw: Spectrum, cfg: Any, name: str) -> Spectrum | None:
+    """
+    The object of a calibration file whose flux best matches the input (a PypeIt spec1d holds one table per
+    object in the slit, and the first is not necessarily the target)
+    """
+    from astropy.io import fits
+    from scipy.ndimage import median_filter
+
+    from . import io
+    first = _read_source(path, cfg, 'telluric_source', name)
+    if first is None:
+        return None
+    try:
+        with fits.open(path) as hdul:
+            n = len(hdul)
+    except (OSError, ValueError):
+        return first
+    found = [(1, first)]
+    for k in range(2, n):
+        try:
+            found.append((k, io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method,
+                                              hdu=k)))
+        except Exception:  # noqa: BLE001 - not an object table
+            continue
+    if len(found) == 1:
+        return first
+
+    def highpass(f: np.ndarray) -> np.ndarray:  # stellar features only: flux calibration and slopes divided out
+        g = np.where(np.isfinite(f), f, np.nanmedian(f))
+        return g / np.maximum(median_filter(g, size=51, mode='nearest'), 1e-30) - 1.
+
+    ref = highpass(raw.flux)
+
+    from .features import features
+    tell = np.zeros(len(raw.wave), dtype=bool)
+    for f in features():
+        if f.kind == 'telluric':
+            tell |= (raw.wave > f.wmin) & (raw.wave < f.wmax)
+
+    def score(s: Spectrum) -> float:
+        """Correlation of the high-passed fluxes outside the telluric bands, less |ln| of the flux-level ratio"""
+        f = np.interp(raw.wave, s.wave, s.flux, left=np.nan, right=np.nan)
+        ok = np.isfinite(f) & np.isfinite(raw.flux) & ~tell
+        if ok.sum() < 10:
+            return -np.inf
+        corr = float(np.corrcoef(highpass(f)[ok], ref[ok])[0, 1])
+        ratio = np.nanmedian(f[ok]) / np.nanmedian(raw.flux[ok])
+        return corr - (abs(float(np.log(ratio))) if ratio > 0 else np.inf)
+
+    scores = [score(s) for _, s in found]
+    k = int(np.argmax(scores))
+    log.info('%s: calibration.telluric_source %s: object HDU %d matches the input best (score %.3f: high-pass '
+             'correlation − |ln flux ratio|; others %s)', name, path, found[k][0], scores[k],
+             ', '.join(f'{h}: {c:.3f}' for (h, _), c in zip(found, scores, strict=True) if h != found[k][0]))
+    return found[k][1]
+
+
+def _telluric_zeropoint(src: Spectrum, cfg: Any, name: str):
+    """The star's telluric zero point; the star is modelled with the template nearest the priors when available"""
+    from .calibration import telluric_zeropoint
+    cal = getattr(cfg, 'calibration', None)
+    width = getattr(cal, 'telluric_segment_width', 250.)
+    resolution = getattr(cfg.input, 'resolution', None) or src.resolution
+    template = None
+    if getattr(cal, 'telluric_template', True):
+        if resolution is None:  # a first pass without the template measures R from the telluric lines
+            first = telluric_zeropoint.measure(src, seg_width=width)
+            resolution = first.resolution if first is not None else None
+        if resolution is not None:
+            from .methods.telluric_ref import prior_template
+            try:
+                template = prior_template(cfg, resolution, (float(src.wave[0]), float(src.wave[-1])))
+            except Exception as exc:  # noqa: BLE001 - fall back to a smooth stellar continuum
+                log.warning('%s: no template for the telluric zero point (%s); assuming a smooth star', name, exc)
+    return telluric_zeropoint.measure(src, resolution=resolution, template=template, seg_width=width)
+
+
 def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '') -> tuple[Spectrum, dict]:
     """
     Measure the wavelength zero point of one spectrum and apply it if ``cfg.calibration`` asks for it
 
-    The sky zero point Δv(λ) is measured whenever a sky is available (``raw.sky``, or the sky of
-    ``calibration.sky_source``), in the observatory frame, and always reported. It is applied to ``spec`` (which
-    may already be barycentric-corrected; the correction is a multiplicative factor) only for
-    ``wavelength_correction`` = 'sky' or 'auto'. The default is 'none' until the correction is validated: the sky
-    shows the shape of the wavelength solution, not the star's own zero point (slit centring), which needs the
-    telluric zero point. When not applied, the measured zero point still enters the zero-point systematic.
+    - The sky zero point Δv_sky(λ) is measured whenever a sky is available (``raw.sky``, or the sky of
+      ``calibration.sky_source``), in the observatory frame, and always reported.
+    - The star's own (telluric) zero point Δv_tell(λ) is measured from the telluric absorption of
+      ``calibration.telluric_source`` (a non-telluric-corrected spectrum sharing the input's wavelength solution),
+      else of the input itself unless ``input.telluric_corrected``. It is measured when the mode is 'telluric' or
+      'auto', or whenever a telluric_source is given. With both curves, the star − sky constant (slit centring) is
+      the weighted mean of Δv_tell − Δv_sky at the telluric segments (``zp_star_sky``).
+    - What is applied to ``spec`` (which may already be barycentric-corrected; the correction is a multiplicative
+      factor) follows ``wavelength_correction``: 'none' (default) nothing; 'sky' the sky curve; 'telluric' the
+      telluric curve; 'auto' the sky shape plus the star − sky constant when both exist, else whichever exists.
+      When nothing is applied, the measured zero point enters the zero-point systematic.
 
     Returns
     -------
     spectrum, info
-        The (possibly) corrected spectrum, with meta['sky_zeropoint'] whenever it was measured, and
-        {'mode', 'applied', 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_star_sky'}
+        The (possibly) corrected spectrum, with meta['sky_zeropoint'], meta['telluric_zeropoint'] and
+        meta['star_minus_sky'] whenever measured, and {'mode', 'applied', *ZP_KEYS}
     """
-    from dataclasses import replace as _replace
-
-    from . import io
-    from .calibration import sky_zeropoint
+    from .calibration import telluric_zeropoint
     cal = getattr(cfg, 'calibration', None)
     mode = getattr(cal, 'wavelength_correction', 'none') if cal is not None else 'none'
     nan = float('nan')
-    info = {'mode': mode, 'applied': 'none', 'zp_sky_kms': nan, 'zp_sky_err': nan, 'zp_sky_slope': nan,
-            'zp_sky_model_spread': nan, 'zp_star_sky': nan}
+    info: dict[str, Any] = {'mode': mode, 'applied': 'none', **dict.fromkeys(ZP_KEYS, nan)}
+    # --- sky (the shape of the wavelength solution)
     zp = None
     src = raw if raw.sky is not None else None
     sky_source = getattr(cal, 'sky_source', None) if cal is not None else None
     if src is None and sky_source:
-        try:
-            other = io.read_spectrum(sky_source, medium=cfg.input.medium, medium_method=cfg.input.medium_method)
-            src = other if other.sky is not None else None
-            if src is None:
-                log.warning('%s: calibration.sky_source %s has no sky spectrum', name, sky_source)
-            else:
-                _check_sky_source(raw, other, name, sky_source)
-        except Exception as exc:  # noqa: BLE001 - a missing sky file is reported, not fatal
-            log.warning('%s: could not read calibration.sky_source %s: %s', name, sky_source, exc)
+        other = _read_source(sky_source, cfg, 'sky_source', name)
+        if other is not None and other.sky is None:
+            log.warning('%s: calibration.sky_source %s has no sky spectrum', name, sky_source)
+        elif other is not None:
+            _check_sky_source(raw, other, name, sky_source)
+            src = other
     if src is not None:
         zp = sky_zeropoint.measure(src, seg_width=getattr(cal, 'sky_segment_width', 250.))
     elif mode == 'sky':
         log.warning('%s: wavelength_correction = "sky" but no sky spectrum is available; nothing applied', name)
-    if mode == 'telluric':
-        log.warning('%s: the telluric zero point is not implemented yet; nothing applied', name)
     if zp is not None:
         info.update(zp_sky_kms=zp.zp_kms, zp_sky_err=zp.zp_err, zp_sky_slope=zp.slope,
                     zp_sky_model_spread=zp.model_spread)
-        spec = _replace(spec, meta={**spec.meta, 'sky_zeropoint': zp.as_dict()})
+        spec = replace(spec, meta={**spec.meta, 'sky_zeropoint': zp.as_dict()})
         if abs(zp.zp_kms) > 2. * zp.zp_err:
             log.info('%s: the OH sky lines suggest the wavelength solution is offset by %+.1f ± %.1f km/s (%.0f-%.0f '
-                     'Å); check the wavelength calibration. %s', name, zp.zp_kms, zp.zp_err, *zp.main_span,
-                     'Applying the sky correction.' if mode in ('auto', 'sky') else
-                     'Not applied (calibration.wavelength_correction = "none"); it is counted in the zero-point '
-                     'systematic. Set "sky" to apply it.')
-    if zp is not None and mode in ('auto', 'sky'):
-        spec = sky_zeropoint.apply(spec, zp, source='sky')
-        info['applied'] = 'sky'
+                     'Å); check the wavelength calibration', name, zp.zp_kms, zp.zp_err, *zp.main_span)
+    # --- telluric (the star's own zero point)
+    tzp = None
+    tell_source = getattr(cal, 'telluric_source', None) if cal is not None else None
+    if mode in ('auto', 'telluric') or tell_source:
+        tsrc = None
+        if tell_source:
+            tsrc = _matching_object(tell_source, raw, cfg, name)
+            if tsrc is not None:
+                _check_sky_source(raw, tsrc, name, tell_source)
+        elif not getattr(cfg.input, 'telluric_corrected', False):
+            tsrc = raw
+        else:
+            log.warning('%s: the input is telluric-corrected and no calibration.telluric_source is set; the telluric '
+                        'zero point is not measured', name)
+        if tsrc is not None:
+            tzp = _telluric_zeropoint(tsrc, cfg, name)
+    if tzp is not None:
+        info.update(zp_tell_kms=tzp.zp_kms, zp_tell_err=tzp.zp_err)
+        spec = replace(spec, meta={**spec.meta, 'telluric_zeropoint': tzp.as_dict()})
+        if zp is not None:
+            ss = telluric_zeropoint.star_minus_sky(tzp, zp)
+            info.update(zp_star_sky=ss['zp_star_sky'], zp_star_sky_err=ss['zp_star_sky_err'])
+            spec = replace(spec, meta={**spec.meta, 'star_minus_sky': ss})
+    elif mode == 'telluric':
+        log.warning('%s: wavelength_correction = "telluric" but the telluric zero point could not be measured; '
+                    'nothing applied', name)
+    # --- apply
+    if mode == 'sky' and zp is not None:
+        spec, info['applied'] = sky_zeropoint.apply(spec, zp, source='sky'), 'sky'
+    elif mode == 'telluric' and tzp is not None:
+        spec, info['applied'] = sky_zeropoint.apply(spec, tzp, source='telluric'), 'telluric'
+    elif mode == 'auto':
+        if zp is not None and tzp is not None and np.isfinite(info['zp_star_sky']):
+            spec = sky_zeropoint.apply(spec, zp, constant_kms=info['zp_star_sky'],
+                                       constant_err=info['zp_star_sky_err'], source='sky+telluric')
+            info['applied'] = 'sky+telluric'
+        elif zp is not None:
+            spec, info['applied'] = sky_zeropoint.apply(spec, zp, source='sky'), 'sky'
+        elif tzp is not None:
+            spec, info['applied'] = sky_zeropoint.apply(spec, tzp, source='telluric'), 'telluric'
+    if info['applied'] != 'none':
         wc = spec.meta['wavelength_correction']
-        log.info('%s: wavelength correction applied (sky): Δv %+.1f to %+.1f km/s over the spectrum', name,
-                 wc['dv_min'], wc['dv_max'])
-        log.info('%s: the star-sky offset (slit centring) is not measured (it needs the telluric zero point) and '
-                 'is not included in the errors (zp_star_sky = NaN)', name)
+        log.info('%s: wavelength correction applied (%s): Δv %+.1f to %+.1f km/s over the spectrum', name,
+                 info['applied'], wc['dv_min'], wc['dv_max'])
+        if info['applied'] == 'sky':
+            log.info('%s: the star-sky offset (slit centring) is not measured (no telluric zero point) and is not '
+                     'included in the errors', name)
     else:
-        log.info('%s: no wavelength correction applied (mode %s)', name, mode)
+        log.info('%s: no wavelength correction applied (mode %s)%s', name, mode,
+                 '; the measured zero point is counted in the zero-point systematic' if zp or tzp else '')
     return spec, info
 
 

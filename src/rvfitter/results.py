@@ -102,7 +102,8 @@ def _columns() -> list[str]:
         cols += [f'rv_{m}', f'rv_{m}_err', f'rv_{m}_flag', f'n_{m}']
     cols += ['rv_adopted', 'rv_adopted_err', 'rv_adopted_q16', 'rv_adopted_q84', 'tau_line', 'tau_method',
              'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'rv_total_err',
-             *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_star_sky',
+             *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_tell_kms',
+             'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err',
              'wavelength_correction', 'rv_epoch_pvalue', 'rv_epoch_variable', 'n_epochs',
              'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'config_hash', 'version']
     return cols
@@ -159,7 +160,8 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         row['zp_sky_err'] = _num(sysd.get('zp_sky_err'))
         row['zp_sky_slope'] = _num(sysd.get('zp_sky_slope'))
         row['zp_sky_model_spread'] = _num(sysd.get('zp_sky_model_spread'))
-        row['zp_star_sky'] = _num(sysd.get('zp_star_sky'))  # unknown (NaN) until the telluric zero point exists
+        for key in ('zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err'):  # NaN when not measured
+            row[key] = _num(sysd.get(key))
         ep = (res.adopted or {}).get('epochs') or {}
         row['rv_epoch_pvalue'] = _num(ep.get('pvalue'))
         row['rv_epoch_variable'] = bool(ep.get('variable', False))

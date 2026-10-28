@@ -160,6 +160,11 @@ class CalibrationConfig:
     wavelength_correction: str = 'none'
     sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
     sky_segment_width: float = 250.  # [Å]; segments of the telluric-free spans; Δv(λ) is interpolated between them
+    # a non-telluric-corrected file sharing the input's wavelength solution (e.g. the PypeIt spec1d of a corrected
+    # coadd), whose telluric lines give the star's own zero point; the object best matching the input is used
+    telluric_source: str | None = None
+    telluric_segment_width: float = 250.  # [Å]; maximum width of the telluric-band segments
+    telluric_template: bool = True  # model the star with the template nearest the priors in the telluric fit
 
 
 @dataclass
@@ -428,6 +433,8 @@ def _validate(cfg: Config) -> list[str]:
             ('auto', 'sky', 'telluric', 'none'))
     if not cfg.calibration.sky_segment_width > 0:
         p.append(f'calibration.sky_segment_width = {cfg.calibration.sky_segment_width} must be > 0 [Å]')
+    if not cfg.calibration.telluric_segment_width > 0:
+        p.append(f'calibration.telluric_segment_width = {cfg.calibration.telluric_segment_width} must be > 0 [Å]')
     c = cfg.combine
     if c.tau_scale is not None and not c.tau_scale > 0:
         p.append(f'combine.tau_scale = {c.tau_scale} must be > 0')
