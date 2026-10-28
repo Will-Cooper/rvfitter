@@ -10,11 +10,13 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -77,6 +79,8 @@ class MainWindow(QMainWindow):
         self._logger_level: int | None = None
         self.current_object: str | None = None
         self._run_cfg: Any = None
+        self.guidance: dict[str, list[dict]] = {}  # object -> suggested refits
+        self._refitting = False
 
         self._build_log()
         self._build_ui()
@@ -165,6 +169,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.export_btn)
         rv.addLayout(row)
         rv.addWidget(self.table, 1)
+        self._build_guidance(rv)
         self.tabs.addTab(res, 'Results')
 
         self.diagnostics = DiagnosticsTabs(self.backend)
@@ -181,6 +186,34 @@ class MainWindow(QMainWindow):
         main.setStretchFactor(0, 4)
         main.setSizes([620, 200])
         self.setCentralWidget(main)
+
+    def _build_guidance(self, layout: QVBoxLayout) -> None:
+        """Banner, details pane and the 'Download grid & refit' controls for the selected object."""
+        self.guidance_banner = QLabel()
+        self.guidance_banner.setWordWrap(True)
+        self.guidance_banner.setStyleSheet(
+            'background: #fff3cd; color: #000000; padding: 4px; border: 1px solid #DDAA33;')
+        self.guidance_banner.setVisible(False)
+        self.guidance_details = QPlainTextEdit()
+        self.guidance_details.setReadOnly(True)
+        self.guidance_details.setMaximumHeight(110)
+        self.guidance_details.setToolTip('What the fit found at the edge of its search and what to do about it.')
+        self.guidance_details.setVisible(False)
+        self.guidance_combo = QComboBox()
+        self.guidance_combo.setToolTip('The suggested change to apply to the selected object.')
+        self.refit_btn = QPushButton('Download grid && refit')
+        self.refit_btn.setToolTip('Download the suggested template grid (if needed), then measure this object again '
+                                  'with the patched configuration. The change is recorded in the saved analysis.')
+        self.refit_btn.clicked.connect(self.refit_selected)
+        self.guidance_row = QWidget()
+        gl = QHBoxLayout(self.guidance_row)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.addWidget(self.guidance_combo, 1)
+        gl.addWidget(self.refit_btn)
+        self.guidance_row.setVisible(False)
+        layout.addWidget(self.guidance_banner)
+        layout.addWidget(self.guidance_details)
+        layout.addWidget(self.guidance_row)
 
     def _build_menus(self) -> None:
         m = self.menuBar().addMenu('&File')
@@ -389,6 +422,8 @@ class MainWindow(QMainWindow):
         n_procs = get_path(cfg, 'parallel.n_procs') or find_field(cfg, 'n_procs') or max(1, (os.cpu_count() or 2) - 1)
         self.results.clear()
         self.model.clear()
+        self.guidance.clear()
+        self._show_guidance(None)
         self.count_label.setText('Running…')
         self.worker = RunWorker(self.backend, cfg, dict(self.groups), int(n_procs), self)
         self.worker.result.connect(self._on_result)
@@ -419,6 +454,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             log.error('Could not tabulate %s: %s', getattr(res, 'object', '?'), exc)
         self.count_label.setText(f'{len(self.results)} object{"" if len(self.results) == 1 else "s"} measured.')
+        self._note_guidance(len(self.results) - 1, res)
         if len(self.results) == 1:
             self.table.selectRow(0)
             self.select_object(getattr(res, 'object', None))
@@ -501,8 +537,85 @@ class MainWindow(QMainWindow):
         res = next((r for r in self.results if getattr(r, 'object', None) == name), None)
         if res is not None:
             self.diagnostics.show_result(res)
+        self._show_guidance(name)
         if self.tabs.currentWidget() is self.region_editor:
             self.load_regions_for(name)
+
+    # ---- template guidance and refits ----------------------------------------------------------------------
+    def _note_guidance(self, row: int, res: Any) -> None:
+        """Record the guidance of the result in ``row`` and mark the row."""
+        name = getattr(res, 'object', '')
+        try:
+            sugg = list(self.backend.suggested_refits(res))
+        except Exception as exc:
+            log.debug('No guidance for %s: %s', name, exc)
+            sugg = []
+        if sugg:
+            self.guidance[name] = sugg
+            self.model.set_note(row, f'{name}: ' + ' | '.join(s['message'] for s in sugg))
+        else:
+            self.guidance.pop(name, None)
+            self.model.set_note(row, None)
+
+    def _show_guidance(self, name: str | None) -> None:
+        sugg = self.guidance.get(name or '', [])
+        self.guidance_banner.setVisible(bool(sugg))
+        self.guidance_details.setVisible(bool(sugg))
+        self.guidance_combo.clear()
+        actionable = [s for s in sugg if s.get('action') in ('widen', 'download') and s.get('cfg_patch')]
+        for s in actionable:
+            self.guidance_combo.addItem(f'{s["action"]} {s["axis"]} ({s["direction"]})', s)
+        self.guidance_row.setVisible(bool(actionable))
+        self.refit_btn.setEnabled(bool(actionable) and not self._refitting)
+        if not sugg:
+            self.guidance_details.clear()
+            return
+        self.guidance_banner.setText(f'\u26a0 {name}: the best template is at the edge of the searched parameters '
+                                     f'({len(sugg)} suggestion{"" if len(sugg) == 1 else "s"}).')
+        self.guidance_details.setPlainText('\n\n'.join(
+            s['message'] + (f'\nCLI: {s["command"]}' if s.get('command') else '') for s in sugg))
+
+    def refit_selected(self) -> JobWorker | None:
+        """Download the chosen suggestion's grid and refit the selected object in a worker thread."""
+        name = self.current_object
+        idx = next((i for i, r in enumerate(self.results) if getattr(r, 'object', None) == name), None)
+        s = self.guidance_combo.currentData()
+        if self._refitting or idx is None or s is None:
+            return None
+        cfg = self._run_cfg if self._run_cfg is not None else self.current_config()
+        old, backend = self.results[idx], self.backend
+        self._refitting = True
+        self.refit_btn.setEnabled(False)
+        self.statusBar().showMessage(f'Refitting {name}…')
+        log.info('Refitting %s: %s', name, s['message'])
+
+        def job() -> tuple[Any, Any]:
+            return backend.refit(old, cfg, s)
+
+        def ok(out: tuple[Any, Any]) -> None:
+            new_res, new_cfg = out
+            self._refitting = False
+            self.results[idx] = new_res
+            try:
+                self.model.replace(idx, backend.to_table([new_res]))
+            except Exception as exc:
+                log.error('Could not tabulate %s: %s', name, exc)
+            self._run_cfg = new_cfg
+            self.set_config(new_cfg)  # the session config now carries the [[refits]] entry
+            self._note_guidance(idx, new_res)
+            self.diagnostics.show_result(new_res)
+            self._show_guidance(name)
+            self.statusBar().showMessage(f'Refitted {name}.')
+            log.info('Refit of %s finished.', name)
+            self._autowrite()
+
+        def fail(msg: str) -> None:
+            self._refitting = False
+            self._show_guidance(name)
+            self.statusBar().showMessage('Refit failed.')
+            self._error('Refit failed', msg)
+
+        return self._job(job, ok, fail)
 
     def _tab_changed(self, _i: int) -> None:
         name = self.current_object
@@ -524,7 +637,7 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.worker.wait(5000)
         for job in list(self._jobs):
-            job.wait(2000)
+            job.wait(2000 if not self._refitting else 60000)
         root = logging.getLogger('rvfitter')
         root.removeHandler(self.log_handler)
         if self._logger_level is not None:
