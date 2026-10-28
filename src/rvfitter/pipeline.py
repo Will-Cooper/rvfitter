@@ -902,6 +902,7 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
         except _Cancelled:
             log.warning('Cancelled during %s', name)
             break
+        res.refitted = obj_cfg is not cfg  # `config_for_object` returns cfg itself when no patch applies
         out.append(res)
         if on_object is not None:
             on_object(res)
@@ -1037,4 +1038,5 @@ def refit_object(result: ObjectResult, cfg: Any, cfg_patch: dict, *, inputs: Seq
             res = measure_object(spectra, obj_cfg, ex, rng, name=result.object, methods=methods, bary=bary)
     else:
         res = measure_object(spectra, obj_cfg, None, rng, name=result.object, methods=methods, bary=bary)
+    res.refitted = True
     return res, new_cfg

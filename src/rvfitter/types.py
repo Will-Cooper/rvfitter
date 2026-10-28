@@ -122,3 +122,4 @@ class ObjectResult:
     binary: dict[str, Any] = field(default_factory=dict)
     config_hash: str = ''
     version: str = ''
+    refitted: bool = False  # measured with a per-object [[refits]] patch (see `pipeline.refit_object`)

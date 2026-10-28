@@ -132,3 +132,10 @@ def test_zero_point_columns_and_total():
     assert row['rv_total_err'] == pytest.approx(np.sqrt(9. + 1. + 4. + 16.))
     assert row['wavelength_correction'] == 'sky-if-needed' and row['wavelength_correction_applied'] == 'sky'
     assert row['zp_flags'] == 1
+
+
+def test_refitted_column():
+    plain, refit = make_result(), make_result('B')
+    refit.refitted = True
+    df = results.to_table([plain, refit])
+    assert df['refitted'].tolist() == [False, True] and df['refitted'].dtype == bool
