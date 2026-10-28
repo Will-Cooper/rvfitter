@@ -243,6 +243,18 @@ def test_zip_failure_removes_verified_members(fake_zenodo, tmp_path, monkeypatch
     assert len(n) == 2 and _no_files(tmp_path / 'sand')  # the first (already renamed) model was removed too
 
 
+def test_rollback_keeps_previously_cached_models(tmp_path):
+    old, new = tmp_path / 'old.txt', tmp_path / 'new.txt'
+    old.write_text('cached')
+    stage = G._Staging()
+    for p in (old, new):
+        stage.part(p).write_text('verified')
+        stage.add(p)
+    stage.commit([old, new])
+    stage.rollback()
+    assert old.read_text() == 'verified' and not new.exists()  # overwritten cache kept, new file removed
+
+
 def _http(code):
     return urllib.error.HTTPError('u', code, 'x', {}, None)
 

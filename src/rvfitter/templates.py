@@ -172,7 +172,7 @@ KNOWN_GRIDS: dict[str, GridMeta] = {
     # near-solar chemistry with the most "recommended" models (coverage from the Zenodo file list, 2026-10-27)
     'sand': GridMeta('sand', 'auto', svo_model='sand', met_default=0.1, alpha_default=0.15,
                      coverage={'teff': (700., 4000.), 'logg': (2., 6.), 'met': (-2.4, 0.3), 'alpha': (-0.05, 0.4)},
-                     verified=False, reference='Alvarado et al. 2024',
+                     verified=False, reference='Alvarado et al. 2024, RNAAS 8, 134',
                      upstream='https://doi.org/10.5281/zenodo.11582126'),
     'sonora-bobcat': GridMeta('sonora-bobcat', 'auto', svo_model='sonora_bobcat', extra_axes=('co',),
                               extra_defaults={'co': 1.},

@@ -310,7 +310,8 @@ ZENODO_GRIDS: dict[str, ZenodoGrid] = {
     'sand': ZenodoGrid(('11582126',), _single('SAND.zip'), parse_sand, read_sand,
                        member_filter=staticmethod(lambda path: '/recommended/' in f'/{path}'),
                        doi='10.5281/zenodo.11582126',
-                       citation='Alvarado et al. 2024, MNRAS 535, 1957 (SAND); Zenodo record 11582126'),
+                       citation='Alvarado et al. 2024, RNAAS 8, 134 (SAND; doi:10.3847/2515-5172/ad4bd7); '
+                                'Zenodo record 11582126'),
 }
 
 
@@ -369,7 +370,8 @@ def _wanted(params: dict, want: Mapping[str, tuple[float, float]], axes: tuple[s
 class _Staging:
     """
     The files written by one download call. Models are written to '<name>.part' and renamed into place by
-    `commit` once verified; `rollback` removes every staged and committed file.
+    `commit` once verified; `rollback` removes every staged file and every committed file that did not exist
+    before this call (a cached model that was overwritten by a verified copy is kept).
     """
 
     def __init__(self):
@@ -385,8 +387,10 @@ class _Staging:
 
     def commit(self, paths: Sequence[Path]) -> None:
         for p in paths:
+            existed = p.exists()
             os.replace(self.part(p), p)
-            self.committed.append(p)
+            if not existed:
+                self.committed.append(p)
         self.staged = [p for p in self.staged if p not in paths]
 
     def rollback(self) -> None:
