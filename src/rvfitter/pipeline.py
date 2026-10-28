@@ -149,6 +149,19 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                 meas.diagnostics['zp_applied_kms'] = dv
                 meas.diagnostics['rv_uncorrected'] = float(meas.rv + dv) if np.isfinite(dv) else np.nan
 
+    # several epochs: each was measured separately; its regions become '<epoch>:<region>', so epoch-to-epoch
+    # disagreement enters the random-effects scatter (method level) and the hierarchical τ_line (adopted), instead
+    # of being averaged away as if the epochs were the same region
+    labels = epoch_labels(corrected)
+    epoch_info: dict[str, Any] = {}
+    if len(corrected) > 1:
+        epoch_info = _epoch_summaries(per_method, labels, cfg, name)
+        for lst in per_method.values():
+            for k, res in enumerate(lst):
+                for meas in res.measurements:
+                    meas.diagnostics['epoch'] = labels[k]
+                    meas.region = f'{labels[k]}:{meas.region}'
+
     results: dict[str, MethodResult] = {}
     for m, lst in per_method.items():
         if len(lst) == 1:
@@ -156,11 +169,11 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         else:
             meas = [x for r in lst for x in r.measurements]
             try:
-                rv, err = combine.combine_regions(meas)
+                from .methods._common import finish
+                res = finish(m, meas, outlier_k=None)  # random effects over every epoch:region, flags respected
             except Exception as exc:  # noqa: BLE001
                 log.error('%s: combining %s over epochs failed: %s', name, m, exc)
-                rv, err = float('nan'), float('nan')
-            res = MethodResult(m, float(rv), float(err), sum(r.n_regions for r in lst), meas)
+                res = MethodResult(m, float('nan'), float('nan'), 0, meas)
         results[m] = res
         if np.isfinite(res.rv):
             log.info('%s: %.1f ± %.1f km/s', m, res.rv, res.rv_err)
@@ -178,13 +191,16 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         except Exception as exc:  # noqa: BLE001
             log.error('%s: hierarchical combination failed: %s', name, exc)
             log.debug('traceback', exc_info=True)
+    if adopted and epoch_info:
+        adopted['epochs'] = epoch_info
     if adopted:
         log.info('%s: adopted RV %.2f ± %.2f km/s', name, adopted.get('median', float('nan')),
                  adopted.get('err', float('nan')))
     else:
         log.warning('%s: no adopted RV', name)
 
-    sysd: dict[str, float] = {k: cal_infos[0][k] for k in ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope')}
+    sysd: dict[str, float] = {k: cal_infos[0][k] for k in ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope',
+                                                            'zp_sky_model_spread', 'zp_star_sky')}
     try:
         sysd['wavelength_zero_point'] = float(systematics.wavelength_zero_point(corrected[0], cfg))
     except Exception as exc:  # noqa: BLE001
@@ -215,55 +231,135 @@ def _measurement_wave(meas: Measurement) -> float:
 
 def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '') -> tuple[Spectrum, dict]:
     """
-    Measure and apply the wavelength zero point to one spectrum, according to ``cfg.calibration``
+    Measure the wavelength zero point of one spectrum and apply it if ``cfg.calibration`` asks for it
 
-    The sky zero point Δv(λ) is measured on the input spectrum (``raw``: its own sky, or the sky of
-    ``calibration.sky_source``) in the observatory frame and applied to ``spec`` (which may already be
-    barycentric-corrected; the correction is a multiplicative factor). 'auto' applies whatever is available
-    (sky shape; the telluric constant arrives with calibration.telluric_zeropoint); 'none' applies nothing.
+    The sky zero point Δv(λ) is measured whenever a sky is available (``raw.sky``, or the sky of
+    ``calibration.sky_source``), in the observatory frame, and always reported. It is applied to ``spec`` (which
+    may already be barycentric-corrected; the correction is a multiplicative factor) only for
+    ``wavelength_correction`` = 'sky' or 'auto'. The default is 'none' until the correction is validated: the sky
+    shows the shape of the wavelength solution, not the star's own zero point (slit centring), which needs the
+    telluric zero point. When not applied, the measured zero point still enters the zero-point systematic.
 
     Returns
     -------
     spectrum, info
-        The (possibly) corrected spectrum and {'mode', 'applied', 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope'}
+        The (possibly) corrected spectrum, with meta['sky_zeropoint'] whenever it was measured, and
+        {'mode', 'applied', 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_star_sky'}
     """
+    from dataclasses import replace as _replace
+
     from . import io
     from .calibration import sky_zeropoint
     cal = getattr(cfg, 'calibration', None)
     mode = getattr(cal, 'wavelength_correction', 'none') if cal is not None else 'none'
     nan = float('nan')
-    info = {'mode': mode, 'applied': 'none', 'zp_sky_kms': nan, 'zp_sky_err': nan, 'zp_sky_slope': nan}
-    if mode == 'none':
-        return spec, info
+    info = {'mode': mode, 'applied': 'none', 'zp_sky_kms': nan, 'zp_sky_err': nan, 'zp_sky_slope': nan,
+            'zp_sky_model_spread': nan, 'zp_star_sky': nan}
     zp = None
-    if mode in ('auto', 'sky'):
-        src = raw if raw.sky is not None else None
-        sky_source = getattr(cal, 'sky_source', None)
-        if src is None and sky_source:
-            try:
-                other = io.read_spectrum(sky_source, medium=cfg.input.medium, medium_method=cfg.input.medium_method)
-                src = other if other.sky is not None else None
-                if src is None:
-                    log.warning('%s: calibration.sky_source %s has no sky spectrum', name, sky_source)
-            except Exception as exc:  # noqa: BLE001 - a missing sky file is reported, not fatal
-                log.warning('%s: could not read calibration.sky_source %s: %s', name, sky_source, exc)
-        if src is not None:
-            zp = sky_zeropoint.measure(src, seg_width=getattr(cal, 'sky_segment_width', 250.),
-                                       degree=getattr(cal, 'sky_degree', None))
-        elif mode == 'sky':
-            log.warning('%s: wavelength_correction = "sky" but no sky spectrum is available; nothing applied', name)
+    src = raw if raw.sky is not None else None
+    sky_source = getattr(cal, 'sky_source', None) if cal is not None else None
+    if src is None and sky_source:
+        try:
+            other = io.read_spectrum(sky_source, medium=cfg.input.medium, medium_method=cfg.input.medium_method)
+            src = other if other.sky is not None else None
+            if src is None:
+                log.warning('%s: calibration.sky_source %s has no sky spectrum', name, sky_source)
+            else:
+                _check_sky_source(raw, other, name, sky_source)
+        except Exception as exc:  # noqa: BLE001 - a missing sky file is reported, not fatal
+            log.warning('%s: could not read calibration.sky_source %s: %s', name, sky_source, exc)
+    if src is not None:
+        zp = sky_zeropoint.measure(src, seg_width=getattr(cal, 'sky_segment_width', 250.))
+    elif mode == 'sky':
+        log.warning('%s: wavelength_correction = "sky" but no sky spectrum is available; nothing applied', name)
     if mode == 'telluric':
         log.warning('%s: the telluric zero point is not implemented yet; nothing applied', name)
     if zp is not None:
-        info.update(zp_sky_kms=zp.zp_kms, zp_sky_err=zp.zp_err, zp_sky_slope=zp.slope)
+        info.update(zp_sky_kms=zp.zp_kms, zp_sky_err=zp.zp_err, zp_sky_slope=zp.slope,
+                    zp_sky_model_spread=zp.model_spread)
+        spec = _replace(spec, meta={**spec.meta, 'sky_zeropoint': zp.as_dict()})
+        if abs(zp.zp_kms) > 2. * zp.zp_err:
+            log.info('%s: the OH sky lines suggest the wavelength solution is offset by %+.1f ± %.1f km/s (%.0f-%.0f '
+                     'Å); check the wavelength calibration. %s', name, zp.zp_kms, zp.zp_err, *zp.main_span,
+                     'Applying the sky correction.' if mode in ('auto', 'sky') else
+                     'Not applied (calibration.wavelength_correction = "none"); it is counted in the zero-point '
+                     'systematic. Set "sky" to apply it.')
+    if zp is not None and mode in ('auto', 'sky'):
         spec = sky_zeropoint.apply(spec, zp, source='sky')
         info['applied'] = 'sky'
         wc = spec.meta['wavelength_correction']
         log.info('%s: wavelength correction applied (sky): Δv %+.1f to %+.1f km/s over the spectrum', name,
                  wc['dv_min'], wc['dv_max'])
+        log.info('%s: the star-sky offset (slit centring) is not measured (it needs the telluric zero point) and '
+                 'is not included in the errors (zp_star_sky = NaN)', name)
     else:
         log.info('%s: no wavelength correction applied (mode %s)', name, mode)
     return spec, info
+
+
+def epoch_labels(spectra: Sequence[Spectrum]) -> list[str]:
+    """Epoch labels: the file stems, else the mid-exposure MJD, else e1, e2, ... (always unique)"""
+    stems = [Path(s.source).stem or f'e{k + 1}' for k, s in enumerate(spectra)]
+    if len(set(stems)) == len(stems):
+        return stems
+    mjds = [s.meta.get('mjd_mid') for s in spectra]
+    if all(m is not None for m in mjds) and len({f'{m:.5f}' for m in mjds}) == len(mjds):
+        return [f'mjd{m:.5f}' for m in mjds]
+    return [f'e{k + 1}' for k in range(len(spectra))]
+
+
+def _epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str], cfg: Any, name: str) -> dict:
+    """
+    Per-epoch method and adopted RVs (recorded in each measurement's diagnostics) and a variability test
+
+    The epochs' adopted RVs are compared with their weighted mean: χ² = Σ (v_e − v̄)²/σ_e² with n − 1 degrees of
+    freedom. p < 0.001 flags the object as variable (a possible binary or a calibration problem).
+    """
+    from scipy.stats import chi2 as chi2_dist
+
+    from . import combine
+    rv_e, err_e = [], []
+    for k, label in enumerate(labels):
+        per = {m: lst[k] for m, lst in per_method.items() if k < len(lst) and np.isfinite(lst[k].rv)}
+        try:
+            ad = combine.hierarchical_from_methods(per, tau_scale=cfg.combine.tau_scale) if per else {}
+        except Exception as exc:  # noqa: BLE001
+            log.debug('epoch %s: hierarchical combination failed: %s', label, exc)
+            ad = {}
+        rv, err = float(ad.get('median', np.nan)), float(ad.get('err', np.nan))
+        rv_e.append(rv)
+        err_e.append(err)
+        for lst in per_method.values():
+            if k < len(lst):
+                for meas in lst[k].measurements:
+                    meas.diagnostics.update(epoch_method_rv=float(lst[k].rv), epoch_method_err=float(lst[k].rv_err),
+                                            epoch_adopted_rv=rv, epoch_adopted_err=err)
+        log.info('%s: epoch %s: adopted %.2f ± %.2f km/s (%s)', name, label, rv, err,
+                 ', '.join(f'{m} {r.rv:.2f} ± {r.rv_err:.2f}' for m, r in per.items()))
+    v, e = np.array(rv_e), np.array(err_e)
+    ok = np.isfinite(v) & np.isfinite(e) & (e > 0)
+    pvalue, chi2 = np.nan, np.nan
+    if ok.sum() > 1:
+        w = 1. / e[ok] ** 2
+        mean = np.sum(w * v[ok]) / np.sum(w)
+        chi2 = float(np.sum(w * (v[ok] - mean) ** 2))
+        pvalue = float(chi2_dist.sf(chi2, int(ok.sum()) - 1))
+    variable = bool(np.isfinite(pvalue) and pvalue < 1e-3)
+    log.info('%s: epoch variability: χ² %.1f for %d epochs, p = %.3g%s', name, chi2, int(ok.sum()), pvalue,
+             ' (variable: p < 0.001)' if variable else '')
+    return dict(n=len(labels), labels=list(labels), rv=[float(x) for x in v], err=[float(x) for x in e], chi2=chi2,
+                pvalue=pvalue, variable=variable)
+
+
+def _check_sky_source(raw: Spectrum, other: Spectrum, name: str, path: str) -> None:
+    """Warn if a sky_source file does not look like it shares the input's wavelength solution"""
+    lo, hi = max(raw.wmin, other.wmin), min(raw.wmax, other.wmax)
+    overlap = max(0., hi - lo) / (raw.wmax - raw.wmin)
+    ratio = len(other.wave) / max(len(raw.wave), 1)
+    if overlap < 0.9 or not 0.67 < ratio < 1.5:
+        log.warning('%s: calibration.sky_source %s covers %.0f per cent of the input range with %d pixels against %d; '
+                    'it should share the input\'s wavelength solution (e.g. the spec1d of a coadd)', name, path,
+                    100 * overlap, len(other.wave), len(raw.wave))
 
 
 def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str) -> list[Spectrum]:

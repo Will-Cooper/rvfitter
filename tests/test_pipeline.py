@@ -55,7 +55,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(regions, 'select', select, raising=False)
     monkeypatch.setattr(regions, 'SelectOptions', types.SimpleNamespace, raising=False)
     monkeypatch.setattr(combine, 'combine_regions',
-                        lambda ms: (float(np.mean([m.rv for m in ms])), 1.0), raising=False)
+                        lambda ms, **kw: (float(np.mean([m.rv for m in ms])), 1.0), raising=False)
 
     def hierarchical(v, e, ln, m, *, tau_scale=None, ngrid=200):
         calls['tau'] = tau_scale

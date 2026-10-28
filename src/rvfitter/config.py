@@ -154,12 +154,12 @@ class OutputConfig:
 @dataclass
 class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
-    # 'auto': sky shape (OH lines) + telluric constant when available, else whichever exists, else none;
-    # 'sky', 'telluric' or 'none' force one choice. What was applied is always logged and recorded.
-    wavelength_correction: str = 'auto'
+    # 'none' (default until validated): measure and report the zero point (zp_sky_* columns, counted in the
+    # zero-point systematic) but do not apply it; 'auto': sky shape + telluric constant when available, else
+    # whichever exists; 'sky' or 'telluric' force one. What was applied is always logged and recorded.
+    wavelength_correction: str = 'none'
     sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
-    sky_segment_width: float = 250.  # [Å]
-    sky_degree: int | None = None  # polynomial degree of Δv(λ); None = chosen by BIC (0-3)
+    sky_segment_width: float = 250.  # [Å]; segments of the telluric-free spans; Δv(λ) is interpolated between them
 
 
 @dataclass

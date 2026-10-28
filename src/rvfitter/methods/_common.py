@@ -647,7 +647,8 @@ def finish(method: str, measurements: list[Measurement], outlier_k: float | None
                              method_birge_err=details.get('birge_err'))
     if len(good) > 1:
         log.info('%s: random-effects %.2f ± %.2f km/s (τ %.1f km/s over %d regions; Birge %.2f ± %.2f km/s)', method,
-                 rv, err, details['tau_line'], len(good), details['birge_rv'], details['birge_err'])
+                 rv, err, details.get('tau_line', np.nan), len(good), details.get('birge_rv', np.nan),
+                 details.get('birge_err', np.nan))
     return MethodResult(method, rv, err, len(good), measurements)
 
 
