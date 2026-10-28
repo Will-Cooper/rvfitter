@@ -1,10 +1,12 @@
 """Tests of the OH sky-line wavelength zero point, its application in the pipeline and the io sky column."""
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from rvfitter import broadening, config, io, pipeline
 from rvfitter.calibration import sky_zeropoint as Z
-from rvfitter.types import Spectrum
+from rvfitter.types import Region, Spectrum
 
 
 def _dv_true(w):
@@ -84,7 +86,8 @@ def test_pipeline_wavelength_correction_modes(caplog):
     caplog.set_level(logging.INFO, logger='rvfitter')
     raw = _sky_spectrum()
     cfg = config.Config()
-    assert cfg.calibration.wavelength_correction == 'none'  # default until validated
+    assert cfg.calibration.wavelength_correction == 'sky-if-needed'  # the default
+    cfg.calibration.wavelength_correction = 'none'
     spec0, info0 = pipeline.wavelength_correction(raw, raw, cfg, 'X')
     assert info0['applied'] == 'none' and np.isfinite(info0['zp_sky_kms'])  # measured and reported anyway
     assert np.array_equal(spec0.wave, raw.wave) and 'sky_zeropoint' in spec0.meta
@@ -99,7 +102,57 @@ def test_pipeline_wavelength_correction_modes(caplog):
     cfg.calibration.wavelength_correction = 'sky'
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, raw.resolution, {}, 'x')
     _, info3 = pipeline.wavelength_correction(nosky, nosky, cfg, 'X')
-    assert info3['applied'] == 'none'
+    assert info3['applied'] == 'none' and info3['zp_flags'] & pipeline.ZP_FLAGS['no_sky']
+
+
+ALKALI = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
+          Region('Cs I', 'line', 8515., 8530.)]
+
+
+def test_sky_if_needed_applies_a_significant_offset(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    raw = _sky_spectrum()
+    cfg = config.Config()
+    spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=ALKALI)
+    t = info['sky_tests']
+    assert info['applied'] == 'sky' and info['zp_flags'] & pipeline.ZP_FLAGS['sky_applied']
+    assert t['coverage_ok'] and t['significant'] and t['above_floor'] and t['n_segments'] >= 3
+    assert t['n_sigma'] > 3. and t['max_correction_kms'] > t['floor_kms']
+    assert 'applying' in caplog.text and not np.array_equal(spec.wave, raw.wave)
+
+
+def test_sky_if_needed_skips_a_negligible_offset():
+    raw = _sky_spectrum(dv_func=lambda w: np.zeros_like(w))
+    cfg = config.Config()
+    spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=ALKALI)
+    assert info['applied'] == 'none' and info['zp_flags'] & pipeline.ZP_FLAGS['sky_not_needed']
+    assert np.array_equal(spec.wave, raw.wave) and np.isfinite(info['zp_sky_kms'])
+    # the floor alone: a 1 km/s offset at R 1600 (0.05 resolution elements = 9.4 km/s) is never applied
+    raw1 = _sky_spectrum(dv_func=lambda w: np.ones_like(w), snr=5000.)
+    _, info1 = pipeline.wavelength_correction(raw1, raw1, cfg, 'X', regions=ALKALI)
+    assert info1['applied'] == 'none' and not info1['sky_tests']['above_floor']
+
+
+def test_sky_if_needed_refuses_unmeasured_regions():
+    """A region in an unmeasured part of the curve (here inside the O2 A gap) blocks the correction"""
+    raw = _sky_spectrum()
+    cfg = config.Config()
+    spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=[*ALKALI,
+                                                                             Region('K I', 'line', 7660., 7675.)])
+    assert info['applied'] == 'none' and info['zp_flags'] & pipeline.ZP_FLAGS['sky_unsafe']
+    assert info['sky_tests']['region_measured']['K I'] == 0. and not info['sky_tests']['coverage_ok']
+    _, none = pipeline.wavelength_correction(raw, raw, cfg, 'X')  # no regions: nothing to vouch for
+    assert none['applied'] == 'none'
+
+
+def test_valid_range_drops_segments_beyond_the_arcs():
+    raw = _sky_spectrum()
+    full = Z.measure(raw)
+    cut = Z.measure(raw, valid_range=(7400., 9500.))
+    assert cut.n_used < full.n_used
+    assert all(s['reason'].startswith('outside the calibrated range') for s in cut.segments
+               if not 7400. <= s['centre'] <= 9500.)
 
 
 def test_pipeline_sky_source_file(tmp_path):
@@ -124,5 +177,14 @@ def test_wavelength_zero_point_systematic():
     spec = Z.apply(raw, Z.measure(raw))
     sys_kms = systematics.wavelength_zero_point(spec, {})
     assert sys_kms == pytest.approx(spec.meta['wavelength_correction']['sky']['zp_sky_err'])
+    # at the measurements' wavelengths: the curve's own error there, with the curve-model spread
+    lam = np.array([8190., 8520.])
+    c = spec.meta['wavelength_correction']['sky']
+    at = systematics.wavelength_zero_point(spec, {}, wave=lam)
+    expect = np.hypot(np.sqrt(np.mean(Z.curve_at(c, lam)[1] ** 2)), c['zp_sky_model_spread'])
+    assert at == pytest.approx(expect)
+    # not applied: the offset at those wavelengths remains
+    raw2 = replace(raw, meta={**raw.meta, 'sky_zeropoint': Z.measure(raw).as_dict()})
+    assert systematics.wavelength_zero_point(raw2, {}, wave=lam) > np.min(np.abs(_dv_true(lam)))
     big = Spectrum(spec.wave, spec.flux, spec.sigma, 1600., {**spec.meta, 'wave_rms': 2.}, 'x')
     assert systematics.wavelength_zero_point(big, {}) == pytest.approx(299792.458 * 2. / np.median(spec.wave))

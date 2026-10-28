@@ -21,7 +21,8 @@ from . import __version__
 from .calibration import sky_zeropoint
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
-__all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem',
+__all__ = ['run', 'measure_object', 'enabled_methods', 'NoMethodsError', 'method_problem', 'wavelength_correction',
+           'ZP_FLAGS', 'zp_flag_names',
            'refit_object', 'suggested_refits', 'apply_patch', 'config_for_object', 'object_seed']
 
 log = logging.getLogger(__name__)
@@ -82,9 +83,12 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     """
     Measure one object (one or more spectra)
 
-    Runs barycentric.correction, regions.select, each enabled method, combine.hierarchical and systematics.
-    A method that raises is logged and recorded as a failed measurement (flag 1); the object carries on.
-    If ``cancel`` is set between methods, ``_Cancelled`` is raised (handled by ``run``).
+    Runs barycentric.correction, the wavelength zero point, regions.select, each enabled method,
+    combine.hierarchical and systematics. A method that raises is logged and recorded as a failed measurement
+    (flag 1); the object carries on. If ``cancel`` is set between methods, ``_Cancelled`` is raised (handled by
+    ``run``). Several spectra are epochs: each is measured separately and the epochs are combined in a second
+    level (random effects over the epochs' RVs), so a common per-epoch offset is not averaged down by the number of
+    regions.
     """
     from . import barycentric, combine, regions, systematics
 
@@ -109,24 +113,31 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     # several epochs: report the mean correction applied, and the source of the first
     bary_info = {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
-    # wavelength zero point (sky shape and/or the star's telluric zero point), applied once to the wavelengths
-    cal_infos = []
-    for k, (raw, spec) in enumerate(zip(spectra, corrected, strict=True)):
-        corrected[k], info = wavelength_correction(raw, spec, cfg, name)
-        cal_infos.append(info)
-    bary_info['wavelength_correction'] = cal_infos[0]['applied']
-
     # None means "use the SelectOptions default"
     knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
              'telluric_corrected': True if cfg.input.telluric_corrected else None,
              'template_windows': getattr(cfg.regions, 'template_windows', None)}
     opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})
+
+    def select(spec: Spectrum) -> dict:
+        return regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=cfg.regions.overrides,
+                              options=opts)
+
+    # wavelength zero point (sky shape and/or the star's telluric zero point), applied once to the wavelengths; the
+    # regions the methods will use (selected before any correction, which moves them by much less than their width)
+    # feed the sky-if-needed and telluric coverage tests
+    cal_mode = getattr(getattr(cfg, 'calibration', None), 'wavelength_correction', 'sky-if-needed')
+    cal_infos = []
+    for k, (raw, spec) in enumerate(zip(spectra, corrected, strict=True)):
+        pre = select(spec) if cal_mode in ('sky-if-needed', 'telluric', 'auto') else None
+        corrected[k], info = wavelength_correction(raw, spec, cfg, name, regions=pre)
+        cal_infos.append(info)
+
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     per_method: dict[str, list[MethodResult]] = {m: [] for m in names}
     sel0: dict[str, list] = {}
     for spec in corrected:
-        sel = regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=cfg.regions.overrides,
-                             options=opts)
+        sel = select(spec)
         if not sel0:
             sel0 = sel
         for m in names:
@@ -144,7 +155,10 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                 res = _failed(m)
             per_method[m].append(res)
 
-    # first-order uncorrected RVs (the correction lowered each RV by the Δv applied at its wavelength)
+    # first-order uncorrected RVs (the correction lowered each RV by the Δv applied at its wavelength), and the
+    # wavelengths of each epoch's usable measurements (where the zero-point systematic is evaluated)
+    from .results import EXCLUDE_FLAGS
+    epoch_waves: list[list[float]] = [[] for _ in corrected]
     for lst in per_method.values():
         for k, res in enumerate(lst):
             spec = corrected[min(k, len(corrected) - 1)]
@@ -153,14 +167,33 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                 dv = float(sky_zeropoint.applied_dv(spec.meta, lam)) if np.isfinite(lam) else np.nan
                 meas.diagnostics['zp_applied_kms'] = dv
                 meas.diagnostics['rv_uncorrected'] = float(meas.rv + dv) if np.isfinite(dv) else np.nan
+                if np.isfinite(lam) and np.isfinite(meas.rv) and not meas.flag & EXCLUDE_FLAGS:
+                    epoch_waves[min(k, len(corrected) - 1)].append(lam)
 
-    # several epochs: each was measured separately; its regions become '<epoch>:<region>', so epoch-to-epoch
-    # disagreement enters the random-effects scatter (method level) and the hierarchical τ_line (adopted), instead
-    # of being averaged away as if the epochs were the same region
+    # zero-point systematics of each epoch, at the wavelengths of its measurements
+    zp_epochs = []
+    for k, (spec, info) in enumerate(zip(corrected, cal_infos, strict=True)):
+        waves = np.asarray(epoch_waves[k]) if epoch_waves[k] else None
+        try:
+            wavezp = float(systematics.wavelength_zero_point(spec, cfg, wave=waves))
+        except Exception as exc:  # noqa: BLE001
+            log.debug('wavelength zero-point unavailable: %s', exc)
+            wavezp = float('nan')
+        star_sky = (float(np.hypot(info['zp_star_sky'], info['zp_star_sky_err']))
+                    if info['applied'] not in ('sky+telluric', 'telluric') and np.isfinite(info['zp_star_sky'])
+                    and np.isfinite(info['zp_star_sky_err']) else float('nan'))
+        zp_epochs.append({**{key: info[key] for key in ZP_KEYS}, 'mode': info['mode'], 'applied': info['applied'],
+                          'zp_flags': int(info['zp_flags']), 'sky_tests': info['sky_tests'],
+                          'wavelength_zero_point': wavezp, 'star_sky': star_sky})
+
+    # several epochs: each was measured separately; its regions become '<epoch>:<region>', and the epochs are
+    # combined in a second level (random effects over the per-epoch RVs), so a common per-epoch offset counts once
+    # per epoch rather than once per region
     labels = epoch_labels(corrected)
     epoch_info: dict[str, Any] = {}
     if len(corrected) > 1:
-        epoch_info = _epoch_summaries(per_method, labels, cfg, name)
+        epoch_info = _epoch_summaries(per_method, labels, cfg, name,
+                                      sys=[z['wavelength_zero_point'] for z in zp_epochs])
         for lst in per_method.values():
             for k, res in enumerate(lst):
                 for meas in res.measurements:
@@ -169,16 +202,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     results: dict[str, MethodResult] = {}
     for m, lst in per_method.items():
-        if len(lst) == 1:
-            res = lst[0]
-        else:
-            meas = [x for r in lst for x in r.measurements]
-            try:
-                from .methods._common import finish
-                res = finish(m, meas, outlier_k=None)  # random effects over every epoch:region, flags respected
-            except Exception as exc:  # noqa: BLE001
-                log.error('%s: combining %s over epochs failed: %s', name, m, exc)
-                res = MethodResult(m, float('nan'), float('nan'), 0, meas)
+        res = lst[0] if len(lst) == 1 else _combine_epochs(m, lst, labels, name)
         results[m] = res
         if np.isfinite(res.rv):
             log.info('%s: %.1f ± %.1f km/s', m, res.rv, res.rv_err)
@@ -187,7 +211,9 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     adopted: dict[str, Any] = {}
     good = [r for r in results.values() if np.isfinite(r.rv)]
-    if good:
+    if good and epoch_info:
+        adopted = _adopted_over_epochs(epoch_info, cfg, name)
+    elif good:
         try:
             # every usable per-region measurement of every method; flagged ones are excluded (and logged)
             adopted = combine.hierarchical_from_methods({r.method: r for r in good}, tau_scale=cfg.combine.tau_scale)
@@ -204,11 +230,15 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     else:
         log.warning('%s: no adopted RV', name)
 
-    sysd: dict[str, float] = {k: cal_infos[0][k] for k in ZP_KEYS}
-    try:
-        sysd['wavelength_zero_point'] = float(systematics.wavelength_zero_point(corrected[0], cfg))
-    except Exception as exc:  # noqa: BLE001
-        log.debug('wavelength zero-point unavailable: %s', exc)
+    sysd: dict[str, Any] = _combine_zp_epochs(zp_epochs)
+    bary_info['wavelength_correction'] = sysd.pop('applied')
+    bary_info['wavelength_correction_mode'] = sysd.pop('mode')
+    bary_info['zp_flags'] = int(sysd.pop('zp_flags'))
+    bary_info['sky_tests'] = sysd.pop('sky_tests')
+    if len(zp_epochs) > 1:
+        bary_info['wavelength_correction_epochs'] = [
+            {k: v for k, v in z.items() if k != 'sky_tests'} | {'epoch': lab}
+            for z, lab in zip(zp_epochs, labels, strict=True)]
     try:
         sysd['template_spread'] = float(systematics.template_spread(corrected[0], sel0, cfg, executor=executor,
                                                                     rng=rng.spawn(1)[0]))
@@ -219,6 +249,81 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     return ObjectResult(object=name, files=[s.source for s in spectra], methods=results, adopted=adopted,
                         systematics=sysd, barycentric=bary_info, binary={}, config_hash=_config_hash(cfg),
                         version=__version__)
+
+
+def _rms(values: Sequence[float]) -> float:
+    v = np.array([x for x in values if np.isfinite(x)], dtype=float)
+    return float(np.sqrt(np.mean(v * v))) if len(v) else float('nan')
+
+
+def _combine_zp_epochs(zp_epochs: list[dict]) -> dict[str, Any]:
+    """
+    One set of zero-point terms for the object: an epoch's own with one epoch; with several, the mean of the
+    offsets, the RMS of the errors and systematics, the applied corrections joined by '/' and the flags OR-ed
+    """
+    if len(zp_epochs) == 1:
+        z = dict(zp_epochs[0])
+    else:
+        z = {}
+        for key in ZP_KEYS:
+            vals = [e[key] for e in zp_epochs]
+            fin = [v for v in vals if np.isfinite(v)]
+            if key.endswith(('_err', '_spread')):
+                z[key] = _rms(vals)
+            elif key == 'zp_star_sky_n':
+                z[key] = float(np.sum(fin)) if fin else float('nan')
+            else:
+                z[key] = float(np.mean(fin)) if fin else float('nan')
+        z['wavelength_zero_point'] = _rms([e['wavelength_zero_point'] for e in zp_epochs])
+        z['star_sky'] = _rms([e['star_sky'] for e in zp_epochs])
+        z['applied'] = '/'.join(dict.fromkeys(e['applied'] for e in zp_epochs))
+        z['mode'] = zp_epochs[0]['mode']
+        z['zp_flags'] = int(np.bitwise_or.reduce([e['zp_flags'] for e in zp_epochs]))
+        z['sky_tests'] = zp_epochs[0]['sky_tests']
+    z['star_sky_systematic'] = z.pop('star_sky')
+    return z
+
+
+def _combine_epochs(method: str, lst: list[MethodResult], labels: list[str], name: str) -> MethodResult:
+    """A method over several epochs: random effects over the epochs' own (region-combined) RVs"""
+    from .combine import combine_regions
+    per_epoch = [Measurement(method, lab, float(r.rv), float(r.rv_err), 0)
+                 for r, lab in zip(lst, labels, strict=False)]
+    meas = [x for r in lst for x in r.measurements]
+    try:
+        details: dict = {}
+        rv, err = combine_regions([x for x in per_epoch if np.isfinite(x.rv) and np.isfinite(x.rv_err)],
+                                  details=details)
+    except Exception as exc:  # noqa: BLE001
+        log.error('%s: combining %s over epochs failed: %s', name, method, exc)
+        return MethodResult(method, float('nan'), float('nan'), 0, meas)
+    for x in meas:
+        x.diagnostics.update(method_tau_epoch=details.get('tau_line', np.nan))
+    n = sum(r.n_regions for r in lst)
+    n_ep = sum(1 for x in per_epoch if np.isfinite(x.rv) and np.isfinite(x.rv_err))
+    log.info('%s: %s over %d epochs: %.2f ± %.2f km/s (τ_epoch %.1f km/s)', name, method, n_ep, rv, err,
+             details.get('tau_line', np.nan))
+    return MethodResult(method, rv, err, n, meas)
+
+
+def _adopted_over_epochs(epoch_info: dict, cfg: Any, name: str) -> dict:
+    """The adopted RV from the epochs' adopted RVs: random effects over epochs (the second level)"""
+    from . import combine
+    rv, err = np.asarray(epoch_info['rv'], float), np.asarray(epoch_info['err'], float)
+    ok = np.isfinite(rv) & np.isfinite(err) & (err > 0)
+    if not ok.any():
+        return {}
+    labels = [lab for lab, g in zip(epoch_info['labels'], ok, strict=True) if g]
+    res = combine.hierarchical(rv[ok], err[ok], labels, ['epoch'] * int(ok.sum()), tau_scale=cfg.combine.tau_scale)
+    res['tau_epoch'] = res.get('tau_line', float('nan'))
+    for key in ('tau_line', 'tau_method'):
+        vals = [v for v in epoch_info.get(key, []) if np.isfinite(v)]
+        res[key] = float(np.median(vals)) if vals else float('nan')
+    res['n_lines'] = int(np.nansum(epoch_info.get('n_lines', [0])))
+    res['n_methods'] = int(np.nanmax(epoch_info.get('n_methods', [0]) or [0]))
+    log.info('%s: adopted over %d epochs: %.2f ± %.2f km/s (τ_epoch %.1f km/s)', name, int(ok.sum()), res['median'],
+             res['err'], res['tau_epoch'])
+    return res
 
 
 def _measurement_wave(meas: Measurement) -> float:
@@ -234,43 +339,215 @@ def _measurement_wave(meas: Measurement) -> float:
 
 
 ZP_KEYS = ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_tell_kms', 'zp_tell_err',
-           'zp_star_sky', 'zp_star_sky_err')
+           'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n')
+
+#: Bits of the ``zp_flags`` results column: what the wavelength zero-point step did, and why
+ZP_FLAGS: dict[str, int] = {
+    'sky_applied': 1,  # the sky curve Δv_sky(λ) was applied
+    'telluric_applied': 2,  # the star's telluric curve was applied
+    'star_sky_applied': 4,  # the star − sky constant was applied (auto)
+    'sky_not_needed': 8,  # sky-if-needed: the offset is not significant or below the practical floor
+    'sky_unsafe': 16,  # sky-if-needed: too few sky segments, or the regions rely on unmeasured parts of the curve
+    'telluric_unavailable': 32,  # the telluric model is not built: telluric terms skipped
+    'telluric_refused': 64,  # the telluric curve does not cover the regions: not applied
+    'star_sky_unmeasured': 128,  # no telluric node inside the measured sky range: the constant is NaN
+    'no_sky': 256,  # no sky spectrum: the sky zero point is not measured
+}
+
+# sky-if-needed criteria (calibration data only; fixed a priori)
+SKY_MIN_SEGMENTS = 3  # well-measured (used) sky segments
+SKY_MAX_UNMEASURED = 0.5  # each region: at most this fraction outside the measured sky segments
+SKY_SIGNIFICANCE = 3.  # |weighted mean Δv| / σ(curve ⊕ arc RMS)
+SKY_VARIATION_P = 1e-3  # χ² p-value of the segments against a constant
+SKY_FLOOR_RESEL = 0.05  # the correction must exceed this fraction of a resolution element (c/R)
+TELLURIC_MAX_NODE_GAP = 250.  # [Å] a region farther than this from every telluric node is not covered
 
 
-def _read_source(path: str, cfg: Any, what: str, name: str) -> Spectrum | None:
+def zp_flag_names(flags: int) -> list[str]:
+    """Names of the bits set in a ``zp_flags`` value"""
+    return [k for k, b in ZP_FLAGS.items() if int(flags) & b]
+
+
+def _region_list(sel: Any) -> list:
+    """The distinct non-telluric regions of a `regions.select` result (dict method → regions, or a list)"""
+    if not sel:
+        return []
+    regs = [r for lst in sel.values() for r in lst] if isinstance(sel, dict) else list(sel)
+    out, seen = [], set()
+    for r in regs:
+        key = (round(r.wmin, 2), round(r.wmax, 2))
+        if r.kind != 'telluric' and key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _arc_kms(spec: Spectrum, cfg: Any) -> float:
+    """The arc-solution RMS as a velocity [km/s] (cfg.input.wave_rms, else meta['wave_rms']); NaN if unknown"""
+    from .constants import C_KMS
+    rms = getattr(getattr(cfg, 'input', None), 'wave_rms', None)
+    if rms is None:
+        rms = spec.meta.get('wave_rms') if hasattr(spec.meta, 'get') else None
+    return float(C_KMS * rms / np.median(spec.wave)) if rms is not None and np.isfinite(rms) else float('nan')
+
+
+def _sky_needed(zp: Any, spec: Spectrum, cfg: Any, regions: Sequence | None, name: str) -> tuple[bool, dict]:
+    """
+    The sky-if-needed decision: apply the sky curve only if (a) it is well measured where the regions are, (b) the
+    offset or the distortion is significant and (c) the correction exceeds a practical floor. Calibration data and
+    region positions only (never the stellar line scatter).
+    """
+    from scipy.stats import chi2 as chi2_dist
+
+    from .calibration import telluric_zeropoint
+    from .constants import C_KMS
+    t: dict[str, Any] = {'n_segments': int(zp.n_used)}
+    # (a) coverage: the regions in the observatory frame against the measured sky segments
+    ff = telluric_zeropoint.frame_factor(spec.meta)
+    regs = list(regions or [])
+    fracs = [zp.measured_fraction(r.wmin / ff, r.wmax / ff) for r in regs]
+    t['region_measured'] = {r.name: round(f, 3) for r, f in zip(regs, fracs, strict=True)}
+    t['min_measured_fraction'] = float(min(fracs)) if fracs else float('nan')
+    poor = [r.name for r, f in zip(regs, fracs, strict=True) if f <= 1. - SKY_MAX_UNMEASURED]
+    ok_a = zp.n_used >= SKY_MIN_SEGMENTS and bool(regs) and any(f > 0 for f in fracs) and not poor
+    # (b) significance: weighted mean of the segment values, σ from the curve (with its model spread) and the arc
+    v, e = np.asarray(zp.node_dv, float), np.asarray(zp.node_err, float)
+    w = 1. / e ** 2
+    mean = float(np.sum(w * v) / np.sum(w))
+    spread = zp.model_spread if np.isfinite(zp.model_spread) else 0.
+    arc = _arc_kms(spec, cfg)
+    sigma = float(np.sqrt(1. / np.sum(w) + spread ** 2 + (arc ** 2 if np.isfinite(arc) else 0.)))
+    chi2 = float(np.sum(w * (v - mean) ** 2))
+    p = float(chi2_dist.sf(chi2, len(v) - 1)) if len(v) > 1 else 1.
+    t.update(mean_kms=mean, sigma_kms=sigma, arc_kms=arc, n_sigma=abs(mean) / sigma, chi2=chi2, dof=len(v) - 1,
+             p_variation=p)
+    ok_b = t['n_sigma'] > SKY_SIGNIFICANCE or p < SKY_VARIATION_P
+    # (c) floor: the largest correction at the regions against 0.05 resolution elements
+    res = spec.resolution or getattr(getattr(cfg, 'input', None), 'resolution', None)
+    if not res and np.isfinite(zp.fwhm) and zp.fwhm > 0:
+        res = float(np.median(spec.wave) / zp.fwhm)  # from the sky-line width
+    t['resolution'] = float(res) if res else float('nan')
+    t['floor_kms'] = SKY_FLOOR_RESEL * C_KMS / res if res else 0.
+    centres = np.array([0.5 * (r.wmin + r.wmax) / ff for r in regs]) if regs else np.array([])
+    t['max_correction_kms'] = float(np.max(np.abs(zp.dv(centres)))) if len(centres) else abs(mean)
+    ok_c = t['max_correction_kms'] > t['floor_kms']
+    t.update(coverage_ok=bool(ok_a), significant=bool(ok_b), above_floor=bool(ok_c))
+    apply = ok_a and ok_b and ok_c
+    if apply:
+        verdict = 'applying'
+    elif not ok_a:
+        if zp.n_used < SKY_MIN_SEGMENTS:
+            why = f'only {zp.n_used} measured sky segments (< {SKY_MIN_SEGMENTS})'
+        elif not regs:
+            why = 'no regions to check the coverage against'
+        else:
+            why = (f'region(s) {", ".join(poor) or "all"} rely on unmeasured (held-flat, ramped or extrapolated) '
+                   f'parts of the sky curve for more than {SKY_MAX_UNMEASURED:.0%} of their width')
+        verdict = f'not applied: {why}'
+    elif not ok_b:
+        verdict = (f'not applied: neither the offset (≤ {SKY_SIGNIFICANCE:g}σ) nor the variation '
+                   f'(p ≥ {SKY_VARIATION_P:g}) is significant')
+    else:
+        verdict = f'not applied: the correction is below {SKY_FLOOR_RESEL:g} resolution elements'
+    t['verdict'] = verdict
+    log.info('%s: sky zero point %+.1f ± %.1f km/s (%.1fσ incl. arc RMS %.1f km/s; segment variation χ² %.1f for %d '
+             'dof, p = %.2g; %d segments; regions measured ≥ %.0f per cent; max |Δv| at the regions %.1f km/s, floor '
+             '%.1f km/s): %s', name, mean, sigma, t['n_sigma'], arc if np.isfinite(arc) else 0., chi2, len(v) - 1, p,
+             zp.n_used, 100. * t['min_measured_fraction'] if fracs else 0., t['max_correction_kms'], t['floor_kms'],
+             verdict)
+    return apply, t
+
+
+def _telluric_coverage(tzp: Any, spec: Spectrum, regions: Sequence | None) -> tuple[bool, str]:
+    """Whether the telluric curve may be applied at the regions: a node within 250 Å of each, and not O2 A alone"""
+    from .calibration import telluric_zeropoint
+    used = [s for s in tzp.segments if s.get('used')]
+    if used and all(str(s['band']).startswith('O2') for s in used):
+        return False, 'the curve is anchored by the O2 bands alone'
+    if not regions:
+        return True, 'ok'
+    ff = telluric_zeropoint.frame_factor(spec.meta)
+    nodes = np.asarray(tzp.node_wave, float)
+    far = [(r.name, float(np.min(np.abs(nodes - 0.5 * (r.wmin + r.wmax) / ff)))) for r in regions]
+    far = [(n, d) for n, d in far if d > TELLURIC_MAX_NODE_GAP]
+    if far:
+        return False, (f'{len(far)} region(s) lie more than {TELLURIC_MAX_NODE_GAP:.0f} Å from every telluric node ('
+                       + ', '.join(f'{n}: {d:.0f} Å' for n, d in far[:5]) + (', ...' if len(far) > 5 else '') + ')')
+    return True, 'ok'
+
+
+def _read_source(path: str, cfg: Any, what: str, name: str, hdu: int | None = None) -> Spectrum | None:
     """Read a calibration file (sky_source, telluric_source); a failure is logged, not fatal"""
     from . import io
     try:
-        return io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method)
+        return io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method, hdu=hdu)
     except Exception as exc:  # noqa: BLE001
         log.warning('%s: could not read calibration.%s %s: %s', name, what, path, exc)
         return None
 
 
+def _object_tables(spec: Spectrum, cfg: Any) -> list[tuple[int, Spectrum]]:
+    """Every object table of a multi-object PypeIt file (hdu, spectrum), the one read first included"""
+    from . import io
+    n = int(spec.meta.get('n_objects', 1) or 1) if hasattr(spec.meta, 'get') else 1
+    if n < 2 or not Path(str(spec.source)).is_file():
+        return [(spec.meta.get('hdu', -1) if hasattr(spec.meta, 'get') else -1, spec)]
+    from astropy.io import fits
+    out = []
+    with fits.open(spec.source) as hdul:
+        tables = [i for i in range(1, len(hdul)) if getattr(hdul[i], 'columns', None) is not None
+                  and ('OPT_WAVE' in hdul[i].columns.names or 'BOX_WAVE' in hdul[i].columns.names)]
+    for k in tables:
+        if k == spec.meta.get('hdu'):
+            out.append((k, spec))
+            continue
+        try:
+            out.append((k, io.read_spectrum(spec.source, medium=cfg.input.medium,
+                                            medium_method=cfg.input.medium_method, hdu=k)))
+        except Exception as exc:  # noqa: BLE001 - not an object table
+            log.debug('object table %d of %s unreadable: %s', k, spec.source, exc)
+    return out
+
+
+def _measure_sky(src: Spectrum, cfg: Any, name: str):
+    """
+    The sky zero point of `src`; for a multi-object PypeIt file, every object's sky is measured (the same slit and
+    wavelength solution) and the best measured (most usable segments, then the smallest node errors) is used
+    """
+    cal = getattr(cfg, 'calibration', None)
+    kw = dict(seg_width=getattr(cal, 'sky_segment_width', 250.),
+              valid_range=getattr(cal, 'wave_valid_range', None))
+    tables = [(h, s) for h, s in _object_tables(src, cfg) if s.sky is not None]
+    if len(tables) < 2:
+        zp = sky_zeropoint.measure(src, **kw)
+        if zp is not None:
+            zp.source_hdu = src.meta.get('hdu') if hasattr(src.meta, 'get') else None
+        return zp
+    found = []
+    for h, s in tables:
+        z = sky_zeropoint.measure(s, **kw)
+        if z is not None:
+            z.source_hdu = h
+            found.append(z)
+    if not found:
+        return None
+    best = max(found, key=lambda z: (z.n_used, -float(np.mean(z.node_err))))
+    log.info('%s: sky zero point from the sky of HDU %s of %s (%s)', name, best.source_hdu, Path(str(src.source)).name,
+             '; '.join(f'HDU {z.source_hdu}: {z.n_used} segments, mean node error {np.mean(z.node_err):.1f} km/s'
+                       for z in found))
+    return best
+
+
 def _matching_object(path: str, raw: Spectrum, cfg: Any, name: str) -> Spectrum | None:
     """
     The object of a calibration file whose flux best matches the input (a PypeIt spec1d holds one table per
-    object in the slit, and the first is not necessarily the target)
+    object in the slit, and the highest-S/N one is not necessarily the input's target)
     """
-    from astropy.io import fits
     from scipy.ndimage import median_filter
-
-    from . import io
     first = _read_source(path, cfg, 'telluric_source', name)
     if first is None:
         return None
-    try:
-        with fits.open(path) as hdul:
-            n = len(hdul)
-    except (OSError, ValueError):
-        return first
-    found = [(1, first)]
-    for k in range(2, n):
-        try:
-            found.append((k, io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method,
-                                              hdu=k)))
-        except Exception:  # noqa: BLE001 - not an object table
-            continue
+    found = _object_tables(first, cfg)
     if len(found) == 1:
         return first
 
@@ -305,52 +582,76 @@ def _matching_object(path: str, raw: Spectrum, cfg: Any, name: str) -> Spectrum 
 
 
 def _telluric_zeropoint(src: Spectrum, cfg: Any, name: str):
-    """The star's telluric zero point; the star is modelled with the template nearest the priors when available"""
+    """
+    The star's telluric zero point; the star is modelled with the template nearest the priors when available, and
+    each node's error includes the spread over the neighbouring templates (± one Teff grid step)
+    """
     from .calibration import telluric_zeropoint
     cal = getattr(cfg, 'calibration', None)
     width = getattr(cal, 'telluric_segment_width', 250.)
+    teff = getattr(getattr(cfg, 'templates', None), 'teff_prior', None)
     resolution = getattr(cfg.input, 'resolution', None) or src.resolution
-    template = None
+    template, alts = None, []
     if getattr(cal, 'telluric_template', True):
         if resolution is None:  # a first pass without the template measures R from the telluric lines
-            first = telluric_zeropoint.measure(src, seg_width=width)
+            first = telluric_zeropoint.measure(src, seg_width=width, teff=teff)
             resolution = first.resolution if first is not None else None
         if resolution is not None:
-            from .methods.telluric_ref import prior_template
+            from .methods.telluric_ref import neighbour_templates, prior_template
+            wr = (float(src.wave[0]), float(src.wave[-1]))
             try:
-                template = prior_template(cfg, resolution, (float(src.wave[0]), float(src.wave[-1])))
+                template = prior_template(cfg, resolution, wr)
+                alts = neighbour_templates(cfg, resolution, wr, template) if template is not None else []
             except Exception as exc:  # noqa: BLE001 - fall back to a smooth stellar continuum
                 log.warning('%s: no template for the telluric zero point (%s); assuming a smooth star', name, exc)
-    return telluric_zeropoint.measure(src, resolution=resolution, template=template, seg_width=width)
+    return telluric_zeropoint.measure(src, resolution=resolution, template=template, seg_width=width, teff=teff,
+                                      spread_templates=alts)
 
 
-def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '') -> tuple[Spectrum, dict]:
+def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '',
+                          regions: Sequence | None = None) -> tuple[Spectrum, dict]:
     """
     Measure the wavelength zero point of one spectrum and apply it if ``cfg.calibration`` asks for it
 
     - The sky zero point Δv_sky(λ) is measured whenever a sky is available (``raw.sky``, or the sky of
-      ``calibration.sky_source``), in the observatory frame, and always reported.
+      ``calibration.sky_source``; of a multi-object PypeIt file, the best-measured object's sky), in the
+      observatory frame, and always reported.
     - The star's own (telluric) zero point Δv_tell(λ) is measured from the telluric absorption of
       ``calibration.telluric_source`` (a non-telluric-corrected spectrum sharing the input's wavelength solution),
       else of the input itself unless ``input.telluric_corrected``. It is measured when the mode is 'telluric' or
-      'auto', or whenever a telluric_source is given. With both curves, the star − sky constant (slit centring) is
-      the weighted mean of Δv_tell − Δv_sky at the telluric segments (``zp_star_sky``).
+      'auto', or whenever a telluric_source is given, and needs the telluric model (`rvfitter templates telluric
+      --build`); without it the telluric terms are skipped and flagged. With both curves, the star − sky constant
+      (slit centring) comes from the telluric nodes inside the measured sky range (``zp_star_sky``, NaN if none).
     - What is applied to ``spec`` (which may already be barycentric-corrected; the correction is a multiplicative
-      factor) follows ``wavelength_correction``: 'none' (default) nothing; 'sky' the sky curve; 'telluric' the
-      telluric curve; 'auto' the sky shape plus the star − sky constant when both exist, else whichever exists.
-      When nothing is applied, the measured zero point enters the zero-point systematic.
+      factor) follows ``wavelength_correction``: 'sky-if-needed' (default) the sky curve when `_sky_needed` passes;
+      'sky' the sky curve; 'telluric' the telluric curve if it covers the regions; 'auto' the sky shape plus the
+      star − sky constant when both exist, else whichever exists; 'none' nothing. When nothing is applied, the
+      measured zero point enters the zero-point systematic.
+
+    Parameters
+    ----------
+    raw, spec
+        The spectrum as read, and as it will be measured (e.g. barycentric-corrected)
+    cfg
+        The configuration
+    name
+        Object name for the log
+    regions
+        The regions the methods will measure (for the sky-if-needed and telluric coverage tests)
 
     Returns
     -------
     spectrum, info
         The (possibly) corrected spectrum, with meta['sky_zeropoint'], meta['telluric_zeropoint'] and
-        meta['star_minus_sky'] whenever measured, and {'mode', 'applied', *ZP_KEYS}
+        meta['star_minus_sky'] whenever measured, and {'mode', 'applied', 'zp_flags', 'sky_tests', *ZP_KEYS}
     """
-    from .calibration import telluric_zeropoint
+    from .calibration import telluric, telluric_zeropoint
     cal = getattr(cfg, 'calibration', None)
-    mode = getattr(cal, 'wavelength_correction', 'none') if cal is not None else 'none'
+    mode = getattr(cal, 'wavelength_correction', 'sky-if-needed') if cal is not None else 'sky-if-needed'
     nan = float('nan')
-    info: dict[str, Any] = {'mode': mode, 'applied': 'none', **dict.fromkeys(ZP_KEYS, nan)}
+    info: dict[str, Any] = {'mode': mode, 'applied': 'none', 'zp_flags': 0, 'sky_tests': {},
+                            **dict.fromkeys(ZP_KEYS, nan)}
+    regions = _region_list(regions)
     # --- sky (the shape of the wavelength solution)
     zp = None
     src = raw if raw.sky is not None else None
@@ -363,66 +664,101 @@ def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '
             _check_sky_source(raw, other, name, sky_source)
             src = other
     if src is not None:
-        zp = sky_zeropoint.measure(src, seg_width=getattr(cal, 'sky_segment_width', 250.))
-    elif mode == 'sky':
-        log.warning('%s: wavelength_correction = "sky" but no sky spectrum is available; nothing applied', name)
+        zp = _measure_sky(src, cfg, name)
+    else:
+        info['zp_flags'] |= ZP_FLAGS['no_sky']
+        log.info('%s: no sky spectrum: the sky zero point is not measured%s', name,
+                 ' and nothing is applied' if mode in ('sky', 'sky-if-needed') else '')
     if zp is not None:
         info.update(zp_sky_kms=zp.zp_kms, zp_sky_err=zp.zp_err, zp_sky_slope=zp.slope,
                     zp_sky_model_spread=zp.model_spread)
-        spec = replace(spec, meta={**spec.meta, 'sky_zeropoint': zp.as_dict()})
-        if abs(zp.zp_kms) > 2. * zp.zp_err:
+        spec = replace(spec, meta={**spec.meta, 'sky_zeropoint': {**zp.as_dict(),
+                                                                  'source_hdu': getattr(zp, 'source_hdu', None)}})
+        if mode != 'sky-if-needed' and abs(zp.zp_kms) > 2. * zp.zp_err:
             log.info('%s: the OH sky lines suggest the wavelength solution is offset by %+.1f ± %.1f km/s (%.0f-%.0f '
                      'Å); check the wavelength calibration', name, zp.zp_kms, zp.zp_err, *zp.main_span)
     # --- telluric (the star's own zero point)
     tzp = None
     tell_source = getattr(cal, 'telluric_source', None) if cal is not None else None
     if mode in ('auto', 'telluric') or tell_source:
-        tsrc = None
-        if tell_source:
-            tsrc = _matching_object(tell_source, raw, cfg, name)
-            if tsrc is not None:
-                _check_sky_source(raw, tsrc, name, tell_source)
-        elif not getattr(cfg.input, 'telluric_corrected', False):
-            tsrc = raw
+        if not telluric.available():
+            info['zp_flags'] |= ZP_FLAGS['telluric_unavailable']
+            log.warning('%s: telluric zero point skipped: %s', name, telluric.unavailable_message())
         else:
-            log.warning('%s: the input is telluric-corrected and no calibration.telluric_source is set; the telluric '
-                        'zero point is not measured', name)
-        if tsrc is not None:
-            tzp = _telluric_zeropoint(tsrc, cfg, name)
+            tsrc = None
+            if tell_source:
+                tsrc = _matching_object(tell_source, raw, cfg, name)
+                if tsrc is not None:
+                    _check_sky_source(raw, tsrc, name, tell_source)
+            elif not getattr(cfg.input, 'telluric_corrected', False):
+                tsrc = raw
+            else:
+                log.warning('%s: the input is telluric-corrected and no calibration.telluric_source is set; the '
+                            'telluric zero point is not measured', name)
+            if tsrc is not None:
+                tzp = _telluric_zeropoint(tsrc, cfg, name)
     if tzp is not None:
         info.update(zp_tell_kms=tzp.zp_kms, zp_tell_err=tzp.zp_err)
         spec = replace(spec, meta={**spec.meta, 'telluric_zeropoint': tzp.as_dict()})
         if zp is not None:
             ss = telluric_zeropoint.star_minus_sky(tzp, zp)
-            info.update(zp_star_sky=ss['zp_star_sky'], zp_star_sky_err=ss['zp_star_sky_err'])
+            info.update(zp_star_sky=ss['zp_star_sky'], zp_star_sky_err=ss['zp_star_sky_err'],
+                        zp_star_sky_n=ss['n_nodes'])
+            if not ss['n_nodes']:
+                info['zp_flags'] |= ZP_FLAGS['star_sky_unmeasured']
             spec = replace(spec, meta={**spec.meta, 'star_minus_sky': ss})
     elif mode == 'telluric':
         log.warning('%s: wavelength_correction = "telluric" but the telluric zero point could not be measured; '
                     'nothing applied', name)
+
     # --- apply
-    if mode == 'sky' and zp is not None:
-        spec, info['applied'] = sky_zeropoint.apply(spec, zp, source='sky'), 'sky'
+    def use_telluric(spectrum: Spectrum) -> Spectrum:
+        ok, why = _telluric_coverage(tzp, spectrum, regions)
+        if not ok:
+            info['zp_flags'] |= ZP_FLAGS['telluric_refused']
+            log.warning('%s: the telluric zero-point curve is not applied: %s', name, why)
+            return spectrum
+        info['applied'] = 'telluric'
+        info['zp_flags'] |= ZP_FLAGS['telluric_applied']
+        return sky_zeropoint.apply(spectrum, tzp, source='telluric')
+
+    def use_sky(spectrum: Spectrum) -> Spectrum:
+        info['applied'] = 'sky'
+        info['zp_flags'] |= ZP_FLAGS['sky_applied']
+        return sky_zeropoint.apply(spectrum, zp, source='sky')
+
+    if mode == 'sky-if-needed' and zp is not None:
+        ok, info['sky_tests'] = _sky_needed(zp, spec, cfg, regions, name)
+        if ok:
+            spec = use_sky(spec)
+        else:
+            info['zp_flags'] |= ZP_FLAGS['sky_not_needed' if info['sky_tests']['coverage_ok'] else 'sky_unsafe']
+    elif mode == 'sky' and zp is not None:
+        spec = use_sky(spec)
     elif mode == 'telluric' and tzp is not None:
-        spec, info['applied'] = sky_zeropoint.apply(spec, tzp, source='telluric'), 'telluric'
+        spec = use_telluric(spec)
     elif mode == 'auto':
         if zp is not None and tzp is not None and np.isfinite(info['zp_star_sky']):
             spec = sky_zeropoint.apply(spec, zp, constant_kms=info['zp_star_sky'],
                                        constant_err=info['zp_star_sky_err'], source='sky+telluric')
             info['applied'] = 'sky+telluric'
+            info['zp_flags'] |= ZP_FLAGS['sky_applied'] | ZP_FLAGS['star_sky_applied']
         elif zp is not None:
-            spec, info['applied'] = sky_zeropoint.apply(spec, zp, source='sky'), 'sky'
+            spec = use_sky(spec)
         elif tzp is not None:
-            spec, info['applied'] = sky_zeropoint.apply(spec, tzp, source='telluric'), 'telluric'
+            spec = use_telluric(spec)
     if info['applied'] != 'none':
         wc = spec.meta['wavelength_correction']
         log.info('%s: wavelength correction applied (%s): Δv %+.1f to %+.1f km/s over the spectrum', name,
                  info['applied'], wc['dv_min'], wc['dv_max'])
-        if info['applied'] == 'sky':
-            log.info('%s: the star-sky offset (slit centring) is not measured (no telluric zero point) and is not '
-                     'included in the errors', name)
     else:
         log.info('%s: no wavelength correction applied (mode %s)%s', name, mode,
                  '; the measured zero point is counted in the zero-point systematic' if zp or tzp else '')
+    if info['applied'] in ('none', 'sky') and np.isfinite(info['zp_star_sky']):
+        log.info('%s: the star - sky offset %+.1f ± %.1f km/s (%d node(s)) is not applied; it is counted in '
+                 'sys_star_sky', name, info['zp_star_sky'], info['zp_star_sky_err'], info['zp_star_sky_n'])
+    elif info['applied'] == 'sky':
+        log.info('%s: the star - sky offset (slit centring) is not measured and is not included in the errors', name)
     return spec, info
 
 
@@ -437,17 +773,20 @@ def epoch_labels(spectra: Sequence[Spectrum]) -> list[str]:
     return [f'e{k + 1}' for k in range(len(spectra))]
 
 
-def _epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str], cfg: Any, name: str) -> dict:
+def _epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str], cfg: Any, name: str,
+                     sys: Sequence[float] | None = None) -> dict:
     """
     Per-epoch method and adopted RVs (recorded in each measurement's diagnostics) and a variability test
 
     The epochs' adopted RVs are compared with their weighted mean: χ² = Σ (v_e − v̄)²/σ_e² with n − 1 degrees of
-    freedom. p < 0.001 flags the object as variable (a possible binary or a calibration problem).
+    freedom, where σ_e is the epoch's statistical error combined with its wavelength zero-point systematic `sys`
+    (each epoch has its own wavelength solution and slit centring); p < 0.001 flags the object as variable (a
+    possible binary or a calibration problem). The statistical-only test is reported too (`pvalue_stat`).
     """
     from scipy.stats import chi2 as chi2_dist
 
     from . import combine
-    rv_e, err_e = [], []
+    rv_e, err_e, taus_l, taus_m, n_l, n_m = [], [], [], [], [], []
     for k, label in enumerate(labels):
         per = {m: lst[k] for m, lst in per_method.items() if k < len(lst) and np.isfinite(lst[k].rv)}
         try:
@@ -458,6 +797,10 @@ def _epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str
         rv, err = float(ad.get('median', np.nan)), float(ad.get('err', np.nan))
         rv_e.append(rv)
         err_e.append(err)
+        taus_l.append(float(ad.get('tau_line', np.nan)))
+        taus_m.append(float(ad.get('tau_method', np.nan)))
+        n_l.append(int(ad.get('n_lines', 0)))
+        n_m.append(int(ad.get('n_methods', 0)))
         for lst in per_method.values():
             if k < len(lst):
                 for meas in lst[k].measurements:
@@ -466,18 +809,26 @@ def _epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str
         log.info('%s: epoch %s: adopted %.2f ± %.2f km/s (%s)', name, label, rv, err,
                  ', '.join(f'{m} {r.rv:.2f} ± {r.rv_err:.2f}' for m, r in per.items()))
     v, e = np.array(rv_e), np.array(err_e)
+    s = np.array([x if x is not None and np.isfinite(x) else 0. for x in (sys or [0.] * len(v))], dtype=float)
     ok = np.isfinite(v) & np.isfinite(e) & (e > 0)
-    pvalue, chi2 = np.nan, np.nan
-    if ok.sum() > 1:
-        w = 1. / e[ok] ** 2
+
+    def test(errors: np.ndarray) -> tuple[float, float]:
+        if ok.sum() < 2:
+            return np.nan, np.nan
+        w = 1. / errors[ok] ** 2
         mean = np.sum(w * v[ok]) / np.sum(w)
-        chi2 = float(np.sum(w * (v[ok] - mean) ** 2))
-        pvalue = float(chi2_dist.sf(chi2, int(ok.sum()) - 1))
+        c2 = float(np.sum(w * (v[ok] - mean) ** 2))
+        return c2, float(chi2_dist.sf(c2, int(ok.sum()) - 1))
+
+    chi2_stat, p_stat = test(e)
+    chi2, pvalue = test(np.hypot(e, s))
     variable = bool(np.isfinite(pvalue) and pvalue < 1e-3)
-    log.info('%s: epoch variability: χ² %.1f for %d epochs, p = %.3g%s', name, chi2, int(ok.sum()), pvalue,
+    log.info('%s: epoch variability: χ² %.1f for %d epochs, p = %.3g with the zero-point systematics (statistical '
+             'errors only: χ² %.1f, p = %.3g)%s', name, chi2, int(ok.sum()), pvalue, chi2_stat, p_stat,
              ' (variable: p < 0.001)' if variable else '')
-    return dict(n=len(labels), labels=list(labels), rv=[float(x) for x in v], err=[float(x) for x in e], chi2=chi2,
-                pvalue=pvalue, variable=variable)
+    return dict(n=len(labels), labels=list(labels), rv=[float(x) for x in v], err=[float(x) for x in e],
+                sys_wavezp=[float(x) for x in s], chi2=chi2, pvalue=pvalue, chi2_stat=chi2_stat, pvalue_stat=p_stat,
+                variable=variable, tau_line=taus_l, tau_method=taus_m, n_lines=n_l, n_methods=n_m)
 
 
 def _check_sky_source(raw: Spectrum, other: Spectrum, name: str, path: str) -> None:

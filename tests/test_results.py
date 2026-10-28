@@ -116,3 +116,19 @@ def test_dotted_stem_and_floor(tmp_path):
     assert results.to_table([res]).loc[0, 'rv_total_err'] == pytest.approx(np.sqrt(1.5**2 + 0.8**2 + 0.6**2 + 0.5**2))
     w = results.write([res], tmp_path / 'run.v2', formats='json')
     assert (tmp_path / 'run.v2.json') in w
+
+
+def test_zero_point_columns_and_total():
+    """sys_star_sky (an unapplied star - sky offset) enters rv_total_err; the correction and its flags are columns"""
+    from rvfitter.types import ObjectResult
+    sysd = {'template_spread': 1., 'wavelength_zero_point': 2., 'star_sky_systematic': 4., 'floor': 0.,
+            'zp_star_sky': -3., 'zp_star_sky_err': 2.6, 'zp_star_sky_n': 1.}
+    res = ObjectResult(object='X', files=['x.fits'], methods={}, adopted={'median': 20., 'err': 3.},
+                       systematics=sysd, barycentric={'wavelength_correction': 'sky',
+                                                      'wavelength_correction_mode': 'sky-if-needed', 'zp_flags': 1},
+                       binary={}, config_hash='h', version='v')
+    row = results.to_table([res]).iloc[0]
+    assert row['sys_star_sky'] == 4. and row['zp_star_sky_n'] == 1
+    assert row['rv_total_err'] == pytest.approx(np.sqrt(9. + 1. + 4. + 16.))
+    assert row['wavelength_correction'] == 'sky-if-needed' and row['wavelength_correction_applied'] == 'sky'
+    assert row['zp_flags'] == 1

@@ -63,7 +63,7 @@ def fakes(monkeypatch):
                 'n_lines': len(v)}
 
     monkeypatch.setattr(combine, 'hierarchical', hierarchical, raising=False)
-    monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, c: 0.5, raising=False)
+    monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, c, **kw: 0.5, raising=False)
     monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4, raising=False)
     monkeypatch.setattr(methods_pkg, 'REGISTRY', {
         'ccf': FakeMethod('ccf'), 'linecentre': FakeMethod('linecentre'), 'lsd': FakeMethod('lsd', fail=True)},

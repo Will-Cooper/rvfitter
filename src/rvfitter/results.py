@@ -101,10 +101,11 @@ def _columns() -> list[str]:
     for m in METHOD_ORDER:
         cols += [f'rv_{m}', f'rv_{m}_err', f'rv_{m}_flag', f'n_{m}']
     cols += ['rv_adopted', 'rv_adopted_err', 'rv_adopted_q16', 'rv_adopted_q84', 'tau_line', 'tau_method',
-             'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'rv_total_err',
-             *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_tell_kms',
-             'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err',
-             'wavelength_correction', 'rv_epoch_pvalue', 'rv_epoch_variable', 'n_epochs',
+             'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'sys_star_sky',
+             'rv_total_err', *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread',
+             'zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n',
+             'wavelength_correction', 'wavelength_correction_applied', 'zp_flags', 'rv_epoch_pvalue',
+             'rv_epoch_variable', 'n_epochs',
              'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'config_hash', 'version']
     return cols
 
@@ -152,8 +153,10 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         sysd = res.systematics or {}
         row['sys_template'] = _num(sysd.get('template_spread'))
         row['sys_wavezp'] = _num(sysd.get('wavelength_zero_point'))
+        # the star − sky offset (slit centring) when measured but not applied: |zp_star_sky| ⊕ its error
+        row['sys_star_sky'] = _num(sysd.get('star_sky_systematic'))
         row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'],
-                                       _num(sysd.get('floor')))
+                                     row['sys_star_sky'], _num(sysd.get('floor')))
                                if np.isfinite(row['rv_adopted_err']) else _NAN)
         row.update(_template_row(res))
         row['zp_sky_kms'] = _num(sysd.get('zp_sky_kms'))
@@ -162,11 +165,16 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         row['zp_sky_model_spread'] = _num(sysd.get('zp_sky_model_spread'))
         for key in ('zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err'):  # NaN when not measured
             row[key] = _num(sysd.get(key))
+        n_ss = _num(sysd.get('zp_star_sky_n'))
+        row['zp_star_sky_n'] = int(n_ss) if np.isfinite(n_ss) else 0
         ep = (res.adopted or {}).get('epochs') or {}
         row['rv_epoch_pvalue'] = _num(ep.get('pvalue'))
         row['rv_epoch_variable'] = bool(ep.get('variable', False))
         row['n_epochs'] = int(ep.get('n', 1))
-        row['wavelength_correction'] = str((res.barycentric or {}).get('wavelength_correction', 'none'))
+        bc = res.barycentric or {}
+        row['wavelength_correction'] = str(bc.get('wavelength_correction_mode', ''))  # the configured mode
+        row['wavelength_correction_applied'] = str(bc.get('wavelength_correction', 'none'))  # what was applied
+        row['zp_flags'] = int(bc.get('zp_flags', 0))  # pipeline.ZP_FLAGS bits
         bary = res.barycentric or {}
         row['bary_kms'] = _num(bary.get('applied_kms'))
         row['bary_source'] = str(bary.get('source', ''))

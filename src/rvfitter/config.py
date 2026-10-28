@@ -43,6 +43,7 @@ __all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'Templ
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 METHOD_NAMES = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 
@@ -154,10 +155,13 @@ class OutputConfig:
 @dataclass
 class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
-    # 'none' (default until validated): measure and report the zero point (zp_sky_* columns, counted in the
-    # zero-point systematic) but do not apply it; 'auto': sky shape + telluric constant when available, else
-    # whichever exists; 'sky' or 'telluric' force one. What was applied is always logged and recorded.
-    wavelength_correction: str = 'none'
+    # 'sky-if-needed' (default): measure the OH sky zero point Δv(λ) and apply it only when the calibration data
+    # say it is safe and needed (enough measured sky segments covering the regions, a significant offset or
+    # distortion, larger than 0.05 resolution elements); otherwise report it (zp_sky_* columns) and count it in the
+    # zero-point systematic. 'sky': always apply the sky curve; 'auto': sky shape + the star - sky constant from
+    # the tellurics (opt-in); 'telluric': the star's telluric curve; 'none': measure and report only. What was
+    # applied is always logged and recorded (wavelength_correction_applied, zp_flags).
+    wavelength_correction: str = 'sky-if-needed'
     sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
     sky_segment_width: float = 250.  # [Å]; segments of the telluric-free spans; Δv(λ) is interpolated between them
     # a non-telluric-corrected file sharing the input's wavelength solution (e.g. the PypeIt spec1d of a corrected
@@ -165,6 +169,9 @@ class CalibrationConfig:
     telluric_source: str | None = None
     telluric_segment_width: float = 250.  # [Å]; maximum width of the telluric-band segments
     telluric_template: bool = True  # model the star with the template nearest the priors in the telluric fit
+    # [min, max] vacuum Å, observatory frame, where the wavelength solution is constrained (e.g. the range of the
+    # arc lines): sky segments centred outside it are not used, so the curve is never anchored by an extrapolation
+    wave_valid_range: tuple[float, float] | None = None
 
 
 @dataclass
@@ -430,7 +437,8 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
     _choice(p, 'regions.template_windows', r.template_windows, ('features', 'full'))
     _choice(p, 'calibration.wavelength_correction', cfg.calibration.wavelength_correction,
-            ('auto', 'sky', 'telluric', 'none'))
+            WAVELENGTH_CORRECTIONS)
+    _range(p, 'calibration.wave_valid_range', cfg.calibration.wave_valid_range, positive=True)
     if not cfg.calibration.sky_segment_width > 0:
         p.append(f'calibration.sky_segment_width = {cfg.calibration.sky_segment_width} must be > 0 [Å]')
     if not cfg.calibration.telluric_segment_width > 0:
