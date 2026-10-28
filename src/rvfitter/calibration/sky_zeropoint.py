@@ -40,7 +40,8 @@ from scipy.ndimage import percentile_filter
 from .. import broadening
 from ..types import Spectrum
 
-__all__ = ['SkyZeroPoint', 'oh_lines', 'model_sky', 'measure', 'apply', 'observatory_frame_factor']
+__all__ = ['SkyZeroPoint', 'oh_lines', 'model_sky', 'measure', 'apply', 'applied_dv', 'curve_at',
+           'observatory_frame_factor']
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +171,18 @@ class SkyZeroPoint:
         return _curve(wave, self.node_wave, self.node_dv, self.node_err, self.node_span, self.inflate,
                       self.span_bounds)[1]
 
+    @property
+    def measured_ranges(self) -> list[tuple[float, float]]:
+        """(wmin, wmax) of the used (measured) segments [Å, observatory frame]"""
+        return [(float(s['wmin']), float(s['wmax'])) for s in self.segments if s['used']]
+
+    def measured_fraction(self, wmin: float, wmax: float) -> float:
+        """The fraction of [wmin, wmax] covered by measured segments (the rest is held flat, ramped or extrapolated)"""
+        if not wmax > wmin:
+            return float(any(a <= wmin <= b for a, b in self.measured_ranges))
+        cover = sum(max(0., min(b, wmax) - max(a, wmin)) for a, b in self.measured_ranges)
+        return float(min(1., cover / (wmax - wmin)))
+
     def as_dict(self) -> dict:
         return dict(zp_sky_kms=self.zp_kms, zp_sky_err=self.zp_err, zp_sky_slope=self.slope,
                     zp_sky_slope_err=self.slope_err, zp_sky_model_spread=self.model_spread,
@@ -177,7 +190,7 @@ class SkyZeroPoint:
                     node_err=[float(x) for x in self.node_err], node_span=[int(x) for x in self.node_span],
                     inflate=self.inflate, birge=self.birge, main_span=list(self.main_span),
                     span_bounds={int(k): [float(a), float(b)] for k, (a, b) in self.span_bounds.items()},
-                    fwhm=self.fwhm,
+                    fwhm=self.fwhm, measured_ranges=[list(r) for r in self.measured_ranges],
                     n_used=self.n_used, segments=self.segments)
 
 
@@ -248,7 +261,8 @@ def _peak(lags: np.ndarray, c: np.ndarray) -> tuple[float, float, float]:
 
 def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: float = 250., min_width: float = 60.,
             min_corr: float = 0.7, max_lag_kms: float = 150., telluric_depth: float = 0.3,
-            min_lines: int = 3, fwhm: float | None = None) -> SkyZeroPoint | None:
+            min_lines: int = 3, fwhm: float | None = None,
+            valid_range: tuple[float, float] | None = None) -> SkyZeroPoint | None:
     """
     Measure the wavelength zero point Δv(λ) from the OH sky lines
 
@@ -274,6 +288,10 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
         Minimum number of model lines in a segment with at least 10 per cent of the segment's strongest amplitude
     fwhm
         Sky-line FWHM [Å]; measured if None
+    valid_range
+        (wmin, wmax) [Å, observatory frame] where the wavelength solution is constrained (e.g. the range of the
+        arc lines); segments centred outside it are not used, so the curve is never anchored by an extrapolation
+        of the solution
 
     Returns
     -------
@@ -309,7 +327,9 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
         inseg = (lw >= lo) & (lw <= hi)
         n_lines = int(np.sum(inseg & (la >= 0.1 * la[inseg].max()))) if inseg.any() else 0
         idx = np.flatnonzero((w_all >= lo) & (w_all <= hi))
-        if n_lines < min_lines or len(idx) < 20:
+        if valid_range is not None and not valid_range[0] <= seg['centre'] <= valid_range[1]:
+            seg['reason'] = f'outside the calibrated range {valid_range[0]:.0f}-{valid_range[1]:.0f} Å'
+        elif n_lines < min_lines or len(idx) < 20:
             seg['reason'] = f'{n_lines} strong OH lines'
         else:
             lag, corr, curv = _peak(lags, _corr_curve(w_all[idx], d_all[idx], fwhm, lags))
@@ -417,6 +437,13 @@ def apply(spectrum: Spectrum, zp: Any = None, *, constant_kms: float = 0., const
                                          telluric=zp.as_dict() if zp is not None and kind == 'telluric' else None,
                                          dv_min=float(dv.min()), dv_max=float(dv.max()))
     return replace(spectrum, wave=new_wave, meta=meta)
+
+
+def curve_at(curve: dict, wave: float | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Δv and its error at `wave` from a curve's `as_dict()` (sky or telluric)"""
+    bounds = {int(k): tuple(v) for k, v in (curve.get('span_bounds') or {}).items()} or None
+    return _curve(wave, curve['node_wave'], curve['node_dv'], curve['node_err'], curve['node_span'],
+                  curve.get('inflate', 0.), bounds)
 
 
 def applied_dv(meta: Any, wave: float | np.ndarray) -> np.ndarray:

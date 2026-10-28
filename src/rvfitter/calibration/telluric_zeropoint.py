@@ -9,10 +9,12 @@ Method:
 1. Work in the observatory frame: a velocity correction applied to the wavelengths in the header (PypeIt
    `VEL_CORR`) and a barycentric correction applied by the pipeline (`meta['barycentric_applied_kms']`) are
    undone.
-2. Take the telluric bands of the feature catalogue (or the `telluric` regions given) that the packaged
-   transmission model (`telluric.model`) shows to be deeper than `min_depth` at the spectrum's airmass and
-   resolution, cut them into segments of at most `seg_width` Å, and pad each by `pad_resel` resolution elements
-   of continuum. Catalogue stellar lines (± `mask_resel` resolution elements) and bandhead edges are masked.
+2. Take the telluric bands of the feature catalogue (or the `telluric` regions given) that the HITRAN
+   transmission model (`telluric.model`, built into the user cache) shows to be deeper than `min_depth` at the
+   spectrum's airmass and resolution, cut them into segments of at most `seg_width` Å, and pad each by
+   `pad_resel` resolution elements of continuum. Catalogue bands whose Teff range excludes the target's `teff`
+   are skipped (O2 A below 2800 K, filled by the K I wings). Catalogue stellar lines (± `mask_resel` resolution
+   elements) and bandhead edges are masked.
 3. In each segment, fit the observed pixels with
 
        F(λ) = P(λ) · [T(λ / D(v); a_dry, a_H2O) ⊗ LSF],
@@ -33,8 +35,10 @@ Method:
    minimising the total χ² over R (a telluric-line estimate of the LSF).
 
 Δv(λ) is the piecewise-linear interpolation between the segment values (held constant beyond them), as for the
-sky; its error grows with the distance from the nearest node at the median node-to-node slope. `zp_kms` is the
-error-weighted mean over segments, with a Birge-inflated error.
+sky; its error grows with the distance from the nearest node at the median node-to-node slope. With
+`spread_templates`, each node's error also includes the spread of Δv over neighbouring stellar templates. `zp_kms`
+is only the error-weighted mean of the nodes (Birge-inflated error), a summary that is not "the" zero point when
+Δv varies across the spectrum; the systematics evaluate the curve at the measurements' wavelengths instead.
 
 Sign: positive Δv means the data's wavelengths are too large (too red), as for `sky_zeropoint`.
 """
@@ -126,15 +130,33 @@ class TelluricZeroPoint:
 
 
 # ------------------------------------------------------------------------------------------------ segments
-def _band_windows(regions: Sequence[Region] | None, lo: float, hi: float) -> list[tuple[float, float, str]]:
-    """Telluric bands (wmin, wmax, name) within [lo, hi]: the given telluric regions, else the catalogue's"""
-    if regions:
-        out = [(r.wmin, r.wmax, r.name) for r in regions if r.kind == 'telluric']
-        if out:
-            return [(max(a, lo), min(b, hi), n) for a, b, n in out if b > lo and a < hi]
+def _band_windows(regions: Sequence[Region] | None, lo: float, hi: float, teff: float | None = None
+                  ) -> list[tuple[float, float, str]]:
+    """
+    Telluric bands (wmin, wmax, name) within [lo, hi]: the given telluric regions, else the catalogue's
+
+    A catalogue band whose Teff range excludes `teff` is dropped (and logged): for a telluric band, the catalogue's
+    Teff range is where it is a safe zero-point reference (e.g. O2 A below 2800 K, where the K I resonance wings
+    fill the band and make the fitted Δv depend on the stellar template by tens of km/s).
+    """
     from ..features import features
-    return [(max(f.wmin, lo), min(f.wmax, hi), f.name) for f in features()
-            if f.kind == 'telluric' and f.wmax > lo and f.wmin < hi]
+    cat = {f.name: f for f in features()}
+    out = None
+    if regions:
+        out = [(r.wmin, r.wmax, r.name) for r in regions if r.kind == 'telluric'] or None
+    if out is None:
+        out = [(f.wmin, f.wmax, f.name) for f in cat.values() if f.kind == 'telluric']
+    keep = []
+    for a, b, n in out:
+        if not (b > lo and a < hi):
+            continue
+        f = cat.get(n)
+        if f is not None and not f.teff_ok(teff):
+            log.info('Telluric zero point: %s not used at Teff %.0f K (a safe reference only for %.0f-%.0f K: %s)', n,
+                     teff, f.teff_min, f.teff_max, f.caveat)
+            continue
+        keep.append((max(a, lo), min(b, hi), n))
+    return keep
 
 
 def _stellar_mask(wave: np.ndarray, resolution: float, mask_resel: float) -> np.ndarray:
@@ -400,8 +422,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
             airmass: float | None = None, pwv: float = telluric.DEFAULT_PWV, seg_width: float = 250.,
             pad_resel: float = 15., mask_resel: float = 5., degree: int = 2, min_depth: float = 0.05,
             max_lag_kms: float = 150., template: Any = None,
-            star_rv_range: tuple[float, float] = (-400., 400.), min_pixels: int = 20
-            ) -> TelluricZeroPoint | None:
+            star_rv_range: tuple[float, float] = (-400., 400.), min_pixels: int = 20, teff: float | None = None,
+            spread_templates: Sequence[Any] = ()) -> TelluricZeroPoint | None:
     """
     Measure the star's wavelength zero point Δv(λ) from the telluric absorption bands
 
@@ -438,12 +460,23 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
         Search range of the star's observatory-frame velocity with a template [km/s]
     min_pixels
         Minimum number of usable pixels in a segment
+    teff
+        The target's Teff [K] (e.g. the prior): catalogue bands that are not a safe reference at this Teff are
+        skipped (see `_band_windows`); None keeps every band
+    spread_templates
+        Alternative stellar templates (e.g. the neighbouring grid points in Teff); each used segment is refitted
+        with each, and the standard deviation of Δv over the templates (including `template`) is added in
+        quadrature to its error (`err_template`)
 
     Returns
     -------
     zp
-        The TelluricZeroPoint (unpacks as (zp_kms, zp_err)), or None if fewer than one segment is usable
+        The TelluricZeroPoint (unpacks as (zp_kms, zp_err)), or None if no segment is usable or the telluric model
+        has not been built (logged with the instruction to build it)
     """
+    if not telluric.available():
+        log.warning('Telluric zero point not measured: %s', telluric.unavailable_message())
+        return None
     ff = frame_factor(spectrum.meta)
     wave = spectrum.wave / ff
     flux, sigma = np.asarray(spectrum.flux, float), np.asarray(spectrum.sigma, float)
@@ -457,7 +490,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
     tm = telluric.model()
     lo_cov, hi_cov = max(float(wave[0]), tm.wmin), min(float(wave[-1]), tm.wmax)
     r_guess = resolution or spectrum.resolution or 3000.
-    bands = _band_windows(regions, lo_cov, hi_cov)
+    bands = _band_windows(regions, lo_cov, hi_cov, teff)
     pieces = []
     for a, b, name in bands:
         if b - a < 3 * a / r_guess:
@@ -500,6 +533,17 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
         if seg is None:
             continue
         res = _segment_fit(seg, resolution, airmass, pwv, min_depth, max_lag_kms, star_rv_range)
+        if res.get('used') and spread_templates and template is not None:
+            # template systematic of this node: refit with each alternative template
+            alts = []
+            for alt in spread_templates:
+                s2 = _Segment(seg.w_all, seg._f_all, seg._s_all, seg.use, alt, degree, max_lag_kms)
+                r2 = _segment_fit(s2, resolution, airmass, pwv, min_depth, max_lag_kms, star_rv_range)
+                if r2.get('used'):
+                    alts.append(float(r2['dv']))
+            spread = float(np.std([res['dv'], *alts], ddof=1)) if alts else 0.
+            res.update(err_fit=res['err'], err_template=spread, dv_templates=alts,
+                       err=float(np.hypot(res['err'], spread)))
         info.update(res)
         log.debug('  telluric segment %.0f-%.0f Å (%s): %+.1f ± %.1f km/s, χ²/ν %.2f, depths dry %.2f H2O %.2f%s, '
                   '%s', info['wmin'], info['wmax'], info['band'], info['dv'], info['err'],
@@ -523,46 +567,62 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
     zp = TelluricZeroPoint(x, v, e, meta_segs, ff, resolution, r_src, airmass,
                            template=getattr(template, 'label', None) if template is not None else None, zp_kms=mean,
                            zp_err=float(birge / np.sqrt(np.sum(w))), birge=birge, inflate=inflate,
-                           span_bounds={0: (float(min(s['wmin'] for s in meta_segs)),
-                                            float(max(s['wmax'] for s in meta_segs)))})
-    log.info('Telluric zero point: %+.1f ± %.1f km/s (weighted mean of %d of %d segments, Birge %.2f; %+.1f to '
-             '%+.1f km/s over %.0f-%.0f Å); R %.0f (%s)', zp.zp_kms, zp.zp_err, zp.n_used, len(meta_segs), birge,
-             v.min(), v.max(), x.min(), x.max(), resolution, r_src)
+                           span_bounds={0: (float(min(s['wmin'] for s in used)),
+                                            float(max(s['wmax'] for s in used)))})
+    log.info('Telluric zero point: Δv(λ) %+.1f to %+.1f km/s over %.0f-%.0f Å from %d of %d segments (node-weighted '
+             'mean %+.1f ± %.1f km/s, Birge %.2f; not a single zero point when Δv varies); R %.0f (%s)', v.min(),
+             v.max(), x.min(), x.max(), zp.n_used, len(meta_segs), zp.zp_kms, zp.zp_err, birge, resolution, r_src)
     return zp
+
+
 
 
 def star_minus_sky(tell: TelluricZeroPoint, sky: Any) -> dict:
     """
-    The star − sky zero-point constant from the telluric segments and the sky curve at their centres
+    The star − sky zero-point constant from the telluric nodes that lie inside the sky's measured range
 
-    Each telluric node gives d_i = Δv_tell,i − Δv_sky(λ_i) with error √(σ_tell,i² + σ_sky(λ_i)²) (the sky error
-    grows away from its nodes, so segments in unmeasured sky gaps carry little weight). The constant is the
-    weighted mean, its error Birge-inflated; the χ² against a constant tests whether the star sees the same
-    distortion as the sky.
+    Only a telluric node whose wavelength falls inside a used (measured) sky segment is compared: there the sky
+    value is a measurement, not an interpolation across an unmeasured gap, a value held flat beyond the last node
+    or a ramp towards an edge node. Each such node gives d_i = Δv_tell,i − Δv_sky(λ_i), with error
+    √(σ_tell,i² + σ_sky(λ_i)²). The constant is their weighted mean, its error Birge-inflated, with the sky curve's
+    model spread (the spread of reasonable curve models, as in `zp_sky_model_spread`) added in quadrature; the χ²
+    against a constant tests whether the star sees the same distortion as the sky (with two or more nodes).
 
     Returns
     -------
     info
-        {'zp_star_sky', 'zp_star_sky_err', 'chi2', 'dof', 'birge', 'nodes': [...]} (NaN if nothing overlaps)
+        {'zp_star_sky', 'zp_star_sky_err', 'n_nodes', 'chi2', 'dof', 'birge', 'reason', 'nodes': [...]}; the
+        constant and its error are NaN when no node lies in the measured sky range (`reason` says why)
     """
     lam = np.asarray(tell.node_wave, float)
     s_dv = np.asarray(sky.dv(lam), float)
     s_err = np.asarray(sky.dv_err(lam), float)
+    measured = [(float(s['wmin']), float(s['wmax'])) for s in getattr(sky, 'segments', []) if s.get('used')]
+    inside = np.array([any(a <= x <= b for a, b in measured) for x in lam], dtype=bool)
     d = tell.node_dv - s_dv
     e = np.hypot(tell.node_err, s_err)
-    ok = np.isfinite(d) & np.isfinite(e) & (e > 0)
+    ok = inside & np.isfinite(d) & np.isfinite(e) & (e > 0)
     nodes = [dict(wave=float(lam[i]), tell=float(tell.node_dv[i]), tell_err=float(tell.node_err[i]),
-                  sky=float(s_dv[i]), sky_err=float(s_err[i]), diff=float(d[i]), err=float(e[i]))
+                  sky=float(s_dv[i]), sky_err=float(s_err[i]), diff=float(d[i]), err=float(e[i]),
+                  sky_measured=bool(inside[i]), used=bool(ok[i]))
              for i in range(len(lam))]
     nan = float('nan')
     if not ok.any():
-        return dict(zp_star_sky=nan, zp_star_sky_err=nan, chi2=nan, dof=0, birge=nan, nodes=nodes)
+        reason = (f'none of the {len(lam)} telluric node(s) ({", ".join(f"{x:.0f}" for x in lam)} Å) lies inside a '
+                  f'measured sky segment ({", ".join(f"{a:.0f}-{b:.0f}" for a, b in measured) or "none"} Å)')
+        log.info('Star - sky zero point not measured: %s', reason)
+        return dict(zp_star_sky=nan, zp_star_sky_err=nan, n_nodes=0, chi2=nan, dof=0, birge=nan, reason=reason,
+                    nodes=nodes)
     w = 1. / e[ok] ** 2
     mean = float(np.sum(w * d[ok]) / np.sum(w))
     chi2 = float(np.sum(w * (d[ok] - mean) ** 2))
     dof = int(ok.sum()) - 1
     birge = float(np.sqrt(max(1., chi2 / dof))) if dof > 0 else 1.
-    err = float(birge / np.sqrt(np.sum(w)))
-    log.info('Star - sky zero point: %+.1f ± %.1f km/s over %d telluric segment(s) (χ² %.1f for %d dof)', mean, err,
-             int(ok.sum()), chi2, dof)
-    return dict(zp_star_sky=mean, zp_star_sky_err=err, chi2=chi2, dof=dof, birge=birge, nodes=nodes)
+    spread = getattr(sky, 'model_spread', nan)
+    spread = float(spread) if spread is not None and np.isfinite(spread) else 0.
+    err = float(np.hypot(birge / np.sqrt(np.sum(w)), spread))
+    log.info('Star - sky zero point: %+.1f ± %.1f km/s from %d telluric node(s) inside the measured sky range (%d '
+             'outside it not used; χ² %.1f for %d dof; sky model spread %.1f km/s included)', mean, err,
+             int(ok.sum()), int((~inside).sum()), chi2, dof, spread)
+    return dict(zp_star_sky=mean, zp_star_sky_err=err, n_nodes=int(ok.sum()), chi2=chi2, dof=dof, birge=birge,
+                reason='ok', nodes=nodes)

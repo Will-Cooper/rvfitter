@@ -32,7 +32,7 @@ from ..constants import C_KMS
 from ..types import Measurement, MethodResult, Region, Spectrum
 from . import _common as C
 
-__all__ = ['measure', 'DEFAULTS', 'prior_template']
+__all__ = ['measure', 'DEFAULTS', 'prior_template', 'neighbour_templates']
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +76,34 @@ def prior_template(cfg: Any, resolution: float, wave_range: tuple[float, float],
     return C.build_template(best, resolution, wave_range)
 
 
+def neighbour_templates(cfg: Any, resolution: float, wave_range: tuple[float, float], nominal: Any,
+                        opts: dict | None = None) -> list:
+    """
+    The grid points one step below and above the nominal template's Teff (other parameters equal), at
+    `resolution`: the alternatives whose spread is a node's template systematic. Empty for a given template.
+    """
+    try:
+        cands = C.candidates(cfg, dict(opts or {}))
+    except ValueError:
+        return []
+    nom = next((c for c in cands if c.label == getattr(nominal, 'label', None)), None)
+    if nom is None or not nom.param_dict or 'teff' not in nom.param_dict:
+        return []
+    p0 = nom.param_dict
+    same = [c for c in cands if c.param_dict and all(c.param_dict.get(k) == v for k, v in p0.items() if k != 'teff')]
+    lower = [c for c in same if c.param_dict['teff'] < p0['teff']]
+    upper = [c for c in same if c.param_dict['teff'] > p0['teff']]
+    out = []
+    for group, pick in ((lower, max), (upper, min)):
+        if group:
+            c = pick(group, key=lambda c: c.param_dict['teff'])
+            try:
+                out.append(C.build_template(c, resolution, wave_range))
+            except Exception as exc:  # noqa: BLE001 - a missing neighbour only narrows the spread estimate
+                log.debug('neighbour template %s unavailable: %s', c.label, exc)
+    return out
+
+
 def _frame_kms(meta: Any) -> float:
     """The velocity [km/s] of the wavelength corrections already applied (header and pipeline)"""
     f = telluric_zeropoint.frame_factor(meta)
@@ -105,6 +133,12 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         errors and correlation, χ²/ν and the τ scalings
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
+    from ..calibration import telluric
+    if not telluric.available():
+        log.warning('telluric_ref skipped: %s', telluric.unavailable_message())
+        diag = {'reason': 'telluric model unavailable'}
+        meas = Measurement(METHOD, 'telluric model unavailable', np.nan, np.nan, C.FLAG_FIT_FAILED, diag)
+        return MethodResult(METHOD, np.nan, np.nan, 0, [meas])
     if C.section(cfg, 'input').get('telluric_corrected'):
         log.warning('telluric_ref: the input is telluric-corrected; the telluric lines it relies on may be gone')
     resolution = C.resolution_of(spectrum, cfg, opts)
@@ -118,7 +152,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
     zp = telluric_zeropoint.measure(spectrum, tell or None, resolution=resolution, template=template,
                                     seg_width=opts['seg_width'], degree=opts['degree'], min_depth=opts['min_depth'],
                                     max_lag_kms=opts['max_lag_kms'],
-                                    star_rv_range=(opts['star_rv_min'], opts['star_rv_max']))
+                                    star_rv_range=(opts['star_rv_min'], opts['star_rv_max']),
+                                    teff=C.section(cfg, 'templates').get('teff_prior'))
     if zp is None:
         return MethodResult(METHOD, np.nan, np.nan, 0, [])
     v_frame = _frame_kms(spectrum.meta)
