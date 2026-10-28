@@ -79,24 +79,27 @@ class ObjectResult:
 | Module | Public functions / classes | Package |
 |---|---|---|
 | `constants`, `medium`, `types` | as above | P0 (orchestrator) |
-| `io` | `read_spectrum(path, *, medium="auto", hdu=None, columns=None, resolution=None) -> Spectrum`; `register_reader(name, sniff, read)` | P1 |
+| `io` | `read_spectrum(path, *, medium="auto", medium_method="ciddor", hdu=None, columns=None, resolution=None) -> Spectrum`; `register_reader(name, sniff, read)`; `find_wvcalib(path)`, `arc_line_range(wvcalib, extname=None)` | P1 |
 | `archives` | `collect_inputs(path) -> list[Path]` (file, directory, zip or tar; safe extraction to a temporary directory); `group_by_object(spectra, override=None) -> dict[str, list[Spectrum]]` | P1 |
 | `config` | `Config` (dataclass tree), `load(path) -> Config`, `dump(cfg, path)`, `default_for(spectrum) -> Config` (regime defaults by R and band), `Config.hash()` | P1 |
 | `results` | `to_table(results: list[ObjectResult]) -> pandas.DataFrame` (one row per object; `rv_<method>`, `rv_<method>_err`, `rv_<method>_flag`, `rv_adopted*`, `rv_mean`, `rv_spread`, barycentric columns); `details_table(...)`; `write(results, path, formats)` (csv, json, tsv, html) | P2 |
 | `logging_setup` | `configure(verbosity, logfile) -> None` (console handler to stdout, file handler at DEBUG) | P2 |
 | `cli` | `main(argv=None)`; subcommands init, run, measure, inject, forecast, templates, gui, doctor | P2 |
-| `pipeline` | `run(cfg, inputs, *, n_procs) -> list[ObjectResult]` (objects processed sequentially, a process pool within each object); `measure_object(spectra, cfg, executor, rng) -> ObjectResult` | P2 skeleton → M |
+| `pipeline` | `run(cfg, inputs=None, *, n_procs, medium, methods, bary, on_object, cancel) -> list[ObjectResult]` (objects processed sequentially, a process pool within each object); `measure_object(spectra, cfg, executor, rng, *, name, methods, bary, cancel) -> ObjectResult`; `wavelength_correction(raw, spec, cfg, name, regions) -> (Spectrum, dict)`; `suggested_refits(result) -> list[dict]`; `refit_object(result, cfg, cfg_patch, *, inputs, n_procs, medium, methods, bary) -> (ObjectResult, Config)`; `apply_patch(cfg, cfg_patch) -> Config`; `config_for_object(cfg, name)`; `object_seed(seed, name)` | P2 → M |
 | `barycentric` | `correction(spectrum, mode="auto", frame="barycentric", overrides=None) -> (kms, source)`; `apply(spectrum, kms) -> Spectrum` | P3 |
 | `features` | `load_catalogue() -> Table`; `Feature` records with vacuum λ, species, kind, teff_range, r_min, caveats, ref | P3 |
 | `regions` | `select(spectrum, *, teff=None, methods, overrides=None) -> dict[method, list[Region]]` | P3 |
-| `gui.app` | `main()`; calls only `config`, `archives`, `pipeline`, `results` and `plotting` | P4 |
-| `templates` | `TemplateGrid` (`.get(teff, logg, met) -> Spectrum`, interpolated), `download(grid, ranges)`, `verify_medium(grid)`, cache via platformdirs | M |
+| `gui.app` | `main()`; calls only `config`, `archives`, `pipeline`, `results`, `plotting` and `templates` (through `gui.backend`) | P4 |
+| `templates` | `TemplateGrid` (`.get(teff, logg, met, ...) -> Spectrum`, N-D multilinear), `KNOWN_GRIDS`, `download(grid, teff_range, logg_range, met_range, alpha_range, *, ranges, directory, fetch, verify, source="auto") -> TemplateGrid`, `verify_medium(grid)`, `cli_main(argv)`; cache via platformdirs | M |
+| `grid_sources` | Zenodo grids (Sonora Bobcat, Diamondback, Elf Owl; SAND): `ZENODO_GRIDS`, `download_zenodo(grid, want, directory, *, axes, write)`, `provenance(grid)`, `record_files(record)`; used by `templates.download` | M |
 | `broadening` | `instrumental(spec, R)`, `rotational(spec, vsini, epsilon)`, `doppler_shift(spec, v)` | M |
-| `calibration.telluric` | `transmission(wave, airmass, pwv)`, `mask(wave, threshold)` | M |
-| `calibration.telluric_zeropoint` | `measure(spectrum, regions) -> (dv, err)` | M |
+| `calibration.telluric` | `model()`, `available()`, `cache_path()`, `transmission(wave, airmass=1., pwv=, *, resolution=None, dv=0.) -> ndarray`, `mask(wave, threshold=0.05, *, airmass, pwv, resolution) -> bool ndarray`; the HITRAN-derived model is built into the user cache (`templates telluric --build`), never shipped; raises `TelluricModelUnavailable` without it | M |
+| `calibration.sky_zeropoint` | `measure(spectrum, *, sky=None, seg_width=250., ..., valid_range=None) -> SkyZeroPoint \| None` (OH sky lines, local Δv(λ)); `apply(spectrum, zp=None, *, constant_kms=0., constant_err=nan)`; `applied_dv(meta, wave)`, `curve_at(curve, wave)` | M |
+| `calibration.telluric_zeropoint` | `measure(spectrum, regions=None, *, resolution, airmass, pwv, seg_width, ..., template=None, teff=None, spread_templates=()) -> TelluricZeroPoint \| None` (unpacks as `(zp, err)`; `.dv(λ)`); `star_minus_sky(tell, sky) -> dict` | M |
+| `methods.telluric_ref` | `measure(spectrum, regions, cfg, *, executor, rng)`: v_star − v_tell per telluric segment; `prior_template`, `neighbour_templates` | M |
 | `methods.*` | each method: `measure(spectrum, regions, cfg, *, executor, rng) -> MethodResult` | M |
 | `combine` | `combine_regions(measurements) -> (rv, err)` (Birge), `hierarchical(values, errors, line_ids, method_ids, ...) -> dict` (ported from legacy, Woodbury) | M |
-| `systematics` | `template_spread(...)`, `wavelength_zero_point(spectrum)` | M |
+| `systematics` | `template_spread(spectrum, regions, cfg, *, executor, rng)`, `template_spread_details(...)`, `wavelength_zero_point(spectrum, cfg, *, wave=None)` | M |
 | `plotting` | `style_context()`, `plot_line_fits`, `plot_ccf`, `plot_adopted`, `plot_corner` | M (+P4 embeds) |
 
 **Packages:**
@@ -143,3 +146,25 @@ class ObjectResult:
 - **pipeline.run** gains `on_object: Callable[[ObjectResult], None] | None = None` (called after each object) and `cancel: threading.Event | None = None` (checked between objects and between methods; on cancel, return the results so far). Pass `cfg.regions.overrides` to `regions.select` and `cfg.combine.tau_scale` to `combine.hierarchical`. Add `cfg.combine.systematic_floor` in quadrature to `rv_total_err`.
 - **Plotting:** `plotting.plot_line_fits`, `plot_ccf`, `plot_corner` and `plot_adopted` have the signature `fn(result: ObjectResult) -> matplotlib.figure.Figure`. Methods must therefore store in `Measurement.diagnostics` what their plots need (arrays as lists or ndarrays).
 - **Output:** the GUI uses `cfg.output.path` and `cfg.output.formats`, as named in the first addendum.
+
+### Addendum 3 (current signatures; refits, zero points and templates)
+- **Keywords**
+  - `systematics.wavelength_zero_point(spectrum, cfg, *, wave=None)`: `wave` is the array of wavelengths at which the RVs were measured. The zero-point term is the RMS of the curve's Δv over them (the arc-RMS term alone if `wave` is None).
+  - `calibration.telluric_zeropoint.measure(..., teff=None, spread_templates=())`: `teff` selects the catalogue's telluric nodes by `teff_min`/`teff_max` (O2 A is not a node below 2800 K); `spread_templates` are alternative stellar templates, and the spread of the node velocities between them is added to each node's error.
+  - `io.read_spectrum(..., medium_method=)` selects the air to vacuum formula (`cfg.input.medium_method`).
+- **PypeIt input**
+  - Pixels masked in `OPT_MASK` (`BOX_MASK` for box extraction) are dropped.
+  - `io.find_wvcalib` looks for `wvcalib*.fits` or `WaveCalib*.fits` beside the file, in `Calibrations/`, and up to three parents.
+  - `Spectrum.meta['arc_range']` is the span of the `wave_fit` arc lines in vacuum Å (converted like the spectrum if it was read as air), with `meta['arc_file']`.
+  - `calibration.wave_valid_range`, when unset, takes this value (INFO-logged); a configured value always wins.
+- **Calibration modules**
+  - `sky_zeropoint` measures Δv(λ) per segment of telluric-free OH lines; `valid_range` drops segments centred outside the arc range.
+  - `telluric` and `telluric_zeropoint` give the star's own Δv(λ) from the telluric bands. `star_minus_sky` gives the slit-centring constant `zp_star_sky`.
+  - `pipeline.wavelength_correction` chooses what to apply from `cfg.calibration.wavelength_correction` (`sky-if-needed` | `sky` | `auto` | `telluric` | `none`) and returns the zero-point record stored in `ObjectResult.barycentric` (`wavelength_correction*`, `zp_flags`; see `pipeline.ZP_FLAGS`).
+  - `methods.telluric_ref` uses the telluric curve as a velocity reference: one RV per telluric segment.
+- **`grid_sources`:** each `ZENODO_GRIDS[name]` is a `ZenodoGrid` (record ids, file selector, name parser, reader, DOI, citation). `download_zenodo` streams the files by HTTP range or tar.gz, checks MD5/CRC, writes through a `.part` file and rolls back on error. `templates.download(source="auto")` tries SVO, then Zenodo.
+- **Refits**
+  - `pipeline.suggested_refits(result) -> list[dict]` reads the edge guidance (`template_summary['edges']`, behind the flags `template_param_edge`, `template_grid_edge` and `template_grid_hole`) of the measurements. Each dict has `method`, `axis`, `direction`, `action` (`widen` | `download` | `none`), `message`, `cfg_patch`, `download` (keyword arguments for `templates.download`, or None) and `command` (the CLI equivalent).
+  - `pipeline.apply_patch(cfg, cfg_patch) -> Config` deep-merges a patch into a copy of `cfg` and validates it.
+  - `pipeline.refit_object(result, cfg, cfg_patch, *, inputs=None, n_procs=1, ...) -> (ObjectResult, Config)` re-measures one object. The returned Config has `{"object", "patch"}` appended to `refits` (written as `[[refits]]` by `config.dump`), and `run` applies it to that object only (`config_for_object`). The seed is `object_seed(seed, name)`, so the written TOML reproduces the refit. The new result has `refitted = True`.
+  - The GUI ("Download grid & refit", through `gui.backend.Backend.suggested_refits` and `.refit`) runs `templates.download(**s["download"])` when set, then `refit_object`, in a worker thread. It replaces the object's row and keeps the new Config as the session config, so "Save analysis" writes the `[[refits]]`.
