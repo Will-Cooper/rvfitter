@@ -1,6 +1,6 @@
 # Developer notes: methods package (M)
 
-## Handoff (state at 348d396)
+## Handoff (state at unit5-telluric)
 
 **Modules (public API):**
 - `broadening`: `doppler_factor`, `shift_wave`, `doppler_shift`, `log_wave_grid`, `rebin` (flux-conserving), `resample`, `gaussian_kernel`, `rotation_kernel` (Gray), `convolve`, `broaden_loglam`, `instrumental(spec, R | R(λ) | table)`, `rotational(spec, vsini, ε)`.
@@ -9,9 +9,12 @@
 - `grid_sources`: Zenodo records for Bobcat, Diamondback, Elf Owl and SAND; zip members fetched by HTTP range, tar.gz streamed with MD5.
 - `methods/_common`: options, regions, `Prepared`/`prepare`, `Template.at` (pixel-integrated), `candidates`/`open_grid`/`build_template`, `template_summary` (best params, edges, guidance), `segment`, `finish` (random effects + outlier rejection), flags.
 - `methods/ccf`, `methods/template_fit`: `measure(spectrum, regions, cfg, *, executor, rng)`. `template_fit` also has `measure_resolution` and `estimate_resolution`. `methods.REGISTRY[name]` is callable and has `.measure`.
-- `calibration/sky_zeropoint`: `measure` (OH sky, local per-span Δv(λ)), `apply`, `applied_dv`, `oh_lines`, `model_sky`. `calibration/telluric*.py` are still stubs.
+- `calibration/sky_zeropoint`: `measure` (OH sky, local per-span Δv(λ)), `apply` (any curve: sky or telluric, plus a constant), `applied_dv`, `oh_lines`, `model_sky`.
+- `calibration/telluric`: `model()` (HITRAN, vacuum, 6000–25 000 Å, τ_dry and τ_H2O), `transmission(wave, airmass, pwv, resolution=, dv=)`, `mask(wave, threshold)`.
+- `calibration/telluric_zeropoint`: `measure(spectrum, regions, resolution=, template=)` → `TelluricZeroPoint` (unpacks as (zp, err); `dv(λ)`), `star_minus_sky(tell, sky)`, `frame_factor`.
+- `methods/telluric_ref`: v_star − v_tell per telluric segment (`prior_template`).
 - `systematics`: `template_spread(_details)` (templates, grids, window modes), `wavelength_zero_point` (max of the arc RMS and the sky term).
-- `pipeline` (shared): `wavelength_correction`, `epoch_labels`, `refit_object`, `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
+- `pipeline` (shared): `wavelength_correction` (sky, telluric, auto), `epoch_labels`, `refit_object`, `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
 - `plotting`, `methods/{linecentre,forward,lsd,binary}`: not started.
 
 **Decisions in force:**
@@ -19,18 +22,22 @@
 - Several epochs: regions become `<epoch>:<region>`, with a χ² variability test (`rv_epoch_pvalue`; variable when p < 0.001).
 - `results.FLAGS`: fit_failed 1, few_regions 2, error_floor 4, template_grid_edge 8, telluric_contaminated 16, not_converged 32, poor_fit 64, outlier 128, template_param_edge 256, template_grid_hole 512. `EXCLUDE_FLAGS` = 1 | 2 | 32 | 128.
 - Template-method windows come from the catalogue's `model_fidelity` (`regions.template_windows = "features"` by default at R ≤ 5000; "full" for every span). H2O stays masked for spans even when telluric-corrected.
-- `calibration.wavelength_correction` defaults to "none": the sky zero point is measured and reported (zp_sky_*, counted in full in sys_wavezp when unapplied); "sky"/"auto" apply it. `zp_star_sky` is NaN until the telluric term exists.
+- `calibration.wavelength_correction` defaults to "none": the sky zero point is measured and reported (zp_sky_*, counted in full in sys_wavezp when unapplied). "sky" applies the sky curve, "telluric" the star's telluric curve, "auto" the sky shape plus the star − sky constant (`zp_star_sky`) when both exist, else whichever exists. The telluric term is measured for "telluric"/"auto" or whenever `calibration.telluric_source` is set (the object best matching the input is used).
 - Seeds are `SeedSequence([seed, blake2b(object name)])`. `[[refits]]` patches apply only to their object.
 - Nothing is ever tuned to the J1745 benchmark; choices are fixed before looking.
 
-**J1745 (feature windows, R 2602, BT-Settl, sky from the Science spec1d), at 348d396:**
+**J1745 (feature windows, R 2602, BT-Settl, sky from the Science spec1d, tellurics from the nopipecorr spec1d HDU 2), unit 5:**
 
 | Correction | CCF | Template fit | Adopted (τ_line) | Total error |
 |---|---|---|---|---|
 | none | 36.6 ± 4.7 (z 2.00) | 39.3 ± 5.9 (z 2.07) | 37.7 ± 5.0 (8.3), z 2.08 | 23.4 (sys_wavezp 21.7) |
 | sky | 18.9 ± 3.2 (z 1.83) | 18.9 ± 3.4 (z 1.77) | 18.9 ± 3.3 (2.0), z 1.81 | 9.5 |
+| telluric | 58.4 ± 5.9 (z 5.08) | 59.7 ± 6.2 (z 5.04) | 58.9 ± 5.5 (10.2), z 5.46 | 10.5 |
+| auto (sky + star − sky −10.2 ± 14.2) | 29.1 ± 3.2 (z 0.72) | 29.3 ± 3.3 (z 0.77) | 29.1 ± 3.3 (2.0), z 0.73 | 17.1 |
 
-The z values use the statistical errors. Sky-correcting collapses τ_line, a benchmark-free check, but it does not fix the star's absolute zero point.
+telluric_ref (nopipecorr spec1d, HDU 2): 47.5 ± 7.7 km/s (z 2.65).
+
+The z values use the statistical errors. Sky-correcting collapses τ_line, a benchmark-free check; the star's tellurics show it sits 10–20 km/s bluer than the sky (see Unit 5).
 
 **Open items, in order:**
 1. Zenodo fixes (reviewer-p, `review_unit3b_fix.md`):
@@ -39,11 +46,7 @@ The z values use the statistical errors. Sky-correcting collapses τ_line, a ben
    - record the licence, record/DOI and citation in the metadata and manifest, and print them;
    - a `refitted` results column;
    - mocked tests.
-2. Unit 5: `calibration/telluric.py` and `telluric_zeropoint.py`, plus the `telluric_ref` method.
-   - Measure the star's own Δv(λ) from O2 A/B and H2O (8100–8350 and 8900–9800 Å) in the non-corrected `sciencebk/nopipecorr` spec1d (observatory frame).
-   - Ship a vacuum, verified, redistributable transmission model.
-   - Compare it with the sky segment by segment, and report the star − sky offset, the telluric-only RVs and the sky + telluric RVs.
-   - Then fill `zp_star_sky` and implement the telluric part of "auto".
+2. Unit 5 follow-ups: P1 should make `io.read_spectrum` choose (or warn about) the object of multi-object PypeIt spec1d files and apply `OPT_MASK`; the HITRAN redistribution question (below) needs the orchestrator's decision; `template_fit`'s `telluric_model` option can now use `calibration.telluric`.
 3. Unit 4: `methods/linecentre.py`.
 4. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
 5. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
@@ -59,6 +62,8 @@ The z values use the statistical errors. Sky-correcting collapses τ_line, a ben
 - `Spectrum.sky` is optional. The tellcorr coadd has no sky: set `calibration.sky_source` to its spec1d.
 - Config `methods.options` keys are validated against each method's `DEFAULTS`; unknown keys raise.
 - In this worktree, chained shell commands with `cd` and heredocs are sometimes refused: write scripts to `tmp/m/` and run them.
+- PypeIt spec1d files hold one table per object in the slit. `io.read_spectrum` takes the first: for J1745 that is SPAT0168 (S/N 17), not the target SPAT0240 (HDU 2, S/N 86). The sky curve is the same at either trace (within 1 km/s with the FWHM fixed), but the sky FWHM estimate fails on HDU 2's sky, so `sky_source` still reads HDU 1. Telluric sources are matched to the input object.
+- io does not apply PypeIt's `OPT_MASK`: J1745 HDU 2 has a masked pixel at flux/σ = −24 745; the telluric fit clips such pixels (5 × robust scatter).
 
 
 Here, we record the design decisions, validation and J1745−1640 results of the methods package (`broadening`, `combine`, `templates`, `calibration/*`, `methods/*`, `systematics`, `plotting`).
@@ -418,3 +423,69 @@ Through `pipeline.run`: tellcorr input, sky from the Science spec1d, R = 2602, f
   - `sky_source` coverage warning;
   - README credit for the PypeIt and NIST data;
   - these notes now state which segmentation produced which numbers.
+
+
+## Unit 5: telluric zero point and telluric_ref
+
+### Transmission model (`calibration/telluric.py`, `data/telluric_hitran.npz`, 1.1 MB)
+- `tools/build_telluric_model.py` fetches HITRAN line-by-line data (H2O, CO2, O2, CH4; vacuum wavenumbers) from the HITRANonline API (fetched 2026-10-28; the API's Content-Length counts CRLF but it sends LF, and it answers 404 for empty intervals, both handled), and integrates them through a US Standard 1976 atmosphere above a 2.4 km site: dry gases in 24 layers, H2O with a 1.5 km scale height normalised to 1 mm PWV. It uses Voigt profiles with the air pressure shift, and wings cut at τ < 10⁻³ or 25 cm⁻¹.
+- The zenith τ_dry and τ_H2O are stored at R_s = 300 000 (computed at 1.2 M, equivalent-width-preserving averages), 6000–25 000 Å. T = exp(−X(τ_dry + w·τ_H2O)).
+- **Vacuum check:** at R = 20 000, the O2 A and B blue edges lie 1.0–1.3 Å redward of the Fraunhofer A/B lines in vacuum, and 2.8–3.4 Å from the air values (tested). An independent ESO SkyCalc/LBLRTM transmission (splat resources; vacuum; airmass 3, R = 60 000) agrees within 0.2 km/s in O2 B, O2 A, H2O 8200 and both halves of H2O 9300 (cross-correlation peaks 0.96–0.997).
+- **Licence:** HITRAN states no redistribution licence; it is free and must be cited (citepolicy, read 2026-10-28). We ship only the derived transmission, with the citation in its metadata and the README. **The orchestrator should confirm this is acceptable**; the alternative is to build it into the cache on first use with the same script.
+- Omitted: O3, N2O, collision-induced and continuum absorption, Rayleigh and aerosols (smooth; absorbed by the continuum polynomial).
+
+### Zero point (`calibration/telluric_zeropoint.py`)
+- Observatory frame: `VEL_CORR` and the pipeline's barycentric shift (now recorded as `meta['barycentric_applied_kms']`) are undone.
+- Segments: the catalogue's telluric bands, cut into ≤250 Å pieces in ln λ and padded by 15 resolution elements. A segment is used if a species is deeper than 5 per cent in the model.
+- Model: P₂(λ) · [T(λ/D(v); a_dry, a_H2O) ⊗ LSF], averaged over the contiguous pixels (masked pixels are dropped from χ², not from the pixel edges). The deep species' τ scalings are free. One round of 5σ (robust) clipping is applied.
+  - Without a template, catalogue stellar lines are masked (±5 resolution elements).
+  - With a template (default in the pipeline when templates are configured: the grid point nearest the priors), the star is modelled as S(λ/D(v_star)) with v_star free, and nothing is masked.
+- Errors come from the χ² curvature of the velocity profile (scalings re-optimised; a quadratic surface for (v, v_star)), multiplied by √max(1, χ²/ν). Δv(λ) is piecewise linear between the segment nodes (one span), and `zp_kms` is the Birge-inflated weighted mean.
+- Without a known R, R is estimated from the telluric lines: 2555 for a synthetic R = 2500, and 2212 on J1745 (the methods use 2602; both are within the earlier ±15 per cent spread).
+- **Tests:** a constant + linear distortion is recovered per segment within 3.5σ, in both frames. The R estimate, the star − sky constant (12 km/s injected), the pipeline modes and telluric_ref (RV 30 km/s through −21 km/s VEL_CORR and the distortion) are tested.
+  - Slow pull test, N = 30 at SNR 60: passes for a constant zero point and for constant + distortion.
+  - With a distortion, a segment measures the information-weighted mean of Δv over its pixels ((dT/dλ)² weights), not Δv at its centre. Against the centre, the pull SD was 1.95, because the 9300 Å segments' information is lopsided. The same caveat applies when the telluric nodes are compared with the sky curve, at the level of a few km/s for J1745's slopes.
+
+### Pipeline
+- `calibration.telluric_source` (+ `telluric_segment_width`, `telluric_template`) takes a non-corrected file. Its object is matched to the input by the high-pass flux correlation minus |ln flux ratio| outside the telluric bands. On J1745 and Ross 640 this picks HDU 2 (scores 0.21 against −1.93, and 0.93 against −0.44).
+- `star_minus_sky`: the weighted mean of Δv_tell − Δv_sky(λ) over the telluric nodes, with the sky curve's distance-inflated error, so nodes in unmeasured sky gaps carry little weight. It is Birge-inflated, and its χ² tests "same shape + constant".
+- New results columns: `zp_tell_kms`, `zp_tell_err`, `zp_star_sky` and `zp_star_sky_err`.
+- `sys_wavezp` is:
+  - the sky error ⊕ the constant's error for "auto";
+  - the telluric curve's error for "telluric";
+  - otherwise the unapplied telluric offset when it was measured, else the sky's.
+
+### J1745: star (tellurics) against sky
+Telluric fits on nopipecorr spec1d HDU 2 (the target), with the 2100/5.0 template, R 2602 and airmass 1.88. The sky comes from the Science spec1d (HDU 1).
+All choices (segments, padding, degree, depth threshold, the template rule, and "auto" = sky shape + weighted constant) were fixed before any RV was computed.
+
+| Telluric segment [Å] | Δv_tell [km/s] (χ²/ν) | Δv_sky(λ) [km/s] | Sky there |
+|---|---|---|---|
+| O2 A 7592–7702 | −44.4 ± 11.5 (56) | −59 ± 13 | ramp between the blue-edge node (−132) and 7827 Å |
+| H2O 8122–8352 | −6.0 ± 5.5 (66) | +13.6 ± 4.1 | measured span |
+| H2O 8952–9181 | −39.7 ± 3.8 (126) | +7 ± 13 | unmeasured gap |
+| H2O 9181–9416 | −55.3 ± 2.2 (122) | −23 ± 25 | gap |
+| H2O 9416–9656 | −47.0 ± 1.4 (52) | −55 ± 27 | gap |
+| H2O 9656–9903 | −21.5 ± 3.2 (44) | −87 ± 15 | gap |
+
+- **zp_star_sky = −10.2 ± 14.2 km/s** (χ² 37.4 for 5 dof). The one segment inside the sky's measured span gives −19.6 ± 6.9 km/s.
+- A smooth-star fit (no template; stellar lines masked; R 2213 from the tellurics) gives −39, −5, −34, −54, −44 and −17 km/s, i.e. the same within 1–6 km/s. Template mismatch does not drive Δv_tell.
+- **The star does not see "the sky's distortion plus a constant".** Over 8950–9900 Å the tellurics are nearly flat (−22 to −55 km/s), where the sky's ramp, which is only an interpolation across its gap, runs from +22 to −103. Where both are measured (8200 Å), the star is about 20 km/s bluer than the sky. The fits' χ²/ν of 44–126 at S/N ≈ 90 show that the model is imperfect (one PWV profile, a Gaussian LSF, BT-Settl mismatch), so the errors are Birge-inflated.
+- Control: Ross 640 (DZ white dwarf, 2.52″ slit, HDU 2; smooth model) gives Δv_tell from −35 to −88 km/s and a star − sky of −26 ± 14 km/s (−43 ± 15 at 8200 Å). Its own sky gives +18 km/s.
+  - The first object of each spec1d (SPAT0168 in J1745's file) gives +17 to +91 km/s.
+  - Different objects in the same slit therefore have very different zero points, as off-centre point sources should. The slit-centring term is real and large here (1″ ≈ 190 km/s at R2500I with 2 × 2 binning).
+
+**RVs (stat. z; methods ccf + template_fit, adopted = hierarchical):**
+
+| wavelength_correction | Adopted [km/s] | z | Total error |
+|---|---|---|---|
+| none | 37.73 ± 5.03 | 2.08 | 45.3 (sys_wavezp 44.4 = unapplied telluric offset) |
+| sky | 18.88 ± 3.32 | 1.81 | 9.5 |
+| telluric | 58.86 ± 5.52 | 5.46 | 10.5 |
+| auto | 29.14 ± 3.29 | 0.73 | 17.1 |
+
+- "telluric" alone is not usable for these lines. Inside 7700–8950 Å, where every alkali line lies, there is only one telluric node (the weak 8200 band), so the curve there is an interpolation between −44, −6 and −40 km/s. This is a coverage failure of the telluric-only correction, not evidence about the star.
+- "auto" keeps τ_line = 2.0 and lands at z 0.73. It depends on the constant, though: with only the in-span 8200 Å node (−19.6) it would move to ≈38.5 km/s. The ±14 km/s on the constant (in the total error) is therefore the honest uncertainty of the star's absolute zero point here.
+- telluric_ref gives 47.5 ± 7.7 km/s (z 2.65). The Na I (8200) segment alone gives 38.2 ± 9.4; the 9300 Å segments rely on FeH/H2O stellar features that BT-Settl models poorly (56–63 km/s); O2 A gives 30.7 ± 50.5.
+
+**Verdict:** the sky correction is valid for the *shape* of the wavelength solution within its measured span (τ_line collapses whether or not a constant is added). It is not valid for the star's absolute zero point: both stars observed that night sit 10–40 km/s bluer than the sky, and the telluric constant is needed. On J1745 that constant is only weakly measured (±14 km/s), because the strong telluric bands lie outside the alkali-line span. The default stays "none"; "auto" is the best-motivated correction, with an error dominated by the star − sky term.
