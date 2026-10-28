@@ -153,8 +153,8 @@ def wavelength_zero_point(spectrum: Spectrum, cfg: Any) -> float:
     - Arc RMS: c × rms / λ_mid, with the RMS [Å] from cfg.input.wave_rms or spectrum.meta['wave_rms']. This is a
       lower bound: an internally consistent arc fit can hide a distortion of the whole solution (J1745: arc RMS
       ≈3 km/s against a +10 to +25 km/s sky-line distortion).
-    - Sky: the uncertainty of the applied sky zero point at the median wavelength
-      (meta['wavelength_correction']).
+    - Sky: if the sky zero point was applied, its uncertainty (meta['wavelength_correction']); if it was measured
+      but not applied (meta['sky_zeropoint']), the offset itself and its uncertainty in quadrature.
 
     Returns
     -------
@@ -168,8 +168,11 @@ def wavelength_zero_point(spectrum: Spectrum, cfg: Any) -> float:
     arc = float(C_KMS * rms / np.median(spectrum.wave)) if rms is not None and np.isfinite(rms) else np.nan
     sky = np.nan
     wc = meta.get('wavelength_correction') or {}
-    if wc.get('sky'):
+    if wc.get('sky'):  # applied: its uncertainty remains
         sky = float(wc['sky'].get('zp_sky_err', np.nan))
+    elif meta.get('sky_zeropoint'):  # measured but not applied: the offset itself remains
+        zp = meta['sky_zeropoint']
+        sky = float(np.hypot(zp.get('zp_sky_kms', np.nan), zp.get('zp_sky_err', np.nan)))
     vals = [v for v in (arc, sky) if np.isfinite(v)]
     return float(max(vals)) if vals else np.nan
 

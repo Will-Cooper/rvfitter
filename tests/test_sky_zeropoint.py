@@ -41,9 +41,25 @@ def test_recovers_zero_point_curve(frame_kms):
     zp = Z.measure(spec)
     assert zp is not None and zp.n_used >= 3
     assert abs(zp.fwhm - 5.5) < 0.6
-    for lam in np.linspace(zp.wmin_fit, zp.wmax_fit, 5):
-        assert abs(float(zp.dv(lam)) - _dv_true(lam)) < 2., (lam, float(zp.dv(lam)), _dv_true(lam))
-    assert any(s['reason'].startswith('telluric') for s in zp.segments)  # O2 A / H2O segments rejected
+    for lam in np.linspace(*zp.main_span, 5):
+        err = float(zp.dv_err(lam)[0])
+        assert abs(float(zp.dv(lam)) - _dv_true(lam)) < 3. * err, (lam, float(zp.dv(lam)), _dv_true(lam), err)
+    # the strong telluric bands are cut out before segmenting: no segment overlaps O2 A or the 9300 Å H2O band
+    from rvfitter.features import features
+    tell = [(f.wmin, f.wmax) for f in features() if f.kind == 'telluric' and f.depth >= 0.3]
+    assert not any(s['wmin'] < b and s['wmax'] > a for s in zp.segments for a, b in tell)
+    assert len(set(zp.node_span)) >= 2
+
+
+def test_curve_is_local_per_span():
+    from rvfitter.calibration.sky_zeropoint import _curve
+    nw, nd, ne, ns = [7500., 7800., 8000., 8200.], [-100., 10., 12., 14.], [1., 1., 1., 1.], [0, 1, 1, 1]
+    bounds = {0: (7400., 7600.), 1: (7700., 8300.)}
+    dv, err = _curve([7750., 7710., 7650., 7550., 8250.], nw, nd, ne, ns, 0.1, bounds)
+    assert dv[0] == 10. and dv[1] == 10.  # held at span 1's first node out to its boundary: not bridged
+    assert dv[2] == pytest.approx(-45.)  # inside the unmeasured gap: a ramp keeps the curve continuous
+    assert dv[3] == -100. and dv[4] == 14.
+    assert err[1] > err[0] > 1.  # grows with the distance from the nearest node
 
 
 def test_no_sky_returns_none():
@@ -63,15 +79,23 @@ def test_apply_and_applied_dv():
     assert np.all(np.diff(out.wave) > 0)
 
 
-def test_pipeline_wavelength_correction_modes():
+def test_pipeline_wavelength_correction_modes(caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger='rvfitter')
     raw = _sky_spectrum()
     cfg = config.Config()
+    assert cfg.calibration.wavelength_correction == 'none'  # default until validated
+    spec0, info0 = pipeline.wavelength_correction(raw, raw, cfg, 'X')
+    assert info0['applied'] == 'none' and np.isfinite(info0['zp_sky_kms'])  # measured and reported anyway
+    assert np.array_equal(spec0.wave, raw.wave) and 'sky_zeropoint' in spec0.meta
+    assert 'check the wavelength calibration' in caplog.text
+    from rvfitter import systematics
+    assert systematics.wavelength_zero_point(spec0, {}) >= abs(info0['zp_sky_kms'])  # unremoved offset counted
+    cfg.calibration.wavelength_correction = 'sky'
     spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X')
-    assert info['applied'] == 'sky' and abs(info['zp_sky_kms'] - _dv_true(8400.)) < 3.
-    assert 'wavelength_correction' in spec.meta
-    cfg.calibration.wavelength_correction = 'none'
-    spec2, info2 = pipeline.wavelength_correction(raw, raw, cfg, 'X')
-    assert spec2 is raw and info2['applied'] == 'none'
+    assert info['applied'] == 'sky' and abs(info['zp_sky_kms'] - np.mean(_dv_true(np.linspace(7900., 8800.)))) < 4.
+    assert 'wavelength_correction' in spec.meta and not np.array_equal(spec.wave, raw.wave)
+    assert np.isnan(info['zp_star_sky'])
     cfg.calibration.wavelength_correction = 'sky'
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, raw.resolution, {}, 'x')
     _, info3 = pipeline.wavelength_correction(nosky, nosky, cfg, 'X')
@@ -87,6 +111,7 @@ def test_pipeline_sky_source_file(tmp_path):
     assert read.sky is not None and np.allclose(read.sky, raw.sky)
     cfg = config.Config()
     cfg.input.medium = 'vacuum'
+    cfg.calibration.wavelength_correction = 'sky'
     cfg.calibration.sky_source = str(path)
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, raw.resolution, {}, 'x')
     _, info = pipeline.wavelength_correction(nosky, nosky, cfg, 'X')
