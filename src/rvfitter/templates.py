@@ -942,9 +942,33 @@ def available(fetch: Callable[[str], bytes] | None = None, grids: Sequence[str] 
     return out
 
 
+def _cli_telluric(args) -> int:
+    """`rvfitter templates telluric [--build]`: the model's status and provenance, or build it"""
+    import os
+
+    from .calibration import telluric, telluric_build
+    if args.out:
+        os.environ['RVFITTER_TELLURIC_MODEL'] = str(Path(args.out).resolve())
+    if args.build:
+        try:
+            telluric_build.build(args.out, line_cache=args.line_cache, force=args.force)
+        except Exception as exc:  # noqa: BLE001 - reported to the user
+            log.error('Building the telluric model failed: %s', exc)
+            return 1
+    if not telluric.available():
+        log.info('Telluric model: not built (%s); build it with `%s`', telluric.cache_path(), telluric.BUILD_COMMAND)
+        return 0
+    m = telluric.model()
+    log.info('Telluric model: %s (%.0f-%.0f Å)', telluric.cache_path(), m.wmin, m.wmax)
+    for key in ('source', 'builder', 'built', 'citation', 'terms'):
+        if m.meta.get(key):
+            log.info('  %s: %s', key, m.meta[key])
+    return 0
+
+
 def cli_main(argv: Sequence[str] | None = None) -> int:
     """
-    `rvfitter templates download|list|verify`
+    `rvfitter templates download|list|verify|telluric`
 
     Returns
     -------
@@ -971,7 +995,15 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
     v = sub.add_parser('verify', help='check the declared wavelength medium of a grid')
     v.add_argument('directory')
     v.add_argument('--grid', default=None)
+    t = sub.add_parser('telluric', help='show, or build (--build), the HITRAN telluric transmission model')
+    t.add_argument('--build', action='store_true', help='build it from HITRAN line lists (fetched once, ~90 MB)')
+    t.add_argument('--force', action='store_true', help='rebuild even if it exists')
+    t.add_argument('--out', default=None, help='model file (default: the user cache)')
+    t.add_argument('--line-cache', default=None, help='directory of the HITRAN line files (default: next to --out)')
     args = parser.parse_args(argv)
+
+    if args.action == 'telluric':
+        return _cli_telluric(args)
 
     if args.action == 'download':
         extra = {a: (float(lo), float(hi)) for a, lo, hi in args.range}

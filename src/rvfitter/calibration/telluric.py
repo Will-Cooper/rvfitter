@@ -1,18 +1,23 @@
 """
 Telluric transmission model and masks.
 
-The packaged model (`data/telluric_hitran.npz`, built by `tools/build_telluric_model.py`) holds zenith optical
-depths on a grid uniform in ln λ (vacuum, 6000–25 000 Å, R_s = 300 000), computed from HITRAN line-by-line data
-(H2O, O2, CO2, CH4; HITRAN2024, Gordon et al. 2026) through a layered US Standard 1976 atmosphere above a 2.4 km
-site. The dry gases and water vapour are stored separately, so
+The model (built on demand into the user cache by `rvfitter templates telluric --build`, i.e.
+`telluric_build.build`; never shipped with rvfitter) holds zenith optical depths on a grid uniform in ln λ
+(vacuum, 6000–25 000 Å, R_s = 300 000), computed from HITRAN line-by-line data (H2O, O2, CO2, CH4; HITRAN2024,
+Gordon et al. 2026) through a layered US Standard 1976 atmosphere above a 2.4 km site. The dry gases and water
+vapour are stored separately, so
 
     T(λ; X, w) = exp(−X · (τ_dry(λ) + w · τ_H2O(λ)))
 
 for airmass X and precipitable water vapour w [mm]. The model is valid for spectral resolutions up to about
 100 000; at lower resolution it is convolved with a Gaussian line-spread function and averaged over the data's
-pixels. Only the transmission, not the HITRAN line parameters, is shipped (see the builder for the licence and
-citation). Continuum absorption (MT_CKD), Rayleigh scattering, aerosols, O3 and N2O are omitted; they are smooth at
+pixels. Continuum absorption (MT_CKD), Rayleigh scattering, aerosols, O3 and N2O are omitted; they are smooth at
 these wavelengths and absorbed by any continuum fit.
+
+HITRAN states no redistribution licence, so neither its line parameters nor this derived model are distributed:
+each user builds the model from line lists fetched by their own machine (see `telluric_build` for the citation and
+terms, which are also stored in the model's metadata). Without it, `model()` raises `TelluricModelUnavailable`,
+and the telluric zero point and telluric_ref log how to build it and skip.
 
 The wavelengths are vacuum. At R = 20 000 the blue edges of the O2 A and B bands lie 1.0–1.3 Å redward of the
 Fraunhofer A and B lines (759.370 and 686.719 nm in air) converted to vacuum, and 2.8–3.4 Å redward of the air
@@ -22,18 +27,27 @@ values (tested). An independent ESO SkyCalc/LBLRTM transmission (vacuum; airmass
 import functools
 import json
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 from .. import broadening
 from ..constants import C_KMS
 
-__all__ = ['TelluricModel', 'model', 'transmission', 'mask', 'DEFAULT_PWV']
+__all__ = ['TelluricModel', 'TelluricModelUnavailable', 'model', 'available', 'cache_path', 'reload',
+           'unavailable_message', 'transmission', 'mask', 'DEFAULT_PWV', 'BUILD_COMMAND']
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PWV = 2.5  # [mm]; a typical night at a high site
+MODEL_FILE = 'telluric_hitran.npz'
+BUILD_COMMAND = 'rvfitter templates telluric --build'
+
+
+class TelluricModelUnavailable(FileNotFoundError):
+    """The telluric model has not been built (see `unavailable_message`)"""
 
 
 @dataclass(frozen=True)
@@ -68,16 +82,60 @@ class TelluricModel:
         return w, self.tau_dry[i0:i1], self.tau_h2o[i0:i1]
 
 
-@functools.lru_cache(maxsize=1)
-def model() -> TelluricModel:
-    """The packaged telluric model (loaded once)"""
-    from importlib import resources
-    with resources.files('rvfitter').joinpath('data', 'telluric_hitran.npz').open('rb') as fh:
+def cache_path() -> Path:
+    """
+    Where the telluric model is read from and built to
+
+    ``$RVFITTER_TELLURIC_MODEL`` if set, else ``<platformdirs user cache>/rvfitter/telluric/telluric_hitran.npz``.
+    """
+    env = os.environ.get('RVFITTER_TELLURIC_MODEL')
+    if env:
+        return Path(env)
+    import platformdirs
+    return Path(platformdirs.user_cache_dir('rvfitter')) / 'telluric' / MODEL_FILE
+
+
+def unavailable_message(path: Path | None = None) -> str:
+    """The user-facing instruction when the model is missing"""
+    return (f'the telluric transmission model is not built ({path or cache_path()} not found). Build it once with '
+            f'`{BUILD_COMMAND}` (fetches HITRAN line lists, about 90 MB, and takes a few minutes; HITRAN must then '
+            f'be cited)')
+
+
+@functools.lru_cache(maxsize=4)
+def _load(path: str) -> TelluricModel:
+    with open(path, 'rb') as fh:
         z = np.load(fh)
         m = TelluricModel(float(z['lnlam0']), float(z['dlnlam']), z['tau_dry'].astype(float),
                           z['tau_h2o'].astype(float), json.loads(str(z['meta'])))
-    log.debug('telluric model: %d points, %.0f-%.0f Å (%s)', len(m.tau_dry), m.wmin, m.wmax, m.meta.get('source'))
+    log.debug('telluric model %s: %d points, %.0f-%.0f Å (%s)', path, len(m.tau_dry), m.wmin, m.wmax,
+              m.meta.get('source'))
     return m
+
+
+def model() -> TelluricModel:
+    """
+    The telluric model at `cache_path()` (loaded once per path)
+
+    Raises
+    ------
+    TelluricModelUnavailable
+        If it has not been built
+    """
+    path = cache_path()
+    if not path.is_file():
+        raise TelluricModelUnavailable(unavailable_message(path))
+    return _load(str(path))
+
+
+def available() -> bool:
+    """Whether the telluric model has been built (at `cache_path()`)"""
+    return cache_path().is_file()
+
+
+def reload() -> None:
+    """Forget the loaded models (after a rebuild)"""
+    _load.cache_clear()
 
 
 def lsf_sigma_pix(resolution: float, dlnlam: float) -> float:
