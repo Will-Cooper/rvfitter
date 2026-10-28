@@ -470,32 +470,107 @@ def _table_wave_unit(hdu_obj: Any, name: str) -> str | None:
 # readers 1 and 2: PypeIt
 # ----------------------------------------------------------------------------------------------------------------------
 
-def _pypeit_hdu(hdul: fits.HDUList, hdu: int | str | None) -> int | None:
+def _pypeit_tables(hdul: fits.HDUList) -> list[int]:
+    """Indices of the PypeIt object tables (extensions with OPT_WAVE or BOX_WAVE)"""
+    out = []
+    for idx in range(1, len(hdul)):
+        names = _table_columns(hdul[idx])
+        if 'OPT_WAVE' in names or 'BOX_WAVE' in names:
+            out.append(idx)
+    return out
+
+
+def _norm_name(x: Any) -> str:
+    return ''.join(ch for ch in str(x).lower() if ch.isalnum())
+
+
+def _median_snr(ext: Any) -> float:
+    """Median OPT (else BOX) flux × √ivar of a PypeIt object table (NaN if neither exists)"""
+    names = [n.upper() for n in _table_columns(ext)]
+    for prefix in ('OPT', 'BOX'):
+        for fcol, icol in ((f'{prefix}_FLAM', f'{prefix}_FLAM_IVAR'), (f'{prefix}_COUNTS', f'{prefix}_COUNTS_IVAR')):
+            if fcol in names and icol in names:
+                f = np.asarray(ext.data[fcol], dtype=float)
+                iv = np.asarray(ext.data[icol], dtype=float)
+                ok = np.isfinite(f) & np.isfinite(iv) & (iv > 0)
+                if ok.any():
+                    return float(np.median(f[ok] * np.sqrt(iv[ok])))
+    return float('nan')
+
+
+def _choose_pypeit_object(hdul: fits.HDUList, tables: list[int], path: Any = '') -> int:
+    """
+    The target among several PypeIt object tables
+
+    1. The table whose MASKDEF_OBJNAME, NAME or EXTNAME matches the primary header's OBJECT/TARGNAME/TARGET (a
+       unique match only; long-slit spec1d tables are named by trace position, so this rarely applies to them).
+    2. Otherwise the highest median OPT S/N among the ``OBJTYPE = 'science'`` tables (all tables if none is
+       labelled science), with a warning when it is less than twice the next one's.
+
+    The choice and the alternatives are logged; ``input.hdu`` (``hdu=``) overrides it.
+    """
+    name = getattr(path, 'name', str(path))
+    target, _ = _first(_header_dict(hdul[0].header), ('OBJECT', 'TARGNAME', 'TARGET'))
+
+    def label(i: int) -> str:
+        return str(hdul[i].header.get('NAME', hdul[i].name))
+
+    if target is not None and len(_norm_name(target)) > 3:
+        t = _norm_name(target)
+        hits = []
+        for idx in tables:
+            h = hdul[idx].header
+            labels = [_norm_name(h.get(k)) for k in ('MASKDEF_OBJNAME', 'NAME', 'EXTNAME') if h.get(k)]
+            if any(lab == t or t in lab for lab in labels if lab):
+                hits.append(idx)
+        if len(hits) == 1:
+            log.info('%s: PypeIt spec1d with %d objects; reading HDU %d (%s), which matches the target name %r', name,
+                     len(tables), hits[0], label(hits[0]), target)
+            return hits[0]
+    science = [i for i in tables if str(hdul[i].header.get('OBJTYPE', '')).strip().lower() == 'science']
+    pool = science or tables
+    snr = {i: _median_snr(hdul[i]) for i in tables}
+    ranked = sorted(pool, key=lambda i: -snr[i] if np.isfinite(snr[i]) else np.inf)
+    best = ranked[0]
+    log.info('%s: PypeIt spec1d with %d objects, none named after the target %r; reading HDU %d (%s, median S/N '
+             '%.1f), the highest-S/N %sobject (others: %s). Set input.hdu to choose another', name, len(tables),
+             target, best, label(best), snr[best], 'science ' if science else '',
+             ', '.join(f'HDU {i} {label(i)} S/N {snr[i]:.1f}' for i in tables if i != best))
+    if len(ranked) > 1 and np.isfinite(snr[ranked[1]]) and snr[ranked[1]] > 0 and snr[best] < 2. * snr[ranked[1]]:
+        log.warning('%s: the chosen object (S/N %.1f) is less than twice as bright as HDU %d (S/N %.1f); check that it '
+                    'is the target, or set input.hdu', name, snr[best], ranked[1], snr[ranked[1]])
+    return best
+
+
+def _pypeit_hdu(hdul: fits.HDUList, hdu: int | str | None, path: Any = '') -> int | None:
     if hdu is not None:
         idx = _hdu_index(hdul, hdu)
         names = _table_columns(hdul[idx])
         return idx if ('OPT_WAVE' in names or 'BOX_WAVE' in names) else None
-    for idx in range(1, len(hdul)):
-        names = _table_columns(hdul[idx])
-        if 'OPT_WAVE' in names or 'BOX_WAVE' in names:
-            return idx
-    return None
+    tables = _pypeit_tables(hdul)
+    if len(tables) > 1:
+        return _choose_pypeit_object(hdul, tables, path)
+    return tables[0] if tables else None
 
 
 def _sniff_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
     if not _is_fits(path):
         return False
     with _open_fits(path) as hdul:
+        if hdu is None:
+            return bool(_pypeit_tables(hdul))
         return _pypeit_hdu(hdul, hdu) is not None
 
 
 def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
     with _open_fits(path) as hdul:
-        idx = _pypeit_hdu(hdul, hdu)
+        idx = _pypeit_hdu(hdul, hdu, path)
         if idx is None:
             raise ValueError('no PypeIt OPT_/BOX_ extraction columns found')
         ext = hdul[idx]
         header = _header_dict(hdul[0].header, ext.header)
+        header.update(RVF_HDU=idx, RVF_EXTNAME=str(ext.header.get('NAME', ext.name)),
+                      RVF_NOBJ=len(_pypeit_tables(hdul)))
         data = ext.data
         names = [n.upper() for n in _table_columns(ext)]
         chosen = None
@@ -848,8 +923,8 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     medium_method
         Air to vacuum formula: 'ciddor' (default), 'edlen' or 'morton'
     hdu
-        HDU index or name to read (default: the first suitable one; for PypeIt spec1d the first extension
-        with ``OPT_WAVE``/``BOX_WAVE``)
+        HDU index or name to read (default: the first suitable one; for a PypeIt spec1d holding several
+        objects, the table matching the target name, else the highest-S/N science object, which is logged)
     columns
         Column overrides, role → column name or (ASCII, FITS) index, with roles 'wave', 'flux' and one of
         'err', 'ivar', 'var'
@@ -924,6 +999,9 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
 
     meta = _meta_from_header(raw.header)
     meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader)
+    for key, out in (('RVF_HDU', 'hdu'), ('RVF_EXTNAME', 'extname'), ('RVF_NOBJ', 'n_objects')):
+        if key in raw.header:  # which table of a multi-object file was read
+            meta[out] = raw.header[key]
     r = resolution if resolution is not None else raw.resolution
     if r is not None and not (np.isfinite(r) and r > 0):
         raise ValueError(f'resolution must be positive, not {r}')
