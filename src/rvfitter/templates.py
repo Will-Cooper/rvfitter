@@ -105,6 +105,10 @@ class GridMeta:
     verified: bool = True  # False: the SVO model id, medium or coverage still need a live check
     reference: str = ''
     upstream: str = ''  # where the grid is published (DOI or URL), for manual downloads
+    license: str = ''  # provenance of a downloaded copy (set by `download`): licence, record id(s), DOI, citation
+    record: str = ''
+    doi: str = ''
+    citation: str = ''
 
     def __post_init__(self):
         if self.medium not in ('air', 'vacuum', 'auto'):
@@ -821,18 +825,22 @@ def _download_zenodo(grid, teff_range, logg_range, met_range, alpha_range, *, ra
     def write(params, wave, flam, medium, prov):
         p = {a: params.get(a, defaults.get(a, 0.)) for a in meta.axes}
         path = directory / _generic_name(p)
-        np.savetxt(path, np.c_[wave, flam], fmt='%.6f %.6e')
-        manifest[path.name] = dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), **p, **prov)
+        part = path.with_name(path.name + '.part')  # grid_sources renames it once its checksum has passed
+        with open(part, 'w') as fh:
+            np.savetxt(fh, np.c_[wave, flam], fmt='%.6f %.6e')
+        manifest[path.name] = dict(sha256=hashlib.sha256(part.read_bytes()).hexdigest(), **p, **prov)
         if medium:
             media.add(medium)
         return path
 
     paths = grid_sources.download_zenodo(grid, want, directory, axes=meta.axes, write=write)
     manifest_path.write_text(json.dumps(manifest, indent=1, sort_keys=True))
-    log.info('%s: %d models from Zenodo (%s) in %s', grid, len(paths), grid_sources.ZENODO_GRIDS[grid].doi,
-             directory)
+    pv = grid_sources.provenance(grid)
+    log.info('%s: %d models from Zenodo in %s', grid, len(paths), directory)
+    log.info('%s: licence %s, Zenodo record %s, DOI %s; please cite: %s', grid, pv['license'], pv['record'],
+             pv['doi'], pv['citation'])
     medium = media.pop() if len(media) == 1 else meta.medium  # a header-declared medium is still verified
-    out_meta = replace(meta, pattern=GENERIC_PATTERN, teff_scale=1., medium=medium)
+    out_meta = replace(meta, pattern=GENERIC_PATTERN, teff_scale=1., medium=medium, **pv)
     tg = TemplateGrid(directory, meta=out_meta, verify=verify)
     if verify:
         tg._ensure_verified()

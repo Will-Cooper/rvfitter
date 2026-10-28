@@ -104,7 +104,7 @@ def _columns() -> list[str]:
              'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'rv_total_err',
              *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_star_sky',
              'wavelength_correction', 'rv_epoch_pvalue', 'rv_epoch_variable', 'n_epochs',
-             'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'config_hash', 'version']
+             'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'refitted', 'config_hash', 'version']
     return cols
 
 
@@ -171,6 +171,7 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         row['frame'] = str(bary.get('frame', ''))
         row['binary_dbic'] = _num((res.binary or {}).get('dbic'))
         row['binary_flag'] = bool((res.binary or {}).get('flag', False))
+        row['refitted'] = bool(res.refitted)
         row['config_hash'] = res.config_hash
         row['version'] = res.version
         rows.append(row)
