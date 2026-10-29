@@ -1,0 +1,13 @@
+# Unbinned detector pixel scales [arcsec per pixel] of slit spectrographs, for the slit-centring prior
+# (rvfitter.calibration.slit). `key` is matched case-insensitively against PypeIt's PYP_SPEC header keyword
+# first, then against INSTRUME. The binned scale is this times the header binning (PypeIt BINNING
+# 'spectral,spatial'); pixels are assumed square on the sky.
+# Sources:
+#   gtc_osiris: GTC OSIRIS user manual (0.127 arcsec/pix unbinned, 0.254 arcsec/pix in the standard 2x2 mode);
+#     PypeIt 2.0.1 pypeit/spectrographs/gtc_osiris.py, GTCOSIRISSpectrograph detectors 1 and 2 (platescale 0.127).
+#   gtc_osiris_plus: PypeIt 2.0.1 gtc_osiris.py, GTCOSIRISPlusSpectrograph (platescale 0.125; the 2023 detector).
+#   OSIRIS (INSTRUME only): taken as the original E2V detectors (gtc_osiris), as for all data before 2023.
+key,pixscale_unbinned_arcsec,source
+gtc_osiris,0.127,"GTC OSIRIS user manual; PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISSpectrograph platescale)"
+gtc_osiris_plus,0.125,"PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISPlusSpectrograph platescale)"
+OSIRIS,0.127,"GTC OSIRIS user manual (original E2V detectors); PypeIt 2.0.1 gtc_osiris.py"
