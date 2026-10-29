@@ -86,41 +86,55 @@ The same distortion probably affects other GTC/OSIRIS R2500I spectra in Cooper e
 
 ### The star's own zero point from the telluric lines
 
+The audit behind this section is summarised in `docs/calibration_audit.md`.
 We also measured the star's zero point from the telluric absorption in the non-telluric-corrected spec1d of J1745−1640 (the target trace, SPAT0240).
 We fitted each telluric segment with a HITRAN transmission model (built locally; vacuum) multiplied by a BT-Settl 2100/5.0 template, with the stellar and telluric velocities both free.
 Each node's error includes the spread over the neighbouring templates (±100 K).
 
 - The 9000–9900 Å H2O nodes give −22 to −55 km/s, and the weak H2O 8200 band gives −6 km/s.
 - We did not use the O2 A band. In L dwarfs it is filled by the pressure-broadened K I wings, and an injection test showed template-dependent biases of +5 to +31 km/s there. The catalogue therefore marks O2 A as a zero-point reference only above 2800 K.
-- Only the 8200 Å node lies inside the range where the sky is measured (sky segments 7451–7592 and 7702–8952 Å, within the arc-line coverage of 7437–9926 Å). The other four lie in the sky's unmeasured gap, where the sky curve is only an interpolation, so they cannot be compared with it.
-- The single valid comparison gives a star − sky offset of **−19.6 ± 7.3 km/s** (one node; the error includes the 2.3 km/s spread over sky-curve models). This is probably slit centring: the star sits bluer than the uniformly illuminated sky. We note that one node cannot test whether the star sees the sky's distortion plus a constant.
+- The sky curve itself has no segment inside the H2O bands, because the absorption there eats the OH emission, so four of the five nodes lie in the curve's unmeasured gap. We therefore measure the sky directly in each node's own window instead (`sky_zeropoint.measure_windows`; the absorption weakens the OH lines there but does not move them). These values are used only for this comparison, never in the curve.
+- Four nodes have a usable sky in the same window (the 9416–9656 Å sky correlates at only 0.56). They give a star − sky offset of **−23.8 ± 3.6 km/s** (H2O 8200: −17.3 ± 10.6; H2O 9300: −24.9 ± 4.9, −23.1 ± 13.8 and −24.5 ± 7.1 km/s; χ² = 0.4 for 3 degrees of freedom, p = 0.93). The star therefore sees the sky's distortion plus a constant, as the audit found for both stars of that night (`docs/calibration_audit.md`). This is probably slit centring: the star sits bluer than the uniformly illuminated sky.
 - The telluric curve alone cannot correct the alkali lines: Rb I 7802, Rb I 7949 and Cs I 8523 lie 290–430 Å from the nearest telluric node.
 
 ### What rvfitter v2 does
 
-By default (`wavelength_correction = "sky-if-needed"`), rvfitter measures the sky zero point whenever a sky spectrum is present and applies its shape only when three tests on the calibration data pass:
+We fixed the following error budget before running the benchmark, and did not change it afterwards.
+An offset is either applied, with its error carried as a systematic, or unknown, with a physically motivated prior width; a measured offset's value is never added to the error budget.
+
+By default (`wavelength_correction = "sky-if-needed"`; `"auto"` is now the same), rvfitter measures the sky zero point whenever a sky spectrum is present and applies its shape only when three tests on the calibration data pass:
 (a) at least three measured sky segments, with every region more than half covered by them;
 (b) a significant offset (|mean Δv| > 3σ, with σ combining the curve and arc-RMS errors) or a significant variation between segments (χ² p < 0.001);
 (c) a correction larger than 0.05 resolution elements.
 The stellar line scatter is never used.
-The star − sky offset is always reported (`zp_star_sky`, its error and `zp_star_sky_n`), and when it is not applied it is added to the total error as `sys_star_sky`.
-"auto" (the sky shape plus the star − sky constant) is opt-in.
-The telluric model is never shipped: users build it from HITRAN with `rvfitter templates telluric --build`.
+When the sky is applied, the star's telluric zero point is measured too, and the star − sky constant is applied with the sky (`wavelength_correction_applied = "sky+star"`) when at least two telluric nodes have the sky measured in the same window; O2 A is not a node below 2800 K.
+When the nodes disagree (χ² p ≤ 0.01), the constant's error is inflated by the Birge factor and flagged (`star_sky_inconsistent`).
+The error budget then has three zero-point terms:
+- `sys_wavezp`, the uncertainty of the applied curve at the measurements' wavelengths (or, when nothing is applied, only the uncertainty of the measured curve, never its value; a WARNING is logged when a significant offset is left unapplied);
+- `sys_star_sky`, the error of the applied star − sky constant;
+- otherwise, `sys_star_sky` is a slit-centring prior. A star whose seeing FWHM F is smaller than the slit width W can sit anywhere within ±(W − F)/2, so σ = (W − F)/√12, converted to a velocity through the plate scale along the dispersion and the dispersion of the wavelength solution (`calibration.slit_prior = "auto"`; a number in km/s, or `"none"`). W comes from the header (`SLITW`, else 'N.NNarcsec' in `MASKNAME` or `DECKER`), F from `PypeIt`'s trace FWHM, and the plate scale from the header or `data/instruments.csv` (OSIRIS 0.127 arcsec per unbinned pixel; GTC OSIRIS manual and `PypeIt`). Without these inputs, a WARNING says that the absolute zero point is unconstrained, the term is NaN and `zp_flags` has `zp_unconstrained`. `calibration.zero_point_known = true` (fibre, IFU or absolute calibration) removes the term.
 
-For J1745−1640, all three tests pass: 6 segments with every region 100 per cent measured, a mean offset of +12.1 ± 3.1 km/s (3.9σ), a segment variation with χ² = 176 for 5 degrees of freedom (p = 4 × 10⁻³⁶), and a largest correction of 33.6 km/s at the regions against a floor of 5.8 km/s.
-The sky correction is therefore applied.
+The sky segments now carry a synthetic bias test: noise-free model skies with the line width off by −20 or +25 per cent, or the line amplitudes perturbed by ±30 per cent, are measured like the data, and the largest |Δv| is added in quadrature to the segment's error (a segment biased by more than 0.1 resolution elements is excluded).
+On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (12 km/s against a statistical error of 5 km/s) and is down-weighted; none is excluded.
+`io` sets non-finite sky pixels and those above 10³ times the median |sky| to NaN.
 
-Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²).
+For J1745−1640, all three sky tests pass: 6 segments with every region 100 per cent measured, a mean offset of +14.9 ± 3.6 km/s (4.1σ), a segment variation with χ² = 53 for 5 degrees of freedom (p = 3 × 10⁻¹⁰), and a largest correction of 33.5 km/s at the regions against a floor of 5.8 km/s.
+The sky and the star − sky constant (−23.8 ± 3.6 km/s, four nodes) are therefore both applied.
+The slit prior, reported in every mode, is 25.6 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.131 arcsec = 0.51 pixel at 1.39 Å per pixel.
 
-| Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_wavezp | sys_star_sky |
-|---|---|---|---|---|---|---|---|
-| none | none | 37.73 | 5.03 (2.08) | 31.78 (0.36) | 8.3 | 22.3 | 21.0 |
-| sky-if-needed (default) | sky | 18.88 | 3.32 (1.81) | 24.72 (0.29) | 2.0 | 10.2 | 21.0 |
-| sky | sky | 18.88 | 3.32 (1.81) | 24.72 (0.29) | 2.0 | 10.2 | 21.0 |
-| auto | sky + (−19.6) | 38.86 | 3.24 (3.18) | 14.97 (0.84) | 2.0 | 12.5 | — |
-| telluric | refused (coverage) | 37.73 | 5.03 (2.08) | 31.78 (0.36) | 8.3 | 22.3 | 21.0 |
+Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0).
 
-Correcting the sky shape collapses the line-to-line scatter (τ_line falls from 8.3 to 2.0 km/s), a test that does not use the benchmark.
-The star's absolute zero point stays uncertain at the ±20 km/s level, and the total errors include this.
-"auto" moves the RV by the one-node constant, which is why it is not the default.
-In conclusion, on this spectrum the wavelength calibration, not the RV method, limits the absolute RV.
+| Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
+|---|---|---|---|---|---|---|---|---|
+| none | none | 37.73 | 5.03 (2.08) | 28.71 (0.40) | 8.3 | 7.0 | 9.7 | 25.6 (slit prior) |
+| sky | sky | 18.95 | 3.32 (1.80) | 28.62 (0.25) | 2.0 | 7.6 | 9.7 | 25.6 (slit prior) |
+| sky-if-needed (default) | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
+| auto | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
+| telluric | refused (coverage) | 37.73 | 5.03 (2.08) | 28.71 (0.40) | 8.3 | 7.0 | 9.7 | 25.6 (slit prior) |
+
+Correcting the sky shape collapses the line-to-line scatter (τ_line falls from 8.3 to 1.9 km/s), a test that does not use the benchmark.
+The modes without a measured constant now carry the 25.6 km/s slit prior instead of the measured offset's value, so their total errors (28.6–28.7 km/s) are honest but large.
+The default applies the measured constant and lands 16.7 km/s above the benchmark, at z = 1.25 with the total error but z = 4.2 with the statistical error alone.
+The two methods agree (CCF 43.2 and template fit 42.5 km/s), so the offset is common to both.
+We note three possible causes, none of which we tested against the benchmark: the H2O 9300 nodes, three of the four, lie 540–1260 Å redward of Cs I 8523, the reddest alkali line, so the constant assumes that the star − sky difference is the same at 7800–8500 Å, which only the 8200 Å node (−17.3 ± 10.6 km/s) tests directly; the BT-Settl template in the telluric fit may bias the nodes (a smooth star gave a constant 3.5 km/s less negative in the audit); and the literature value itself, from a different instrument and epoch, has its own zero point.
+In conclusion, on this spectrum the wavelength calibration, not the RV method, limits the absolute RV, and the budget now says so without ever counting a measured offset as an error.
