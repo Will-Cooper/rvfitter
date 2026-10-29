@@ -575,11 +575,81 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
     return zp
 
 
+#: star − sky from the direct sky: at least this many nodes, and the nodes' χ² p-value must exceed STAR_SKY_P_MIN
+#: (otherwise the error is Birge-inflated and the result flagged inconsistent)
+STAR_SKY_MIN_NODES = 2
+STAR_SKY_P_MIN = 0.01
+
+
+def node_windows(tell: TelluricZeroPoint) -> list[tuple[float, float]]:
+    """The (wmin, wmax) [Å, observatory frame] of each telluric node (the used segments, in node order)"""
+    return [(float(s['wmin']), float(s['wmax'])) for s in tell.segments if s.get('used')]
+
+
+def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) -> dict:
+    """
+    The star − sky constant from the sky measured directly in each telluric node's own window
+
+    `sky_windows` holds one `sky_zeropoint.measure_windows` result per node (`node_windows`), measured with no
+    telluric cut, so the sky and the star are compared over the same pixels, not through the sky curve's
+    interpolation. Each usable node gives d_i = Δv_tell,i − Δv_sky,i with error √(σ_tell,i² + σ_sky,i²); the
+    constant is their weighted mean. It is measured only with at least `STAR_SKY_MIN_NODES` nodes. Their χ² against
+    the constant tests "the star sees the sky's distortion plus a constant": when its p-value is ≤ `STAR_SKY_P_MIN`,
+    the error is inflated by the Birge factor and `consistent` is False.
+
+    Returns
+    -------
+    info
+        {'zp_star_sky', 'zp_star_sky_err', 'n_nodes', 'chi2', 'dof', 'p', 'birge', 'consistent', 'method',
+        'reason', 'nodes': [...]}; the constant and its error are NaN when fewer than the minimum nodes are usable
+    """
+    from scipy.stats import chi2 as chi2_dist
+    lam = np.asarray(tell.node_wave, float)
+    wins = node_windows(tell)
+    if len(sky_windows) != len(lam) or len(wins) != len(lam):
+        raise ValueError(f'{len(sky_windows)} sky windows for {len(lam)} telluric nodes')
+    s_dv = np.array([float(s.get('dv', np.nan)) for s in sky_windows])
+    s_err = np.array([float(s.get('err', np.nan)) for s in sky_windows])
+    s_ok = np.array([bool(s.get('used')) for s in sky_windows])
+    bands = [str(s.get('band', '')) for s in tell.segments if s.get('used')]
+    d = tell.node_dv - s_dv
+    e = np.hypot(tell.node_err, s_err)
+    ok = s_ok & np.isfinite(d) & np.isfinite(e) & (e > 0)
+    nodes = [dict(band=bands[i], wmin=wins[i][0], wmax=wins[i][1], wave=float(lam[i]), tell=float(tell.node_dv[i]),
+                  tell_err=float(tell.node_err[i]), sky=float(s_dv[i]), sky_err=float(s_err[i]),
+                  sky_reason=str(sky_windows[i].get('reason', '')), diff=float(d[i]), err=float(e[i]),
+                  used=bool(ok[i])) for i in range(len(lam))]
+    nan = float('nan')
+    base = dict(method='direct sky', nodes=nodes)
+    if ok.sum() < STAR_SKY_MIN_NODES:
+        reason = (f'{int(ok.sum())} telluric node(s) with a measured sky in the same window (< {STAR_SKY_MIN_NODES}'
+                  f'; ' + ', '.join(f"{n['band']} {n['wmin']:.0f}-{n['wmax']:.0f} Å: {n['sky_reason'] or 'no sky'}"
+                                     for n in nodes if not n['used']) + ')')
+        log.info('Star - sky zero point not measured: %s', reason)
+        return dict(zp_star_sky=nan, zp_star_sky_err=nan, n_nodes=int(ok.sum()), chi2=nan, dof=0, p=nan, birge=nan,
+                    consistent=False, reason=reason, **base)
+    w = 1. / e[ok] ** 2
+    mean = float(np.sum(w * d[ok]) / np.sum(w))
+    chi2 = float(np.sum(w * (d[ok] - mean) ** 2))
+    dof = int(ok.sum()) - 1
+    p = float(chi2_dist.sf(chi2, dof))
+    consistent = p > STAR_SKY_P_MIN
+    birge = 1. if consistent else float(np.sqrt(chi2 / dof))
+    err = float(birge / np.sqrt(np.sum(w)))
+    log.info('Star - sky zero point: %+.1f ± %.1f km/s from %d telluric node(s) with the sky measured in the same '
+             'windows (%s); χ² %.1f for %d dof, p = %.2g%s', mean, err, int(ok.sum()),
+             ', '.join(f"{n['band']} {n['diff']:+.1f} ± {n['err']:.1f}" for n in nodes if n['used']), chi2, dof, p,
+             '' if consistent else f' ≤ {STAR_SKY_P_MIN:g}: the nodes disagree, error inflated by the Birge factor '
+                                   f'{birge:.2f}')
+    return dict(zp_star_sky=mean, zp_star_sky_err=err, n_nodes=int(ok.sum()), chi2=chi2, dof=dof, p=p, birge=birge,
+                consistent=bool(consistent), reason='ok' if consistent else 'inconsistent nodes (Birge-inflated)',
+                **base)
 
 
 def star_minus_sky(tell: TelluricZeroPoint, sky: Any) -> dict:
     """
-    The star − sky zero-point constant from the telluric nodes that lie inside the sky's measured range
+    The star − sky zero-point constant from the telluric nodes that lie inside the sky's measured range (the sky
+    curve's value at each node; the pipeline uses `star_minus_sky_direct` instead)
 
     Only a telluric node whose wavelength falls inside a used (measured) sky segment is compared: there the sky
     value is a measurement, not an interpolation across an unmeasured gap, a value held flat beyond the last node

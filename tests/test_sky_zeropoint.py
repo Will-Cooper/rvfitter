@@ -91,9 +91,11 @@ def test_pipeline_wavelength_correction_modes(caplog):
     spec0, info0 = pipeline.wavelength_correction(raw, raw, cfg, 'X')
     assert info0['applied'] == 'none' and np.isfinite(info0['zp_sky_kms'])  # measured and reported anyway
     assert np.array_equal(spec0.wave, raw.wave) and 'sky_zeropoint' in spec0.meta
-    assert 'check the wavelength calibration' in caplog.text
+    assert 'no correction is applied (mode none) and that offset is not in the errors' in caplog.text
     from rvfitter import systematics
-    assert systematics.wavelength_zero_point(spec0, {}) >= abs(info0['zp_sky_kms'])  # unremoved offset counted
+    # a measured offset's value is never an error: only the unapplied curve's uncertainty is counted
+    assert systematics.wavelength_zero_point(spec0, {}) == pytest.approx(info0['zp_sky_err'])
+    assert systematics.wavelength_zero_point(spec0, {}) < abs(info0['zp_sky_kms'])
     cfg.calibration.wavelength_correction = 'sky'
     spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X')
     assert info['applied'] == 'sky' and abs(info['zp_sky_kms'] - np.mean(_dv_true(np.linspace(7900., 8800.)))) < 4.
@@ -183,8 +185,12 @@ def test_wavelength_zero_point_systematic():
     at = systematics.wavelength_zero_point(spec, {}, wave=lam)
     expect = np.hypot(np.sqrt(np.mean(Z.curve_at(c, lam)[1] ** 2)), c['zp_sky_model_spread'])
     assert at == pytest.approx(expect)
-    # not applied: the offset at those wavelengths remains
-    raw2 = replace(raw, meta={**raw.meta, 'sky_zeropoint': Z.measure(raw).as_dict()})
-    assert systematics.wavelength_zero_point(raw2, {}, wave=lam) > np.min(np.abs(_dv_true(lam)))
+    # not applied: only the curve's uncertainty there, never the offset's value
+    c2 = Z.measure(raw).as_dict()
+    raw2 = replace(raw, meta={**raw.meta, 'sky_zeropoint': c2})
+    unapplied = systematics.wavelength_zero_point(raw2, {}, wave=lam)
+    assert unapplied == pytest.approx(np.hypot(np.sqrt(np.mean(Z.curve_at(c2, lam)[1] ** 2)),
+                                               c2['zp_sky_model_spread']))
+    assert unapplied < np.min(np.abs(_dv_true(lam)))
     big = Spectrum(spec.wave, spec.flux, spec.sigma, 1600., {**spec.meta, 'wave_rms': 2.}, 'x')
     assert systematics.wavelength_zero_point(big, {}) == pytest.approx(299792.458 * 2. / np.median(spec.wave))

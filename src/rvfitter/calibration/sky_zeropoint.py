@@ -18,7 +18,14 @@ Method:
    evaluated at the data's own pixels for every trial velocity (2 km/s steps; comparing like with like, since
    resampling coarse pixels biases a few-line segment by several km/s), fit the peak with a parabola, and take
    the Zucker (2003) error with the number of native pixels. Segments with too few lines or a poor correlation are
-   rejected.
+   rejected. A synthetic bias test (noise-free model skies with the line width off by −20/+25 per cent or the line
+   amplitudes perturbed by ±30 per cent, measured like the data) gives each segment a bias, added in quadrature
+   to its error, and excludes a segment whose bias exceeds 0.1 resolution elements: on J1745's sky an independent
+   synthetic
+   (PypeIt's Paranal sky) showed the method unbiased except in the short blue-edge segment, bounded by the O2 A
+   band, where it was biased by −8 to −22 km/s.
+   `measure_windows` measures the sky in any given windows (e.g. inside the telluric bands, to compare it with
+   the star's telluric nodes); those values never enter the curve.
 5. Δv(λ) is local: within each telluric-free span, the piecewise-linear interpolation between its segment
    values, held constant beyond them; it is never interpolated across an unmeasured gap (a wavelength in a gap
    takes the nearer span's edge value), and its error grows with the distance from the nearest node. Node errors
@@ -38,9 +45,10 @@ import pandas as pd
 from scipy.ndimage import percentile_filter
 
 from .. import broadening
+from ..constants import C_KMS
 from ..types import Spectrum
 
-__all__ = ['SkyZeroPoint', 'oh_lines', 'model_sky', 'measure', 'apply', 'applied_dv', 'curve_at',
+__all__ = ['SkyZeroPoint', 'oh_lines', 'model_sky', 'measure', 'measure_windows', 'apply', 'applied_dv', 'curve_at',
            'observatory_frame_factor']
 
 log = logging.getLogger(__name__)
@@ -57,9 +65,15 @@ def oh_lines() -> tuple[np.ndarray, np.ndarray]:
     return df['wave_vac'].to_numpy(float), df['amplitude'].to_numpy(float)
 
 
-def model_sky(wave: np.ndarray, fwhm: float) -> np.ndarray:
-    """OH emission model: Gaussian lines of FWHM `fwhm` [Å] at the packaged vacuum positions"""
+def model_sky(wave: np.ndarray, fwhm: float, amplitudes: np.ndarray | None = None) -> np.ndarray:
+    """
+    OH emission model: Gaussian lines of FWHM `fwhm` [Å] at the packaged vacuum positions
+
+    `amplitudes` (one per packaged line) replaces the packaged relative amplitudes (used by the bias test).
+    """
     lw, la = oh_lines()
+    if amplitudes is not None:
+        la = np.asarray(amplitudes, dtype=float)
     sel = (lw > wave[0] - 5 * fwhm) & (lw < wave[-1] + 5 * fwhm)
     sigma = fwhm * broadening.FWHM_TO_SIGMA
     out = np.zeros(len(wave))
@@ -259,10 +273,110 @@ def _peak(lags: np.ndarray, c: np.ndarray) -> tuple[float, float, float]:
     return float(lags[i] + x0), float(np.polyval([p2, p1, p0], x0)), float(2 * p2)
 
 
+#: bias test: trial sky-line widths (× the measured FWHM) and line-amplitude perturbation (± this fraction,
+#: alternating between neighbouring lines, both ways round)
+BIAS_FWHM_FACTORS = (0.8, 1.25)
+BIAS_AMPLITUDE = 0.3
+#: every segment's bias is added in quadrature to its error (so a model-sensitive segment, e.g. the short one at the
+#: blue edge of J1745's sky, is down-weighted, and flagged when the bias exceeds its statistical error); a segment
+#: whose bias exceeds this fraction of a resolution element (c × FWHM / λ), or that loses its peak, is excluded
+BIAS_FAIL_RESEL = 0.1
+
+
+def _bias(w: np.ndarray, fwhm: float, lags: np.ndarray, width_pix: int) -> float:
+    """
+    Synthetic bias test of one segment [km/s]
+
+    The largest |Δv| measured on noise-free model skies (truth 0) on the segment's own pixels, with the line width
+    off by `BIAS_FWHM_FACTORS` or the line amplitudes perturbed by ±`BIAS_AMPLITUDE` (alternating, both ways
+    round), each measured against the nominal model exactly as the data are. A segment whose answer depends on the
+    exact blend profile (few lines, lines cut by the segment or band edges, asymmetric blends) shows a bias here.
+    Returns inf if a synthetic has no correlation peak.
+    """
+    la = oh_lines()[1]
+    alt = np.where(np.arange(len(la)) % 2 == 0, 1. + BIAS_AMPLITUDE, 1. - BIAS_AMPLITUDE)
+    trials = [model_sky(w, fwhm * k) for k in BIAS_FWHM_FACTORS]
+    trials += [model_sky(w, fwhm, la * alt), model_sky(w, fwhm, la * (2. - alt))]
+    out = 0.
+    for m in trials:
+        lag = _peak(lags, _corr_curve(w, _emission(m, width_pix), fwhm, lags))[0]
+        if not np.isfinite(lag):
+            return float('inf')
+        out = max(out, abs(lag))
+    return float(out)
+
+
+def _measure_window(w: np.ndarray, d: np.ndarray, fwhm: float, lags: np.ndarray, min_corr: float,
+                    width_pix: int, bias_test: bool = True) -> dict:
+    """Δv [km/s], its error, the peak correlation and the synthetic bias of one window, with `used` and `reason`"""
+    out = dict(dv=np.nan, err=np.nan, corr=np.nan, bias=np.nan, err_stat=np.nan, used=False, reason='')
+    lag, corr, curv = _peak(lags, _corr_curve(w, d, fwhm, lags))
+    out['corr'] = corr
+    if not np.isfinite(lag):
+        out['reason'] = 'no correlation peak'
+        return out
+    if corr < min_corr:
+        out['reason'] = f'correlation {corr:.2f} < {min_corr}'
+        return out
+    n = int(np.sum(np.isfinite(d)))  # native pixels: independent
+    var = -1. / (n * curv / corr * corr ** 2 / (1. - corr ** 2)) if 0 < corr < 1 else np.nan
+    err = float(np.sqrt(var)) if np.isfinite(var) and var > 0 else np.nan
+    out.update(dv=lag, err=err, err_stat=err)
+    if not np.isfinite(err):
+        out['reason'] = 'undefined error'
+        return out
+    out.update(used=True, reason='ok')
+    if bias_test:
+        b = _bias(w[np.isfinite(d)], fwhm, lags, width_pix)
+        out['bias'] = b
+        resel = C_KMS * fwhm / float(np.median(w))
+        if not b <= BIAS_FAIL_RESEL * resel:
+            out.update(used=False, reason=f'synthetic bias test failed: bias {b:.1f} km/s > {BIAS_FAIL_RESEL:g} '
+                                          f'resolution elements ({BIAS_FAIL_RESEL * resel:.1f} km/s)')
+        else:
+            out['err'] = float(np.hypot(err, b))
+            if b > err:
+                out['reason'] = f'ok; down-weighted: synthetic bias {b:.1f} km/s > σ {err:.1f} km/s'
+    return out
+
+
+def measure_windows(spectrum: Spectrum, windows: list[tuple[float, float]], fwhm: float, *,
+                    sky: np.ndarray | None = None, min_corr: float = 0.7, max_lag_kms: float = 150.,
+                    bias_test: bool = True) -> list[dict]:
+    """
+    The sky Δv measured directly in given windows [Å, observatory frame], with no telluric cut
+
+    Used to compare the sky with the star's telluric nodes in the same windows, including inside the telluric
+    bands (the absorption weakens the OH lines there but does not move them). These values never enter the curve
+    that `measure` fits. Each result is {'wmin', 'wmax', 'dv', 'err', 'err_stat', 'corr', 'bias', 'used',
+    'reason'}, with the same correlation, error and bias test as the curve's segments.
+    """
+    sky = spectrum.sky if sky is None else np.asarray(sky, dtype=float)
+    empty = dict(dv=np.nan, err=np.nan, corr=np.nan, bias=np.nan, err_stat=np.nan, used=False)
+    if sky is None:
+        return [dict(wmin=float(a), wmax=float(b), **empty, reason='no sky') for a, b in windows]
+    wave = spectrum.wave / observatory_frame_factor(spectrum.meta)
+    good = np.isfinite(sky) & np.isfinite(wave)
+    width_pix = int(40. / float(np.median(np.diff(wave[good]))))
+    w_all, d_all = wave[good], _emission(sky[good], width_pix)
+    lags = np.arange(-max_lag_kms, max_lag_kms + 1e-9, _DV)
+    out = []
+    for lo, hi in windows:
+        idx = np.flatnonzero((w_all >= lo) & (w_all <= hi))
+        if len(idx) < 20:
+            res = dict(**empty, reason=f'{len(idx)} sky pixels')
+        else:
+            res = _measure_window(w_all[idx], d_all[idx], fwhm, lags, min_corr, width_pix, bias_test)
+        out.append(dict(wmin=float(lo), wmax=float(hi), **res))
+        log.debug('  sky in window %.0f-%.0f Å: %+.1f ± %.1f km/s, corr %.2f, %s', lo, hi, res['dv'], res['err'],
+                  res['corr'], res['reason'])
+    return out
+
+
 def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: float = 250., min_width: float = 60.,
             min_corr: float = 0.7, max_lag_kms: float = 150., telluric_depth: float = 0.3,
             min_lines: int = 3, fwhm: float | None = None,
-            valid_range: tuple[float, float] | None = None) -> SkyZeroPoint | None:
+            valid_range: tuple[float, float] | None = None, bias_test: bool = True) -> SkyZeroPoint | None:
     """
     Measure the wavelength zero point Δv(λ) from the OH sky lines
 
@@ -292,6 +406,10 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
         (wmin, wmax) [Å, observatory frame] where the wavelength solution is constrained (e.g. the range of the
         arc lines); segments centred outside it are not used, so the curve is never anchored by an extrapolation
         of the solution
+    bias_test
+        Run the synthetic bias test on each segment (`_bias`): its bias is added in quadrature to the error
+        (down-weighting model-sensitive segments), and a segment whose bias exceeds 0.1 resolution elements is
+        excluded
 
     Returns
     -------
@@ -305,7 +423,8 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
     ff = observatory_frame_factor(spectrum.meta)
     wave = spectrum.wave / ff
     good = np.isfinite(sky) & np.isfinite(wave)
-    w_all, d_all = wave[good], _emission(sky[good], int(40. / float(np.median(np.diff(wave[good])))))
+    width_pix = int(40. / float(np.median(np.diff(wave[good]))))
+    w_all, d_all = wave[good], _emission(sky[good], width_pix)
     if fwhm is None:  # the width maximising the correlation peak over lags (a zero-point shift does not bias it)
         coarse = np.arange(-max_lag_kms, max_lag_kms + 1e-9, 10.)
         trials = np.geomspace(1., 15., 21)
@@ -323,7 +442,7 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
     segs = []
     for lo, hi, span in _segments(float(w_all[0]), float(w_all[-1]), tell, seg_width, min_width):
         seg = dict(wmin=float(lo), wmax=float(hi), centre=float(0.5 * (lo + hi)), dv=np.nan, err=np.nan, corr=np.nan,
-                   used=False, reason='', span=int(span))
+                   bias=np.nan, err_stat=np.nan, used=False, reason='', span=int(span))
         inseg = (lw >= lo) & (lw <= hi)
         n_lines = int(np.sum(inseg & (la >= 0.1 * la[inseg].max()))) if inseg.any() else 0
         idx = np.flatnonzero((w_all >= lo) & (w_all <= hi))
@@ -332,19 +451,7 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
         elif n_lines < min_lines or len(idx) < 20:
             seg['reason'] = f'{n_lines} strong OH lines'
         else:
-            lag, corr, curv = _peak(lags, _corr_curve(w_all[idx], d_all[idx], fwhm, lags))
-            seg['corr'] = corr
-            if not np.isfinite(lag):
-                seg['reason'] = 'no correlation peak'
-            elif corr < min_corr:
-                seg['reason'] = f'correlation {corr:.2f} < {min_corr}'
-            else:
-                n = int(np.sum(np.isfinite(d_all[idx])))  # native pixels: independent
-                var = -1. / (n * curv / corr * corr ** 2 / (1. - corr ** 2)) if 0 < corr < 1 else np.nan
-                seg.update(dv=lag, err=float(np.sqrt(var)) if np.isfinite(var) and var > 0 else np.nan,
-                           used=True, reason='ok')
-                if not np.isfinite(seg['err']):
-                    seg.update(used=False, reason='undefined error')
+            seg.update(_measure_window(w_all[idx], d_all[idx], fwhm, lags, min_corr, width_pix, bias_test))
         segs.append(seg)
     used = [s for s in segs if s['used']]
     if len(used) < 2:
@@ -393,8 +500,13 @@ def measure(spectrum: Spectrum, *, sky: np.ndarray | None = None, seg_width: flo
              'spread %.1f km/s); %d of %d segments in %d span(s); sky FWHM %.2f Å', zp.zp_kms, zp.zp_err,
              *zp.main_span, zp.slope, zp.model_spread, zp.n_used, len(segs), len(np.unique(k)), fwhm)
     for s_ in segs:
-        log.debug('  sky segment %.0f-%.0f Å (span %d): %+.1f ± %.1f km/s, corr %.2f, %s', s_['wmin'], s_['wmax'],
-                  s_['span'], s_['dv'], s_['err'], s_['corr'], s_['reason'])
+        log.debug('  sky segment %.0f-%.0f Å (span %d): %+.1f ± %.1f km/s, corr %.2f, bias %.1f km/s, %s',
+                  s_['wmin'], s_['wmax'], s_['span'], s_['dv'], s_['err'], s_['corr'], s_['bias'], s_['reason'])
+    flagged = [s_ for s_ in segs if np.isfinite(s_['err_stat']) and not s_['bias'] <= s_['err_stat']]
+    if flagged:
+        log.info('Sky zero point: synthetic bias test: %s', '; '.join(
+            f"{s_['wmin']:.0f}-{s_['wmax']:.0f} Å bias {s_['bias']:.1f} km/s against σ {s_['err_stat']:.1f} km/s "
+            f"({'excluded' if not s_['used'] else 'down-weighted'})" for s_ in flagged))
     return zp
 
 

@@ -10,6 +10,7 @@ Conventions applied to every spectrum, whatever the reader:
 
 * σ = 1/√ivar, with NaN where ivar ≤ 0.
 * PypeIt pixels masked in ``OPT_MASK`` (``BOX_MASK`` for box extraction) are dropped.
+* Sky pixels that are non-finite or above 10³ × the median |sky| are set to NaN.
 * Non-finite (or non-positive) wavelengths and non-finite fluxes are dropped, the rest is sorted by wavelength and
   duplicate wavelengths are removed (the first is kept).
 * The wavelength medium is never guessed silently.
@@ -40,6 +41,10 @@ vel_corr    ``VEL_CORR`` if present (PypeIt: the multiplicative factor already a
 arc_range   (PypeIt only) [min, max] vacuum Å of the fitted arc lines of a ``wvcalib.fits`` / ``WaveCalib*.fits`` found
             next to the file or in ``Calibrations/`` (`find_wvcalib`); ``arc_file`` is its path.
             PypeIt stores arc wavelengths in vacuum, so they are never converted.
+slit_*      ``slit_width_arcsec`` (``SLITW``, else 'N.NNarcsec' in ``MASKNAME``/``DECKER``/``SLIT``…), the
+            ``binning_spec``/``binning_spat`` factors (PypeIt ``BINNING``), ``pixscale_arcsec`` (``PIXSCALE``…),
+            ``instrument`` (``INSTRUME``) and, for PypeIt spec1d, ``trace_fwhm_pix`` (median ``FWHMFIT``):
+            the inputs of the slit-centring prior (`rvfitter.calibration.slit`)
 ========== =============================================================================================
 
 ``meta['velocity_keywords']`` additionally holds any of the velocity-correction keywords found in the headers
@@ -388,7 +393,57 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     # PypeIt's factor f = sqrt((1+β)/(1-β)) expressed as a velocity: c (f²-1)/(f²+1)
     meta['vel_corr_kms'] = None if f is None else C_KMS * (f * f - 1.) / (f * f + 1.)
     meta['velocity_keywords'] = {k: header[k] for k in _VEL_KEYS if k in header}
+    meta.update(_slit_meta(header))
     return meta
+
+
+_SLIT_WIDTH_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(?:arcsec|asec|")', re.IGNORECASE)
+
+
+def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Slit width, binning, pixel scale, instrument and trace FWHM, for the slit-centring prior
+
+    - ``slit_width_arcsec``: ``SLITW`` (a number, arcsec; OSIRIS raw frames), else the first of ``MASKNAME``,
+      ``DECKER`` (PypeIt), ``SLIT``, ``SLITNAME`` and ``APERTURE`` whose text holds a number followed by
+      'arcsec' (e.g. 'LongSlits1.23Arcsec'); ``slit_width_key`` records which.
+    - ``binning_spec``, ``binning_spat``: PypeIt's ``BINNING`` 'spectral,spatial', else ``CCDSUM`` when both
+      factors are equal (its axis order is instrument-dependent).
+    - ``pixscale_arcsec``: ``PIXSCALE``, ``PLATESCL`` or ``SECPIX`` [arcsec per (binned) pixel] if present.
+    - ``instrument``: ``INSTRUME``.
+    - ``trace_fwhm_pix``: PypeIt's object FWHM along the slit [binned pixels].
+    """
+    out: dict[str, Any] = {}
+    inst, _ = _first(header, ('INSTRUME', 'INSTRUMENT'))
+    out['instrument'] = None if inst is None else str(inst).strip()
+    pyp = header.get('PYP_SPEC')
+    out['pypeit_spec'] = None if pyp is None else str(pyp).strip()
+    width, key = None, None
+    w = _as_float(header.get('SLITW'))
+    if w is not None and np.isfinite(w) and w > 0:
+        width, key = w, 'SLITW'
+    else:
+        for k in ('MASKNAME', 'DECKER', 'SLIT', 'SLITNAME', 'APERTURE'):
+            v = header.get(k)
+            m = _SLIT_WIDTH_RE.search(str(v)) if v is not None else None
+            if m and float(m.group(1)) > 0:
+                width, key = float(m.group(1)), k
+                break
+    out['slit_width_arcsec'], out['slit_width_key'] = width, key
+    spec_bin = spat_bin = None
+    b = header.get('BINNING')
+    if b is not None:
+        parts = re.split(r'[,x\s]+', str(b).strip())
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            spec_bin, spat_bin = int(parts[0]), int(parts[1])
+    if spec_bin is None and header.get('CCDSUM') is not None:
+        parts = str(header['CCDSUM']).split()
+        if len(parts) == 2 and all(p.isdigit() for p in parts) and parts[0] == parts[1]:
+            spec_bin = spat_bin = int(parts[0])
+    out['binning_spec'], out['binning_spat'] = spec_bin, spat_bin
+    out['pixscale_arcsec'] = _as_float(_first(header, ('PIXSCALE', 'PLATESCL', 'SECPIX'))[0])
+    out['trace_fwhm_pix'] = _as_float(header.get('RVF_TRACE_FWHM'))
+    return out
 
 
 def _header_resolution(header: Mapping[str, Any]) -> float | None:
@@ -557,6 +612,17 @@ def _pypeit_hdu(hdul: fits.HDUList, hdu: int | str | None, path: Any = '') -> in
     return tables[0] if tables else None
 
 
+def _pypeit_trace_fwhm(data: Any, names: list[str], ext_header: Any) -> float | None:
+    """The object's spatial FWHM [binned pixels]: the median of PypeIt's ``FWHMFIT`` column, else the ``FWHM`` key"""
+    if 'FWHMFIT' in names:
+        x = np.asarray(data['FWHMFIT'], dtype=float)
+        x = x[np.isfinite(x) & (x > 0)]
+        if len(x):
+            return float(np.median(x))
+    v = _as_float(ext_header.get('FWHM'))
+    return v if v is not None and np.isfinite(v) and v > 0 else None
+
+
 def _sniff_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
     if not _is_fits(path):
         return False
@@ -577,6 +643,9 @@ def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any =
                       RVF_NOBJ=len(_pypeit_tables(hdul)))
         data = ext.data
         names = [n.upper() for n in _table_columns(ext)]
+        fwhm = _pypeit_trace_fwhm(data, names, ext.header)
+        if fwhm is not None:
+            header['RVF_TRACE_FWHM'] = fwhm
         chosen = None
         for prefix in ('OPT', 'BOX'):
             wcol, fcol, icol = f'{prefix}_WAVE', f'{prefix}_FLAM', f'{prefix}_FLAM_IVAR'
@@ -968,6 +1037,33 @@ def _clean_arrays(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray, sky: np
     return wave[keep], flux[keep], sigma[keep], None if sky is None else sky[keep]
 
 
+#: sky pixels further than this factor above the median |sky| are treated as bad (e.g. PypeIt's 1e10-level fills)
+SKY_ABSURD_FACTOR = 1e3
+
+
+def _clean_sky(sky: np.ndarray | None, name: str = '') -> np.ndarray | None:
+    """
+    The sky with absurd pixels set to NaN: non-finite, or |sky| > `SKY_ABSURD_FACTOR` × the median |sky|
+
+    Pixels masked in the extraction are already dropped with their flux. NaN sky pixels are skipped by the sky
+    zero point (interpolated over for the baseline, never correlated).
+    """
+    if sky is None:
+        return None
+    sky = np.asarray(sky, dtype=float).copy()
+    finite = np.isfinite(sky)
+    if not finite.any():
+        log.warning('%s: the sky spectrum has no finite pixel; ignored', name)
+        return None
+    med = float(np.median(np.abs(sky[finite])))
+    bad = ~finite | ((np.abs(sky) > SKY_ABSURD_FACTOR * med) if med > 0 else np.zeros(len(sky), dtype=bool))
+    if bad.any():
+        log.info('%s: %d sky pixel(s) are non-finite or above %g × the median |sky| (%.3g); set to NaN', name,
+                 int(bad.sum()), SKY_ABSURD_FACTOR, med)
+        sky[bad] = np.nan
+    return sky
+
+
 def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None, medium_in: str,
                       medium_method: str) -> None:
     """Set ``meta['arc_range']`` (vacuum Å) and ``meta['arc_file']`` from a neighbouring PypeIt wavecal file"""
@@ -1076,6 +1172,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
                          "Pass medium='air' or medium='vacuum' (CLI: --medium).")
     wave = to_vacuum(wave, medium_in, medium_method)
     wave, flux, sigma, sky = _clean_arrays(wave, flux, sigma, sky)
+    sky = _clean_sky(sky, path.name)
 
     meta = _meta_from_header(raw.header)
     meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader)

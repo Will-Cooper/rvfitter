@@ -158,12 +158,12 @@ def wavelength_zero_point(spectrum: Spectrum, cfg: Any, *, wave: np.ndarray | Se
     - Zero point, evaluated at the measurements' wavelengths `wave` (the RMS over them; the curves vary by tens
       of km/s across a spectrum, so a single mean offset would misstate it):
       - a correction applied (meta['wavelength_correction']): its own uncertainty, i.e. the sky curve's error
-        σ_sky(λ) with the spread over reasonable curve models (`zp_sky_model_spread`) in quadrature, plus the
-        star − sky constant's error when 'auto' added one; or the telluric curve's error σ_tell(λ);
-      - nothing applied: the offset itself and its uncertainty, √(Δv(λ)² + σ(λ)²), from the sky curve when it was
-        measured (the star − sky constant is then a separate term, `sys_star_sky`), else from the star's telluric
-        curve.
-      Without `wave`, the curves' summary errors (`zp_sky_err`, `zp_tell_err`) and offsets are used.
+        σ_sky(λ) with the spread over reasonable curve models (`zp_sky_model_spread`) in quadrature; or the
+        telluric curve's error σ_tell(λ). The error of an applied star − sky constant is `sys_star_sky`;
+      - nothing applied: the measured curve's uncertainty σ(λ) only (sky, else telluric). A measured offset's value
+        is never counted as an error: it is either applied or unknown (the pipeline warns when a significant
+        offset is left unapplied, and the star's own constant gets the slit-centring prior, `sys_star_sky`).
+      Without `wave`, the curves' summary errors (`zp_sky_err`, `zp_tell_err`) are used.
 
     Returns
     -------
@@ -196,26 +196,21 @@ def wavelength_zero_point(spectrum: Spectrum, cfg: Any, *, wave: np.ndarray | Se
 
     zp = np.nan
     wc = meta.get('wavelength_correction') or {}
-    if wc.get('sky'):  # applied: its uncertainty remains, with that of any star − sky constant
+    if wc.get('sky'):  # applied: its uncertainty remains (a star − sky constant's error is sys_star_sky)
         c = wc['sky']
         zp = (float(np.hypot(rms_of(curve_at(c, observatory(c))[1]), spread_of(c))) if lam is not None
               else float(c.get('zp_sky_err', np.nan)))
-        const_err = wc.get('constant_err', np.nan)
-        if const_err is not None and np.isfinite(const_err):
-            zp = float(np.hypot(zp, const_err))
     elif wc.get('telluric'):  # the star's telluric curve applied
         c = wc['telluric']
         zp = (rms_of(curve_at(c, observatory(c))[1]) if lam is not None
               else float(c.get('zp_tell_err', np.nan)))
-    else:  # measured but not applied: the offset itself remains
+    else:  # measured but not applied: only its uncertainty (a measured offset's value is never an error)
         c = meta.get('sky_zeropoint') or meta.get('telluric_zeropoint')
         if c:
             sky = bool(meta.get('sky_zeropoint'))
             if lam is not None:
-                dv, err = curve_at(c, observatory(c))
-                zp = float(np.hypot(rms_of(np.hypot(dv, err)), spread_of(c) if sky else 0.))
+                zp = float(np.hypot(rms_of(curve_at(c, observatory(c))[1]), spread_of(c) if sky else 0.))
             else:
-                k = 'zp_sky' if sky else 'zp_tell'
-                zp = float(np.hypot(c.get(f'{k}_kms', np.nan), c.get(f'{k}_err', np.nan)))
+                zp = float(c.get('zp_sky_err' if sky else 'zp_tell_err', np.nan))
     vals = [v for v in (arc, zp) if np.isfinite(v)]
     return float(max(vals)) if vals else np.nan

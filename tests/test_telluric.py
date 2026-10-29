@@ -243,16 +243,24 @@ def test_pipeline_telluric_and_auto_modes():
     lam = 9300.
     corrected = float(np.interp(lam, raw.wave, spec.wave))
     assert (lam / corrected - 1.) * 299792.458 == pytest.approx(_dv_true(lam), abs=5.)
-    cfg.calibration.wavelength_correction = 'auto'
-    spec_a, info_a = pipeline.wavelength_correction(raw, raw, cfg, 'X')
-    assert info_a['applied'] == 'sky+telluric'
-    wc = spec_a.meta['wavelength_correction']
-    assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
+    # 'auto' is the default sky-if-needed: the sky curve when needed, plus the star - sky constant when measured
+    regs = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
+            Region('Cs I', 'line', 8515., 8530.)]
     from rvfitter import systematics
-    assert systematics.wavelength_zero_point(spec_a, {}) >= info_a['zp_star_sky_err'] - 1e-9
+    for mode in ('auto', 'sky-if-needed'):
+        cfg.calibration.wavelength_correction = mode
+        spec_a, info_a = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=regs)
+        assert info_a['applied'] == 'sky+star' and info_a['star_sky_applied']
+        assert info_a['zp_flags'] & pipeline.ZP_FLAGS['star_sky_applied']
+        assert info_a['zp_star_sky_n'] >= 2 and info_a['star_sky']['method'] == 'direct sky'
+        assert abs(info_a['zp_star_sky']) < 3. * info_a['zp_star_sky_err'] + 2.  # the star sees the sky's curve
+        wc = spec_a.meta['wavelength_correction']
+        assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
+        # the constant's error is sys_star_sky, not part of sys_wavezp
+        assert systematics.wavelength_zero_point(spec_a, {}) == pytest.approx(info_a['zp_sky_err'])
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, None, raw.meta, 'x')
-    _, info_t = pipeline.wavelength_correction(nosky, nosky, cfg, 'X')
-    assert info_t['applied'] == 'telluric'
+    _, info_t = pipeline.wavelength_correction(nosky, nosky, cfg, 'X', regions=regs)
+    assert info_t['applied'] == 'none' and info_t['zp_flags'] & pipeline.ZP_FLAGS['no_sky']
 
 
 def test_telluric_curve_refused_far_from_nodes():
@@ -267,6 +275,118 @@ def test_telluric_curve_refused_far_from_nodes():
     out, bad = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=[Region('X', 'line', 10700., 10720.)])
     assert bad['applied'] == 'none' and bad['zp_flags'] & pipeline.ZP_FLAGS['telluric_refused']
     assert np.array_equal(out.wave, raw.wave)
+
+
+# ------------------------------------------------------------------------------- the absolute zero-point budget
+REGS = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
+        Region('Cs I', 'line', 8515., 8530.)]
+SLIT_META = dict(slit_width_arcsec=1.23, slit_width_key='DECKER', binning_spec=2, binning_spat=2,
+                 instrument='OSIRIS', pypeit_spec='gtc_osiris', trace_fwhm_pix=3.06)
+
+
+def _star_and_sky(constant: float, slit_meta: bool = True) -> Spectrum:
+    """The star sees the sky's distortion plus `constant` [km/s] (slit centring); the sky sees the distortion only"""
+    sky = _observed(with_sky=True).sky
+    star = _observed(dv_func=lambda w: _dv_true(w) + constant)
+    meta = {**star.meta, **(SLIT_META if slit_meta else {})}
+    return Spectrum(star.wave, star.flux, star.sigma, None, meta, 'synthetic', sky)
+
+
+def _budget_cfg(mode: str = 'sky-if-needed') -> config.Config:
+    cfg = config.Config()
+    cfg.input.resolution = R
+    cfg.calibration.telluric_template = False
+    cfg.calibration.wavelength_correction = mode
+    return cfg
+
+
+def _expected_slit_prior(wave: np.ndarray, at: np.ndarray) -> float:
+    sig = (1.23 - 3.06 * 0.254) / np.sqrt(12.)
+    v = 299792.458 * sig / 0.254 * np.interp(at, wave, np.gradient(wave)) / at
+    return float(np.sqrt(np.mean(v * v)))
+
+
+def test_distortion_plus_constant_recovered_and_applied():
+    """Sky = distortion; star = distortion + 25 km/s: the default applies both, the constant's error is sys_star_sky"""
+    raw = _star_and_sky(25.)
+    spec, info = pipeline.wavelength_correction(raw, raw, _budget_cfg(), 'X', regions=REGS)
+    assert info['applied'] == 'sky+star' and info['star_sky_applied']
+    ss = info['star_sky']
+    assert ss['n_nodes'] >= 2 and ss['consistent'] and ss['p'] > 0.01
+    assert abs(info['zp_star_sky'] - 25.) < 3. * info['zp_star_sky_err'] + 1., ss
+    # the applied correction is the distortion plus the constant, wherever the sky is measured
+    for lam in (7950., 8190., 8520.):
+        applied = float(sky_zeropoint.applied_dv(spec.meta, lam))
+        assert applied == pytest.approx(_dv_true(lam) + 25., abs=3. * info['zp_star_sky_err'] + 3.), lam
+    term = pipeline._star_sky_term(info, spec, np.array([8190., 8520.]), _budget_cfg(), 'X')
+    assert term['value'] == pytest.approx(info['zp_star_sky_err']) and 'measured' in term['term']
+    assert np.isfinite(term['prior'])  # the slit prior is reported even when the constant was measured
+
+
+def test_unmeasured_constant_uses_slit_prior(caplog):
+    """No telluric constraint (the input is telluric-corrected): sky applied, sys_star_sky = (W - F)/√12 prior"""
+    raw = _star_and_sky(25.)
+    cfg = _budget_cfg()
+    cfg.input.telluric_corrected = True
+    spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=REGS)
+    assert info['applied'] == 'sky' and not info['star_sky_applied'] and np.isnan(info['zp_star_sky'])
+    at = np.array([8190., 7950., 8520.])
+    term = pipeline._star_sky_term(info, spec, at, cfg, 'X')
+    assert term['value'] == pytest.approx(_expected_slit_prior(raw.wave, at), rel=1e-6)
+    assert term['flags'] & pipeline.ZP_FLAGS['slit_prior'] and 'slit prior' in term['term']
+    assert 15. < term['value'] < 40.  # ~0.5 binned pixel at 1.4 Å per pixel
+    # a number overrides; zero_point_known (fibre/IFU) removes the term; missing inputs: NaN with a WARNING
+    cfg.calibration.slit_prior = 7.5
+    assert pipeline._star_sky_term(info, spec, at, cfg, 'X')['value'] == 7.5
+    cfg.calibration.slit_prior = 'auto'
+    cfg.calibration.zero_point_known = True
+    known = pipeline._star_sky_term(info, spec, at, cfg, 'X')
+    assert np.isnan(known['value']) and known['flags'] == 0
+    cfg.calibration.zero_point_known = False
+    bare = _star_and_sky(25., slit_meta=False)
+    _, info2 = pipeline.wavelength_correction(bare, bare, cfg, 'X', regions=REGS)
+    caplog.set_level('WARNING')
+    t2 = pipeline._star_sky_term(info2, bare, at, cfg, 'X')
+    assert np.isnan(t2['value']) and t2['flags'] & pipeline.ZP_FLAGS['zp_unconstrained']
+    assert 'unconstrained' in t2['term'] and 'absolute wavelength zero point is unconstrained' in caplog.text
+
+
+@pytest.mark.parametrize('mode', ['sky', 'none'])
+def test_measured_offset_value_never_enters_the_error(mode, monkeypatch):
+    """A measured but unapplied star - sky constant (0 or 60 km/s) gives the same error terms: never its value"""
+    terms = []
+    for constant in (0., 60.):
+        raw = _star_and_sky(constant)
+        cfg = _budget_cfg(mode)
+        cfg.calibration.telluric_source = 'telluric.fits'  # measured from the input itself (patched below)
+        monkeypatch.setattr(pipeline, '_matching_object', lambda *a, _raw=raw, **k: _raw)
+        spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=REGS)
+        assert not info['star_sky_applied'] and abs(info['zp_star_sky'] - constant) < 10.  # measured
+        assert info['applied'] == ('sky' if mode == 'sky' else 'none')
+        from rvfitter import systematics
+        at = np.array([8190., 8520.])
+        term = pipeline._star_sky_term(info, spec, at, cfg, 'X')
+        terms.append((term['value'], systematics.wavelength_zero_point(spec, cfg, wave=at)))
+    (s0, w0), (s60, w60) = terms
+    assert s0 == pytest.approx(s60) and s0 < 40.  # the slit prior both times
+    assert w0 == pytest.approx(w60, rel=1e-6)
+
+
+def test_star_minus_sky_direct_needs_two_consistent_nodes(caplog):
+    tell = TZ.measure(_observed(dv_func=lambda w: _dv_true(w) + 10.), resolution=R)
+    n = len(tell.node_wave)
+    good = [dict(dv=float(_dv_true(x)), err=2., used=True, reason='ok') for x in tell.node_wave]
+    ss = TZ.star_minus_sky_direct(tell, good)
+    assert ss['n_nodes'] == n and abs(ss['zp_star_sky'] - 10.) < 3. * ss['zp_star_sky_err'] + 1.
+    one = [dict(g, used=(k == 0)) for k, g in enumerate(good)]
+    caplog.set_level('INFO')
+    s1 = TZ.star_minus_sky_direct(tell, one)
+    assert np.isnan(s1['zp_star_sky']) and s1['n_nodes'] == 1 and 'not measured' in caplog.text
+    # nodes that disagree (alternating ± 30 km/s): flagged and Birge-inflated
+    bad = [dict(g, dv=g['dv'] + (30. if k % 2 else -30.)) for k, g in enumerate(good)]
+    sb = TZ.star_minus_sky_direct(tell, bad)
+    assert not sb['consistent'] and sb['p'] <= 0.01 and sb['birge'] > 1.
+    assert sb['zp_star_sky_err'] == pytest.approx(sb['birge'] * ss['zp_star_sky_err'], rel=0.05)
 
 
 # ------------------------------------------------------------------------------------------------ telluric_ref

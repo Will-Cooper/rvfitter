@@ -103,8 +103,8 @@ def _columns() -> list[str]:
     cols += ['rv_adopted', 'rv_adopted_err', 'rv_adopted_q16', 'rv_adopted_q84', 'tau_line', 'tau_method',
              'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'sys_star_sky',
              'rv_total_err', *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread',
-             'zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n',
-             'wavelength_correction', 'wavelength_correction_applied', 'zp_flags', 'rv_epoch_pvalue',
+             'zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n', 'star_sky_term',
+             'slit_prior_kms', 'wavelength_correction', 'wavelength_correction_applied', 'zp_flags', 'rv_epoch_pvalue',
              'rv_epoch_variable', 'n_epochs',
              'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'refitted', 'config_hash', 'version']
     return cols
@@ -153,7 +153,8 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         sysd = res.systematics or {}
         row['sys_template'] = _num(sysd.get('template_spread'))
         row['sys_wavezp'] = _num(sysd.get('wavelength_zero_point'))
-        # the star − sky offset (slit centring) when measured but not applied: |zp_star_sky| ⊕ its error
+        # the star's absolute zero point (slit centring): the applied star − sky constant's error, else the
+        # slit-centring prior (never a measured offset's value); NaN when unconstrained (see star_sky_term)
         row['sys_star_sky'] = _num(sysd.get('star_sky_systematic'))
         row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'],
                                      row['sys_star_sky'], _num(sysd.get('floor')))
@@ -167,6 +168,8 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
             row[key] = _num(sysd.get(key))
         n_ss = _num(sysd.get('zp_star_sky_n'))
         row['zp_star_sky_n'] = int(n_ss) if np.isfinite(n_ss) else 0
+        row['star_sky_term'] = str(sysd.get('star_sky_term', ''))  # what sys_star_sky is
+        row['slit_prior_kms'] = _num(sysd.get('slit_prior'))  # the computed slit-centring prior, used or not
         ep = (res.adopted or {}).get('epochs') or {}
         row['rv_epoch_pvalue'] = _num(ep.get('pvalue'))
         row['rv_epoch_variable'] = bool(ep.get('variable', False))
