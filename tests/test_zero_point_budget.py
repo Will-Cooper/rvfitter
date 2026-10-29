@@ -53,6 +53,13 @@ def test_io_drops_absurd_sky_and_reads_slit(tmp_path):
     assert io.read_spectrum(tmp_path / 'u.fits').meta['slit_width_key'] == 'MASKNAME'
 
 
+def test_centroid_rms_limits():
+    assert slit.centroid_rms(1.23, 1e-4) == pytest.approx(1.23 / np.sqrt(12.), rel=1e-3)  # point source: uniform
+    assert slit.centroid_rms(2.0, 0.5) == pytest.approx(1.5 / np.sqrt(12.), rel=0.05)  # core well inside the slit
+    vals = [slit.centroid_rms(1.0, f) for f in (0.6, 1.0, 1.5, 3.0)]
+    assert all(np.isfinite(vals)) and vals == sorted(vals, reverse=True)  # wider seeing, smaller shift
+
+
 def test_slit_prior_formula_and_missing_inputs():
     wave = 7300. + 1.39 * np.arange(2000)
     meta = dict(slit_width_arcsec=1.23, slit_width_key='DECKER', binning_spec=2, binning_spat=2, instrument='OSIRIS',
@@ -60,13 +67,14 @@ def test_slit_prior_formula_and_missing_inputs():
     spec = Spectrum(wave, np.ones(len(wave)), np.ones(len(wave)), None, meta, 'x')
     inp = slit.inputs([None, spec])
     assert inp.scale_spec == pytest.approx(0.254) and inp.fwhm_arcsec == pytest.approx(3.06 * 0.254)
-    sig = (1.23 - 3.06 * 0.254) / np.sqrt(12.)
-    assert inp.sigma_arcsec == pytest.approx(sig)
+    sig = slit.centroid_rms(1.23, 3.06 * 0.254)
+    assert inp.sigma_arcsec == pytest.approx(sig) and 0. < sig < (1.23 - 3.06 * 0.254) / np.sqrt(12.)
     assert slit.prior_kms(inp, 8500.) == pytest.approx(C * sig / 0.254 * 1.39 / 8500.)
     assert slit.instrument_pixscale('gtc_osiris_plus', 'OSIRIS')[0] == 0.125
-    # the seeing overfills the slit, or an input is missing: NaN (the pipeline warns)
+    # the seeing overfills the slit: the clipping damps the shift, so the prior is small but finite
     wide = slit.inputs([Spectrum(wave, wave, wave, None, {**meta, 'trace_fwhm_pix': 6.}, 'x')])
-    assert np.isnan(slit.prior_kms(wide, 8500.))
+    assert 0. < slit.prior_kms(wide, 8500.) < 0.2 * slit.prior_kms(inp, 8500.)
+    # an input is missing: NaN (the pipeline warns)
     bare = slit.inputs([Spectrum(wave, wave, wave, None, {'instrument': 'UNKNOWN'}, 'x')])
     assert np.isnan(slit.prior_kms(bare, 8500.)) and len(bare.missing) == 3
     # a header plate scale is used as is
@@ -147,7 +155,7 @@ def test_j1745_slit_prior(testdata):
     assert inp.width_arcsec == 1.23 and 'DECKER' in inp.width_source
     assert inp.fwhm_arcsec == pytest.approx(3.06 * 0.254, abs=0.01) and inp.scale_spec == pytest.approx(0.254)
     prior = slit.prior_kms(inp, np.array([7802., 7949., 8190., 8523.]))
-    assert 20. < prior < 30.  # (1.23 - 0.78)/√12 = 0.13 arcsec = 0.51 pixel ≈ 0.71 Å
+    assert 12. < prior < 25.  # clipped-Gaussian centroid RMS 0.09 arcsec ≈ 0.36 pixel ≈ 0.5 Å
 
 
 @pytest.mark.data

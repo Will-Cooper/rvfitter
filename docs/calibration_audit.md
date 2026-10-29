@@ -103,7 +103,7 @@ Table 3: Paper RVs (Cooper et al. 2024) against the literature [km/s].
 
 - An offset is either applied, with its error carried as a systematic, or unknown, with a physically motivated prior width; a measured offset's value is never added to the error budget.
 - The default (`sky-if-needed`, and `auto`, which is now the same) applies the sky curve when the calibration data need it, and the star − sky constant with it when at least two telluric nodes have the sky measured in the same window (`wavelength_correction_applied = "sky+star"`; its error is `sys_star_sky`).
-- Otherwise `sys_star_sky` is the slit-centring prior σ = (W − F)/√12 through the plate scale and the dispersion (for J1745−1640, W = 1.23 arcsec from `DECKER`, F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec, σ = 0.13 arcsec = 25.6 km/s).
+- Otherwise `sys_star_sky` is the slit-centring prior: the RMS centroid of a Gaussian profile clipped by the slit, for a position uniform within ±max((W − F)/2, 0.1 arcsec), through the plate scale and the dispersion (for J1745−1640, W = 1.23 arcsec from `DECKER`, F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec, σ = 0.092 arcsec = 18.0 km/s).
 - `sky_zeropoint` adds a synthetic bias test to every segment, which down-weights the blue-edge segment; `io` drops absurd sky pixels.
 - The details are in `docs/methods.md` (Wavelength zero point) and `docs/dev_notes_methods.md`.
 

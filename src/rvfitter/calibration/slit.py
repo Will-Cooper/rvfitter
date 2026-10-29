@@ -1,12 +1,17 @@
 """
 Slit-centring prior on a star's absolute wavelength zero point.
 
-A point source in a slit of width W [arcsec] whose seeing FWHM F is smaller than W can sit anywhere within
-±(W − F)/2 of the slit centre, while the uniformly illuminated sky (and the arc lamp) fills the slit. Its light then
-lands shifted along the dispersion by that offset, so its wavelength zero point differs from the sky's by an
-unknown constant. With a uniform prior on the offset, the RMS is
+A point source in a slit of width W [arcsec] with seeing FWHM F is placed somewhere across the slit, while the
+uniformly illuminated sky (and the arc lamp) fills it. The light that passes the slit then has its centroid
+displaced along the dispersion, so the star's wavelength zero point differs from the sky's by an unknown constant.
+We take the profile centre x as uniform within ±δ, δ = max((W − F)/2, `ACQUISITION_ARCSEC`), i.e. anywhere
+the whole core fits, but never better than the acquisition accuracy, and the profile as a Gaussian clipped by
+the slit edges. The centroid of the transmitted light is
 
-    σ_x = (W − F) / √12  [arcsec],
+    c(x) = x + σ [φ(a) − φ(b)] / [Φ(b) − Φ(a)],   a = (−W/2 − x)/σ,  b = (W/2 − x)/σ,  σ = F/√(8 ln 2),
+
+and σ_x is the RMS of c(x) over the prior. For F ≪ W, c(x) = x and σ_x = (W − F)/√12; when the star
+overfills the slit (F ≥ W) the clipping damps the shift, so σ_x stays finite and small rather than undefined.
 
 which becomes a velocity through the plate scale along the dispersion (arcsec per binned pixel) and the dispersion
 D(λ) [Å per pixel] of the wavelength solution:
@@ -22,8 +27,8 @@ Inputs:
   ``data/instruments.csv`` times the header binning;
 - D(λ): the spacing of the native wavelength solution of the spectrum that provided the header.
 
-When F ≥ W the star overfills the slit and this prior is not defined; when an input is missing it cannot be
-computed. Both return NaN (the caller warns that the absolute zero point is unconstrained).
+When an input is missing the prior cannot be computed and NaN is returned (the caller warns that the absolute
+zero point is unconstrained).
 """
 import functools
 import logging
@@ -32,12 +37,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from scipy.special import ndtr
 
 from ..constants import C_KMS
 
-__all__ = ['SlitInputs', 'instrument_pixscale', 'inputs', 'prior_kms']
+__all__ = ['SlitInputs', 'ACQUISITION_ARCSEC', 'centroid_rms', 'instrument_pixscale', 'inputs', 'prior_kms']
 
 log = logging.getLogger(__name__)
+
+ACQUISITION_ARCSEC = 0.1  # the smallest half-range of the star's position across the slit (target acquisition)
 
 
 @functools.lru_cache(maxsize=1)
@@ -88,10 +96,10 @@ class SlitInputs:
 
     @property
     def sigma_arcsec(self) -> float:
-        """(W − F)/√12; NaN if an input is missing or F ≥ W"""
-        if self.width_arcsec is None or self.fwhm_arcsec is None or not self.width_arcsec > self.fwhm_arcsec:
+        """RMS centroid offset of the transmitted light across the slit [arcsec]; NaN if W or F is unknown"""
+        if self.width_arcsec is None or self.fwhm_arcsec is None or not self.width_arcsec > 0:
             return float('nan')
-        return float((self.width_arcsec - self.fwhm_arcsec) / np.sqrt(12.))
+        return centroid_rms(self.width_arcsec, self.fwhm_arcsec)
 
     def as_dict(self) -> dict[str, Any]:
         return dict(slit_width_arcsec=self.width_arcsec, slit_width_source=self.width_source,
@@ -148,6 +156,22 @@ def inputs(spectra: Sequence[Any]) -> SlitInputs:
         out.disp_wave, out.disp = w, np.gradient(w)
         out.disp_source = f'wavelength solution of {getattr(disp_spec, "source", "")}'
     return out
+
+
+def centroid_rms(width: float, fwhm: float, acquisition: float = ACQUISITION_ARCSEC, n: int = 401) -> float:
+    """
+    RMS [arcsec] of the transmitted-light centroid c(x) of a Gaussian profile (FWHM `fwhm`) clipped by a slit of
+    width `width`, for a profile centre x uniform within ±max((width − fwhm)/2, acquisition)
+    """
+    half = max((width - fwhm) / 2., acquisition)
+    x = half * ((2. * np.arange(n) + 1.) / n - 1.)  # midpoints of n equal bins: an unbiased uniform average
+    sig = fwhm / np.sqrt(8. * np.log(2.))
+    if sig <= 0:
+        return float(np.sqrt(np.mean(np.clip(x, -width / 2., width / 2.) ** 2)))
+    a, b = (-width / 2. - x) / sig, (width / 2. - x) / sig
+    pdf = np.exp(-0.5 * a * a) - np.exp(-0.5 * b * b)
+    c = x + sig * pdf / np.sqrt(2. * np.pi) / np.maximum(ndtr(b) - ndtr(a), 1e-300)
+    return float(np.sqrt(np.mean(c * c)))
 
 
 def prior_kms(inp: SlitInputs, wave: np.ndarray | Sequence[float] | float) -> float:

@@ -102,7 +102,7 @@ Each node's error includes the spread over the neighbouring templates (±100 K).
 We fixed the following error budget before running the benchmark, and did not change it afterwards.
 An offset is either applied, with its error carried as a systematic, or unknown, with a physically motivated prior width; a measured offset's value is never added to the error budget.
 
-By default (`wavelength_correction = "sky-if-needed"`; `"auto"` is now the same), rvfitter measures the sky zero point whenever a sky spectrum is present and applies its shape only when three tests on the calibration data pass:
+By default (`wavelength_correction = "sky-if-needed"`), rvfitter measures the sky zero point whenever a sky spectrum is present and applies its shape only when three tests on the calibration data pass:
 (a) at least three measured sky segments, with every region more than half covered by them;
 (b) a significant offset (|mean Δv| > 3σ, with σ combining the curve and arc-RMS errors) or a significant variation between segments (χ² p < 0.001);
 (c) a correction larger than 0.05 resolution elements.
@@ -112,7 +112,7 @@ When the nodes disagree (χ² p ≤ 0.01), the constant's error is inflated by t
 The error budget then has three zero-point terms:
 - `sys_wavezp`, the uncertainty of the applied curve at the measurements' wavelengths (or, when nothing is applied, only the uncertainty of the measured curve, never its value; a WARNING is logged when a significant offset is left unapplied);
 - `sys_star_sky`, the error of the applied star − sky constant;
-- otherwise, `sys_star_sky` is a slit-centring prior. A star whose seeing FWHM F is smaller than the slit width W can sit anywhere within ±(W − F)/2, so σ = (W − F)/√12, converted to a velocity through the plate scale along the dispersion and the dispersion of the wavelength solution (`calibration.slit_prior = "auto"`; a number in km/s, or `"none"`). W comes from the header (`SLITW`, else 'N.NNarcsec' in `MASKNAME` or `DECKER`), F from `PypeIt`'s trace FWHM, and the plate scale from the header or `data/instruments.csv` (OSIRIS 0.127 arcsec per unbinned pixel; GTC OSIRIS manual and `PypeIt`). Without these inputs, a WARNING says that the absolute zero point is unconstrained, the term is NaN and `zp_flags` has `zp_unconstrained`. `calibration.zero_point_known = true` (fibre, IFU or absolute calibration) removes the term.
+- otherwise, `sys_star_sky` is a slit-centring prior. The star's profile (a Gaussian of FWHM F) is taken to sit anywhere within ±max((W − F)/2, 0.1 arcsec) of the slit centre, clipped by the slit edges, and σ is the RMS centroid of the transmitted light. This is (W − F)/√12 for F ≪ W, and it stays finite and small when the seeing overfills the slit. It is converted to a velocity through the plate scale along the dispersion and the dispersion of the wavelength solution (`calibration.slit_prior = "auto"`; a number in km/s, or `"none"`). W comes from the header (`SLITW`, else 'N.NNarcsec' in `MASKNAME` or `DECKER`), F from `PypeIt`'s trace FWHM, and the plate scale from the header or `data/instruments.csv` (OSIRIS 0.127 arcsec per unbinned pixel; GTC OSIRIS manual and `PypeIt`). Without these inputs, a WARNING says that the absolute zero point is unconstrained, the term is NaN and `zp_flags` has `zp_unconstrained`. `calibration.zero_point_known = true` (fibre, IFU or absolute calibration) removes the term.
 
 The sky segments now carry a synthetic bias test: noise-free model skies with the line width off by −20 or +25 per cent, or the line amplitudes perturbed by ±30 per cent, are measured like the data, and the largest |Δv| is added in quadrature to the segment's error (a segment biased by more than 0.1 resolution elements is excluded).
 On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (12 km/s against a statistical error of 5 km/s) and is down-weighted; none is excluded.
@@ -120,21 +120,28 @@ On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (1
 
 For J1745−1640, all three sky tests pass: 6 segments with every region 100 per cent measured, a mean offset of +14.9 ± 3.6 km/s (4.1σ), a segment variation with χ² = 53 for 5 degrees of freedom (p = 3 × 10⁻¹⁰), and a largest correction of 33.5 km/s at the regions against a floor of 5.8 km/s.
 The sky and the star − sky constant (−23.8 ± 3.6 km/s, four nodes) are therefore both applied.
-The slit prior, reported in every mode, is 25.6 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.131 arcsec = 0.51 pixel at 1.39 Å per pixel.
+The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the paper's RVs about the literature (`docs/calibration_audit.md`).
 
 Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0).
 
 | Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|---|
-| none | none | 37.73 | 5.03 (2.08) | 28.71 (0.40) | 8.3 | 7.0 | 9.7 | 25.6 (slit prior) |
-| sky | sky | 18.95 | 3.32 (1.80) | 28.62 (0.25) | 2.0 | 7.6 | 9.7 | 25.6 (slit prior) |
-| sky-if-needed (default) | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
-| auto | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
-| telluric | refused (coverage) | 37.73 | 5.03 (2.08) | 28.71 (0.40) | 8.3 | 7.0 | 9.7 | 25.6 (slit prior) |
+| none | none | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
+| sky | sky | 18.95 | 3.32 (1.80) | 22.12 (0.33) | 2.0 | 7.6 | 9.7 | 18.0 (slit prior) |
+| sky-if-needed (default) | sky | 18.95 | 3.32 (1.80) | 22.12 (0.33) | 2.0 | 7.6 | 9.7 | 18.0 (slit prior) |
+| auto (opt-in) | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
+| telluric | refused (coverage) | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
 
 Correcting the sky shape collapses the line-to-line scatter (τ_line falls from 8.3 to 1.9 km/s), a test that does not use the benchmark.
-The modes without a measured constant now carry the 25.6 km/s slit prior instead of the measured offset's value, so their total errors (28.6–28.7 km/s) are honest but large.
+The modes without a measured constant now carry the 18.0 km/s slit prior instead of the measured offset's value, so their total errors (22.1–22.2 km/s) are honest but large.
 The default applies the measured constant and lands 16.7 km/s above the benchmark, at z = 1.25 with the total error but z = 4.2 with the statistical error alone.
 The two methods agree (CCF 43.2 and template fit 42.5 km/s), so the offset is common to both.
 We note three possible causes, none of which we tested against the benchmark: the H2O 9300 nodes, three of the four, lie 540–1260 Å redward of Cs I 8523, the reddest alkali line, so the constant assumes that the star − sky difference is the same at 7800–8500 Å, which only the 8200 Å node (−17.3 ± 10.6 km/s) tests directly; the BT-Settl template in the telluric fit may bias the nodes (a smooth star gave a constant 3.5 km/s less negative in the audit); and the literature value itself, from a different instrument and epoch, has its own zero point.
 In conclusion, on this spectrum the wavelength calibration, not the RV method, limits the absolute RV, and the budget now says so without ever counting a measured offset as an error.
+
+### Why the star − sky constant is opt-in
+
+On J1745−1640 the telluric nodes measure the star 23.8 ± 3.6 km/s bluer than the sky (4 nodes, χ² 0.4/3), and applying it moves the RV from 18.9 to 42.9 km/s, further from Burgasser et al. (2015).
+The physics of the correction is sound, but it has been tested on one object only, and three of the four nodes lie 540–1260 Å redward of the bluest alkali line used.
+We therefore keep it opt-in (`wavelength_correction = "auto"`) until it is validated on a larger sample with independent RVs, and report the measured constant (`zp_star_sky`) in every mode.
+In the default, the star's slit-centring term enters only through the slit prior (18.0 km/s for J1745).

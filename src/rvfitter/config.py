@@ -155,11 +155,12 @@ class OutputConfig:
 @dataclass
 class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
-    # 'sky-if-needed' (default; 'auto' is the same): measure the OH sky zero point Δv(λ) and apply it only when the
-    # calibration data say it is safe and needed (enough measured sky segments covering the regions, a significant
-    # offset or distortion, larger than 0.05 resolution elements); when it is applied and the star - sky constant
-    # is measured (>= 2 telluric nodes against the sky in the same windows), apply that too ('sky+star'; its error
-    # is sys_star_sky). 'sky': the sky curve alone; 'telluric': the star's telluric curve; 'none': measure and
+    # 'sky-if-needed' (default): measure the OH sky zero point Δv(λ) and apply it only when the calibration data say
+    # it is safe and needed (enough measured sky segments covering the regions, a significant offset or distortion,
+    # larger than 0.05 resolution elements); the star - sky constant is measured and reported but not applied, and
+    # the slit-centring prior is its systematic. 'auto' (opt-in until validated on more than one object): the same,
+    # plus the star - sky constant when it is measured (>= 2 telluric nodes against the sky in the same windows;
+    # 'sky+star', its error is sys_star_sky). 'sky': the sky curve alone; 'telluric': the star's telluric curve; 'none': measure and
     # report only. A measured but unapplied offset counts only through its uncertainty. What was applied is always
     # logged and recorded (wavelength_correction_applied, zp_flags).
     wavelength_correction: str = 'sky-if-needed'

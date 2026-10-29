@@ -13,7 +13,7 @@
 - `calibration/telluric`: `model()` (HITRAN, vacuum, 6000–25 000 Å, τ_dry and τ_H2O; read from `cache_path()`, never shipped; raises `TelluricModelUnavailable`), `available`, `cache_path` (`$RVFITTER_TELLURIC_MODEL` overrides), `reload`, `transmission(wave, airmass, pwv, resolution=, dv=)`, `mask(wave, threshold)`.
 - `calibration/telluric_build`: `build(out=None, *, line_cache=, force=, get=)` (HITRANonline → cache; provenance, citation and terms in the metadata and a JSON sidecar). `tools/build_telluric_model.py` is a thin wrapper.
 - `calibration/telluric_zeropoint`: `measure(spectrum, regions, resolution=, template=, teff=, spread_templates=)` → `TelluricZeroPoint` (unpacks as (zp, err); `dv(λ)`), `star_minus_sky_direct(tell, sky_windows)` (the pipeline's: the sky measured in each node's own window; ≥ 2 nodes; Birge + `consistent` when p ≤ 0.01), `node_windows`, `star_minus_sky(tell, sky)` (legacy: the sky curve at nodes inside measured segments), `frame_factor`.
-- `calibration/slit`: `inputs(spectra)` → `SlitInputs` (W, F, plate scales, dispersion, sources, `missing`), `prior_kms(inputs, wave)` = RMS of c (W − F)/√12 / s_spec · D(λ)/λ, `instrument_pixscale` (`data/instruments.csv`).
+- `calibration/slit`: `inputs(spectra)` → `SlitInputs` (W, F, plate scales, dispersion, sources, `missing`), `centroid_rms(W, F)` (clipped-Gaussian centroid RMS over the position prior), `prior_kms(inputs, wave)` = RMS of c σ_x / s_spec · D(λ)/λ, `instrument_pixscale` (`data/instruments.csv`).
 - `methods/telluric_ref`: v_star − v_tell per telluric segment (`prior_template`, `neighbour_templates`).
 - `io.read_spectrum`: multi-object PypeIt spec1d → the name-matched table, else the highest-S/N science object (logged; `input.hdu` overrides; `meta['hdu'|'extname'|'n_objects']`).
 - `systematics`: `template_spread(_details)` (templates, grids, window modes), `wavelength_zero_point(spectrum, cfg, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
@@ -40,13 +40,13 @@
 
 | Mode | Applied | Adopted [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|---|
-| none | none | 37.73 | 5.03 (2.08) | 28.71 (0.40) | 8.3 | 7.0 | 9.7 | 25.6 (slit prior) |
-| sky | sky | 18.95 | 3.32 (1.80) | 28.62 (0.25) | 2.0 | 7.6 | 9.7 | 25.6 (slit prior) |
+| none | none | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
+| sky | sky | 18.95 | 3.32 (1.80) | 22.12 (0.33) | 2.0 | 7.6 | 9.7 | 18.0 (slit prior) |
 | sky-if-needed | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
 | auto | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
-| telluric | refused | 37.73 | 5.03 (2.08) | 28.71 (0.40) | 8.3 | 7.0 | 9.7 | 25.6 (slit prior) |
+| telluric | refused | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
 
-zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 9300 −24.9 ± 4.9, −23.1 ± 13.8, −24.5 ± 7.1; χ² 0.4/3, p = 0.93). Slit prior 25.6 km/s: W = 1.23 arcsec (`DECKER`), F = 3.06 pix (HDU 2 `FWHMFIT`) × 0.254 arcsec/pix (`data/instruments.csv` gtc_osiris 0.127 × `BINNING` 2,2), σ_x = 0.131 arcsec, D = 1.39 Å/pix. Sky tests: 6 segments, +14.9 ± 3.6 km/s (4.1σ), χ² 53/5, max correction 33.5 km/s → applied. The default lands 16.7 km/s above the benchmark (z_stat 4.2, z_total 1.25); see methods.md for the candidate causes (none tested against the benchmark).
+zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 9300 −24.9 ± 4.9, −23.1 ± 13.8, −24.5 ± 7.1; χ² 0.4/3, p = 0.93). Slit prior 18.0 km/s (clipped-Gaussian centroid): W = 1.23 arcsec (`DECKER`), F = 3.06 pix (HDU 2 `FWHMFIT`) × 0.254 arcsec/pix (`data/instruments.csv` gtc_osiris 0.127 × `BINNING` 2,2), σ_x = 0.092 arcsec, D = 1.39 Å/pix. Sky tests: 6 segments, +14.9 ± 3.6 km/s (4.1σ), χ² 53/5, max correction 33.5 km/s → applied. The default lands 16.7 km/s above the benchmark (z_stat 4.2, z_total 1.25); see methods.md for the candidate causes (none tested against the benchmark).
 
 **Open items, in order:**
 1. Zenodo fixes (reviewer-p, `review_unit3b_fix.md`):
@@ -567,6 +567,6 @@ The orchestrator's decisions A–E, all fixed before the benchmark was run:
 
 **Tests:** `tests/test_telluric.py` (distortion + 25 km/s recovered and applied as "sky+star"; telluric-corrected input → sky + slit prior, numeric prior, `zero_point_known`, missing inputs → NaN + WARNING; 0 vs 60 km/s unapplied constants give identical error terms in "sky" and "none"; direct star − sky needs two nodes and Birge-inflates inconsistent ones) and `tests/test_zero_point_budget.py` (io sky cleaning and slit keywords, the prior's formula, the bias test, `measure_windows` inside a band, config validation; data: J1745's prior and blue-edge segment).
 
-**J1745:** see the Handoff table. The modes without a measured constant now carry the 25.6 km/s slit prior, so their σ_total (28.6–28.7 km/s) gives z ≤ 0.40 trivially; the default applies −23.8 ± 3.6 km/s and lands at 42.86 (z_total 1.25, z_stat 4.18). Candidate causes, untested against the benchmark: three of the four nodes lie 540–1260 Å redward of Cs I 8523; template bias in the telluric fit (smooth star 3.5 km/s less negative); the literature's own zero point.
+**J1745:** see the Handoff table. The modes without a measured constant now carry the 18.0 km/s slit prior, so their σ_total (22.1–22.2 km/s) gives z ≤ 0.52 trivially; the default applies −23.8 ± 3.6 km/s and lands at 42.86 (z_total 1.25, z_stat 4.18). Candidate causes, untested against the benchmark: three of the four nodes lie 540–1260 Å redward of Cs I 8523; template bias in the telluric fit (smooth star 3.5 km/s less negative); the literature's own zero point.
 
 **Not done:** the line-width-ratio estimate of F; instruments other than OSIRIS in `data/instruments.csv`; per-node wavelength dependence of the star − sky difference (a linear term) is not modelled.

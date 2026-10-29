@@ -243,11 +243,16 @@ def test_pipeline_telluric_and_auto_modes():
     lam = 9300.
     corrected = float(np.interp(lam, raw.wave, spec.wave))
     assert (lam / corrected - 1.) * 299792.458 == pytest.approx(_dv_true(lam), abs=5.)
-    # 'auto' is the default sky-if-needed: the sky curve when needed, plus the star - sky constant when measured
+    # 'auto' (opt-in): the sky curve when needed, plus the star - sky constant when measured
     regs = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
             Region('Cs I', 'line', 8515., 8530.)]
     from rvfitter import systematics
-    for mode in ('auto', 'sky-if-needed'):
+    # the default sky-if-needed applies the sky curve only; the constant is measured and reported, not applied
+    cfg.calibration.wavelength_correction = 'sky-if-needed'
+    spec_d, info_d = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=regs)
+    assert info_d['applied'] == 'sky' and not info_d.get('star_sky_applied')
+    assert np.isfinite(info_d['zp_star_sky']) and info_d['zp_star_sky_n'] >= 2
+    for mode in ('auto',):
         cfg.calibration.wavelength_correction = mode
         spec_a, info_a = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=regs)
         assert info_a['applied'] == 'sky+star' and info_a['star_sky_applied']
@@ -301,15 +306,16 @@ def _budget_cfg(mode: str = 'sky-if-needed') -> config.Config:
 
 
 def _expected_slit_prior(wave: np.ndarray, at: np.ndarray) -> float:
-    sig = (1.23 - 3.06 * 0.254) / np.sqrt(12.)
+    from rvfitter.calibration import slit
+    sig = slit.centroid_rms(1.23, 3.06 * 0.254)
     v = 299792.458 * sig / 0.254 * np.interp(at, wave, np.gradient(wave)) / at
     return float(np.sqrt(np.mean(v * v)))
 
 
 def test_distortion_plus_constant_recovered_and_applied():
-    """Sky = distortion; star = distortion + 25 km/s: the default applies both, the constant's error is sys_star_sky"""
+    """Sky = distortion; star = distortion + 25 km/s: 'auto' applies both, the constant's error is sys_star_sky"""
     raw = _star_and_sky(25.)
-    spec, info = pipeline.wavelength_correction(raw, raw, _budget_cfg(), 'X', regions=REGS)
+    spec, info = pipeline.wavelength_correction(raw, raw, _budget_cfg('auto'), 'X', regions=REGS)
     assert info['applied'] == 'sky+star' and info['star_sky_applied']
     ss = info['star_sky']
     assert ss['n_nodes'] >= 2 and ss['consistent'] and ss['p'] > 0.01
@@ -324,7 +330,7 @@ def test_distortion_plus_constant_recovered_and_applied():
 
 
 def test_unmeasured_constant_uses_slit_prior(caplog):
-    """No telluric constraint (the input is telluric-corrected): sky applied, sys_star_sky = (W - F)/√12 prior"""
+    """No telluric constraint (the input is telluric-corrected): sky applied, sys_star_sky = the slit-centring prior"""
     raw = _star_and_sky(25.)
     cfg = _budget_cfg()
     cfg.input.telluric_corrected = True

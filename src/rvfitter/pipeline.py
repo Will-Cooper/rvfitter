@@ -711,8 +711,8 @@ def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '
       directly in the same window (`telluric_zeropoint.star_minus_sky_direct`: ≥ 2 nodes; Birge-inflated and
       flagged when the nodes disagree, p ≤ 0.01).
     - What is applied to ``spec`` (which may already be barycentric-corrected; the correction is a multiplicative
-      factor) follows ``wavelength_correction``: 'sky-if-needed' (default) and its synonym 'auto' the sky curve
-      when `_sky_needed` passes, plus the star − sky constant when it is measured ('sky+star'); 'sky' the sky
+      factor) follows ``wavelength_correction``: 'sky-if-needed' (default) the sky curve when `_sky_needed` passes;
+      'auto' the same plus the star − sky constant when it is measured ('sky+star', opt-in); 'sky' the sky
       curve alone; 'telluric' the telluric curve if it covers the regions; 'none' nothing.
     - A measured offset's value never becomes an error: what is not applied counts only through its uncertainty
       (sys_wavezp) or, for the star's slit-centring constant, through the slit prior (``info['slit']``, the inputs
@@ -826,7 +826,7 @@ def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '
         info['zp_flags'] |= ZP_FLAGS['telluric_applied']
         return sky_zeropoint.apply(spectrum, tzp, source='telluric')
 
-    if sky_ok and mode in ('sky-if-needed', 'auto') and np.isfinite(info['zp_star_sky']):
+    if sky_ok and mode == 'auto' and np.isfinite(info['zp_star_sky']):  # opt-in until validated beyond J1745
         spec = sky_zeropoint.apply(spec, zp, constant_kms=info['zp_star_sky'], constant_err=info['zp_star_sky_err'],
                                    source='sky+star')
         info['applied'] = 'sky+star'
