@@ -243,16 +243,24 @@ def test_pipeline_telluric_and_auto_modes():
     lam = 9300.
     corrected = float(np.interp(lam, raw.wave, spec.wave))
     assert (lam / corrected - 1.) * 299792.458 == pytest.approx(_dv_true(lam), abs=5.)
-    cfg.calibration.wavelength_correction = 'auto'
-    spec_a, info_a = pipeline.wavelength_correction(raw, raw, cfg, 'X')
-    assert info_a['applied'] == 'sky+telluric'
-    wc = spec_a.meta['wavelength_correction']
-    assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
+    # 'auto' is the default sky-if-needed: the sky curve when needed, plus the star - sky constant when measured
+    regs = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
+            Region('Cs I', 'line', 8515., 8530.)]
     from rvfitter import systematics
-    assert systematics.wavelength_zero_point(spec_a, {}) >= info_a['zp_star_sky_err'] - 1e-9
+    for mode in ('auto', 'sky-if-needed'):
+        cfg.calibration.wavelength_correction = mode
+        spec_a, info_a = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=regs)
+        assert info_a['applied'] == 'sky+star' and info_a['star_sky_applied']
+        assert info_a['zp_flags'] & pipeline.ZP_FLAGS['star_sky_applied']
+        assert info_a['zp_star_sky_n'] >= 2 and info_a['star_sky']['method'] == 'direct sky'
+        assert abs(info_a['zp_star_sky']) < 3. * info_a['zp_star_sky_err'] + 2.  # the star sees the sky's curve
+        wc = spec_a.meta['wavelength_correction']
+        assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
+        # the constant's error is sys_star_sky, not part of sys_wavezp
+        assert systematics.wavelength_zero_point(spec_a, {}) == pytest.approx(info_a['zp_sky_err'])
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, None, raw.meta, 'x')
-    _, info_t = pipeline.wavelength_correction(nosky, nosky, cfg, 'X')
-    assert info_t['applied'] == 'telluric'
+    _, info_t = pipeline.wavelength_correction(nosky, nosky, cfg, 'X', regions=regs)
+    assert info_t['applied'] == 'none' and info_t['zp_flags'] & pipeline.ZP_FLAGS['no_sky']
 
 
 def test_telluric_curve_refused_far_from_nodes():

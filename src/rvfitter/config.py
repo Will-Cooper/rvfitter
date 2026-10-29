@@ -155,13 +155,20 @@ class OutputConfig:
 @dataclass
 class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
-    # 'sky-if-needed' (default): measure the OH sky zero point Δv(λ) and apply it only when the calibration data
-    # say it is safe and needed (enough measured sky segments covering the regions, a significant offset or
-    # distortion, larger than 0.05 resolution elements); otherwise report it (zp_sky_* columns) and count it in the
-    # zero-point systematic. 'sky': always apply the sky curve; 'auto': sky shape + the star - sky constant from
-    # the tellurics (opt-in); 'telluric': the star's telluric curve; 'none': measure and report only. What was
-    # applied is always logged and recorded (wavelength_correction_applied, zp_flags).
+    # 'sky-if-needed' (default; 'auto' is the same): measure the OH sky zero point Δv(λ) and apply it only when the
+    # calibration data say it is safe and needed (enough measured sky segments covering the regions, a significant
+    # offset or distortion, larger than 0.05 resolution elements); when it is applied and the star - sky constant
+    # is measured (>= 2 telluric nodes against the sky in the same windows), apply that too ('sky+star'; its error
+    # is sys_star_sky). 'sky': the sky curve alone; 'telluric': the star's telluric curve; 'none': measure and
+    # report only. A measured but unapplied offset counts only through its uncertainty. What was applied is always
+    # logged and recorded (wavelength_correction_applied, zp_flags).
     wavelength_correction: str = 'sky-if-needed'
+    # the star's slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the
+    # header slit width W and the trace FWHM F, through the plate scale and the dispersion; a number [km/s]; or
+    # 'none' (unconstrained, warned)
+    slit_prior: str | float = 'auto'
+    # true for fibre or IFU data, or an absolute wavelength calibration: no slit-centring term
+    zero_point_known: bool = False
     sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
     sky_segment_width: float = 250.  # [Å]; segments of the telluric-free spans; Δv(λ) is interpolated between them
     # a non-telluric-corrected file sharing the input's wavelength solution (e.g. the PypeIt spec1d of a corrected
@@ -439,6 +446,11 @@ def _validate(cfg: Config) -> list[str]:
     _choice(p, 'calibration.wavelength_correction', cfg.calibration.wavelength_correction,
             WAVELENGTH_CORRECTIONS)
     _range(p, 'calibration.wave_valid_range', cfg.calibration.wave_valid_range, positive=True)
+    sp = cfg.calibration.slit_prior
+    if isinstance(sp, str):
+        _choice(p, 'calibration.slit_prior', sp, ('auto', 'none'))
+    elif not (isinstance(sp, (int, float)) and not isinstance(sp, bool) and math.isfinite(sp) and sp >= 0):
+        p.append(f'calibration.slit_prior = {sp!r} must be "auto", "none" or a velocity >= 0 [km/s]')
     if not cfg.calibration.sky_segment_width > 0:
         p.append(f'calibration.sky_segment_width = {cfg.calibration.sky_segment_width} must be > 0 [Å]')
     if not cfg.calibration.telluric_segment_width > 0:
