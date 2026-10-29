@@ -857,14 +857,12 @@ def wavelength_correction(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '
         log.info('%s: the measured star - sky offset %+.1f ± %.1f km/s (%d nodes) is not applied (mode %s, %s): its '
                  'value is not an error; the slit-centring prior is used instead', name, info['zp_star_sky'],
                  info['zp_star_sky_err'], info['zp_star_sky_n'], mode, info['applied'])
-    # --- inputs of the slit-centring prior: the target's own spec1d table first (the telluric match, else the
-    # sky_source object matching the input), then the input
-    if info['applied'] != 'telluric' and not info['star_sky_applied']:
-        cands = [tsrc, raw]
-        if (tsrc is None and sky_source and not (raw.meta or {}).get('trace_fwhm_pix')
-                and getattr(cal, 'slit_prior', 'auto') == 'auto'):
-            cands.insert(0, _matching_object(sky_source, raw, cfg, name, what='sky_source'))
-        info['slit'] = slit.inputs(cands)
+    # --- inputs of the slit-centring prior (always reported when available): the target's own spec1d table first
+    # (the telluric match, else the sky_source object matching the input), then the input
+    cands = [tsrc, raw]
+    if tsrc is None and sky_source and not (raw.meta or {}).get('trace_fwhm_pix'):
+        cands.insert(0, _matching_object(sky_source, raw, cfg, name, what='sky_source'))
+    info['slit'] = slit.inputs(cands)
     return spec, info
 
 
