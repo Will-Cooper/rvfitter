@@ -48,7 +48,7 @@ class Region:
 
 @dataclass
 class Measurement:              # one method on one region/order
-    method: str                 # a key of methods.REGISTRY: "ccf" | "template_fit" | "telluric_ref"
+    method: str                 # a key of methods.REGISTRY: "linecentre" | "ccf" | "template_fit" | "telluric_ref"
     region: str
     rv: float; rv_err: float    # km/s, statistical
     flag: int                   # 0 = ok; bit flags defined in results.FLAGS
@@ -100,6 +100,7 @@ class ObjectResult:
 | `numerics` | `parabola_vertex(x, y) -> (x0, y0, y'')`, `weighted_mean_chi2(v, err) -> (mean, formal_err, chi2)`, `rms(x)` (finite values; NaN if none) | M |
 | `calibration.telluric_zeropoint` | `measure(spectrum, regions=None, *, resolution=None, seg_width=250., degree=2, min_depth=0.05, max_lag_kms=150., template=None, star_rv_range=(-400., 400.), teff=None, spread_templates=()) -> TelluricZeroPoint \| None` (unpacks as `(zp, err)`; `.dv(λ)`); `node_windows(tell)`, `star_minus_sky_direct(tell, sky_windows) -> dict` | M |
 | `methods.telluric_ref` | `measure(spectrum, regions, cfg, *, executor, rng)`: v_star − v_tell per telluric segment; `prior_template`, `neighbour_templates` | M |
+| `methods.linecentre` | `measure(spectrum, regions, cfg, *, executor, rng)`: a profile fit per 'line' region (options `profile`, `joint`); `PROFILES` | M |
 | `methods.*` | `REGISTRY[name](spectrum, regions, cfg, *, executor, rng) -> MethodResult` (`cfg` a `Config`); a method that cannot measure raises ValueError. `methods._common`: `choose_template`, `run_chunks`, `window_measurement`, `TEMPLATE_DEFAULTS`; `methods.guidance`: `template_summary` (best template and edge guidance) | M |
 | `combine` | `combine_regions(measurements) -> (rv, err)` (random effects), `hierarchical(values, errors, line_ids, method_ids, ...) -> dict` (Woodbury); epochs: `epoch_labels`, `epoch_summaries(per_method, labels, tau_scale, name, sys)`, `method_over_epochs`, `adopted_over_epochs` | M |
 | `systematics` | `template_spread(spectrum, regions, cfg, *, executor, rng)`, `template_spread_details(...)`, `wavelength_zero_point(spectrum, *, wave=None)` | M |

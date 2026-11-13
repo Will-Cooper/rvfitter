@@ -41,6 +41,7 @@ TIPS = {
     'frame': 'Velocity frame of the reported RVs: barycentric or heliocentric.',
     'methods': 'Which RV techniques to run. Each is a separate, independent measurement.',
     'enabled': 'Which RV techniques to run. Each is a separate, independent measurement.',
+    'linecentre': 'Fit a line profile (Gaussian, Lorentzian or Voigt) to each line core and measure its shift.',
     'ccf': 'Cross-correlate with a template or mask.',
     'template_fit': 'Chi-squared fit of a (broadened, shifted) model-atmosphere template.',
     'telluric_ref': 'Use telluric lines as a wavelength reference (zero-point check).',

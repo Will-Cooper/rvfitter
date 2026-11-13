@@ -159,10 +159,10 @@ def test_regime_for(R, wr, expect):
 
 def test_default_for_regimes():
     opt = default_for(_spec(7300., 10150., 2500.))
-    assert opt.methods.enabled == ['template_fit', 'ccf'] and opt.input.resolution == 2500.
+    assert opt.methods.enabled == ['template_fit', 'ccf', 'linecentre'] and opt.input.resolution == 2500.
     assert opt.input.medium == 'vacuum'
     nir = default_for(_spec(10000., 24000., 2000., medium='air'))
-    assert nir.methods.enabled == ['template_fit', 'ccf']
+    assert nir.methods.enabled == ['template_fit', 'ccf', 'linecentre']
     assert not nir.methods.options and nir.input.medium == 'air'
     mid = default_for(_spec(7000., 9000., 6000.))
     assert mid.methods.enabled == ['template_fit', 'ccf'] and mid.methods.options['template_fit']['fit_vsini'] is True
@@ -194,5 +194,5 @@ def test_hash_ignores_paths_and_output():
 def test_only_implemented_methods():
     from rvfitter.methods import REGISTRY
     assert set(config.METHOD_NAMES) == set(REGISTRY) and set(Config().methods.enabled) <= set(REGISTRY)
-    with pytest.raises(ValueError, match='linecentre'):
-        config.loads('[methods]\nenabled = ["ccf", "linecentre"]\n')
+    with pytest.raises(ValueError, match='lsd'):
+        config.loads('[methods]\nenabled = ["ccf", "lsd"]\n')

@@ -51,7 +51,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 | Method | v1 (paper) | v1 after Phase A fixes | v2 | z (quadrature) |
 |---|---|---|---|---|
-| Line centring | 36.2 ± 4.4 | | | |
+| Line centring | 36.2 ± 4.4 | | 34.00 ± 5.48 (σ_total 22.36; `none` and `sky-if-needed`, which refuses the sky here) | 1.31 (0.35 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
 | Forward model (MCMC) | — | | | |

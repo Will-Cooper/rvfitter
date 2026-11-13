@@ -15,6 +15,7 @@
 - `calibration/telluric_zeropoint`: `measure(spectrum, regions, resolution=, template=, teff=, spread_templates=)` → `TelluricZeroPoint` (unpacks as (zp, err); `dv(λ)`), `star_minus_sky_direct(tell, sky_windows)` (the pipeline's: the sky measured in each node's own window; ≥ 2 nodes; Birge + `consistent` when p ≤ 0.01), `node_windows`, `star_minus_sky(tell, sky)` (legacy: the sky curve at nodes inside measured segments), `frame_factor`.
 - `calibration/slit`: `inputs(spectra)` → `SlitInputs` (W, F, plate scales, dispersion, sources, `missing`), `centroid_rms(W, F)` (clipped-Gaussian centroid RMS over the position prior), `prior_kms(inputs, wave)` = RMS of c σ_x / s_spec · D(λ)/λ, `instrument_pixscale` (`data/instruments.csv`).
 - `methods/telluric_ref`: v_star − v_tell per telluric segment (`prior_template`, `neighbour_templates`).
+- `methods/linecentre`: per 'line' region, a profile (`profile` gaussian | lorentzian | voigt) × linear continuum fit; `joint=True` shares one RV over every line. See Unit 4.
 - `io.read_spectrum`: multi-object PypeIt spec1d → the name-matched table, else the highest-S/N science object (logged; `input.hdu` overrides; `meta['hdu'|'extname'|'n_objects']`).
 - `systematics`: `template_spread(_details)` (templates, grids, window modes; a variant that raises ValueError is NaN with a WARNING), `wavelength_zero_point(spectrum, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
 - `pipeline` (orchestration only): `run(..., failures=)`, `measure_object`, `refit_object`, `enabled_methods` (NoMethodsError, a ValueError), `region_selector`. `calibration/wavelength_correction`: `correct(raw, spec, cfg, name, regions=)` (sky-if-needed, sky, auto, telluric, none), `ZP_FLAGS`, `zp_flag_names`, `star_sky_term` (sys_star_sky per epoch), `combine_epochs`, `arc_kms`, `valid_range`, `matching_object`. `refit`: `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
@@ -60,9 +61,8 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
    - `docs/architecture.md` (shared) should list `wavelength_zero_point(spectrum, cfg, *, wave=None)` and `telluric_zeropoint.measure(..., teff=, spread_templates=)`;
    - the arc-line range is not read automatically from `wvcalib.fits` (set `calibration.wave_valid_range`);
    - a telluric model inside `template_fit` (the unimplemented `telluric_model` option was deleted).
-3. Unit 4: line centring (add it to `methods.REGISTRY` and `config.METHOD_NAMES`).
-4. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
-5. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
+3. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
+4. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
 
 **Gotchas:**
 - Run with `PYTHONPATH=<wt>/src`. Test-data tests need `RVFITTER_TESTDATA=/home/wcooper/Documents/rvfitter-testdata` and are marked `data`; the J1745 files are under `pypeit/R2500I/GTC54-15A0/OB0055/`.
@@ -588,3 +588,27 @@ The orchestrator's decisions A–E, all fixed before the benchmark was run:
 **J1745:** see the Handoff table. The modes without a measured constant now carry the 18.0 km/s slit prior, so their σ_total (22.1–22.2 km/s) gives z ≤ 0.52 trivially; the default applies −23.8 ± 3.6 km/s and lands at 42.86 (z_total 1.25, z_stat 4.18). Candidate causes, untested against the benchmark: three of the four nodes lie 540–1260 Å redward of Cs I 8523; template bias in the telluric fit (smooth star 3.5 km/s less negative); the literature's own zero point.
 
 **Not done:** the line-width-ratio estimate of F; instruments other than OSIRIS in `data/instruments.csv`; per-node wavelength dependence of the star − sky difference (a linear term) is not modelled.
+
+## Unit 4: line centring (`methods/linecentre.py`; branch unit4-linecentre)
+
+- Model per 'line' region: (c₀ + c₁ x) · (1 − W φ(λ − λ_rest D(v))), φ = `scipy.special.voigt_profile` (σ or γ held at 0 for the Gaussian or Lorentzian), fitted σ-weighted with `curve_fit` (trf, bounded) to the line window plus its catalogue continuum windows. Core-only alkali windows are used as given; no windows are invented.
+- v is bounded to the line window; within 1 per cent of a bound it is flagged `not_converged` (edge). A fit with no absorption, an unresolved width (σ + γ at its half-pixel bound, which otherwise lets a huge narrow profile fit one noise pixel with a spurious tiny error), or no convergence is `fit_failed`. Lines without a rest wavelength, continuum windows or enough core pixels (2 + number of widths) are skipped with a warning; none left raises ValueError.
+- Error: the covariance of v × √max(1, χ²/ν) (without flux errors, `curve_fit` scales by χ²/ν). Per-line results are combined by `_common.finish`; `joint=True` gives one measurement named "joint: <lines>".
+- Pulls (tests/test_linecentre.py; R 2500, SNR 30, anchor lines with the injected profile; the Lorentzian is 100 km/s wide so that it dominates the LSF): per line, Gaussian 1.05 (mean −0.07), Lorentzian 1.03 (−0.06), Voigt 0.96 (−0.05), 356–360 pulls each; joint Voigt 1.02 (−0.12, 200 spectra). The random-effects method combination is conservative (pull ≈ 0.6–0.7 over six lines), as for the other methods. A 60-spectrum joint run gave 0.75: a fluctuation of those seeds (the same seeds over 200 spectra give 1.02, other seeds 1.09), so the joint test uses 200 spectra. A Lorentzian fitted to Gaussian-LSF lines (γ ≪ σ_inst) underestimates the errors (pulls 1.3–1.8): the profile is wrong there, so use the Voigt default.
+- J1745 (`pipeline.run`, tellcorr, sky from the Science spec1d, R 2602, heliocentric, voigt; reported, not tuned). `sky-if-needed` refuses the sky curve here (the K I lines lie in its unmeasured O2 A gap), so it equals `none`:
+
+| Line | none | sky (forced, for comparison) |
+|---|---|---|
+| K I 7667 | 48.5 ± 30.0 | 80.5 ± 28.4 |
+| K I 7701 | skipped (3 core pixels) | 42.6 ± 13.2 |
+| Rb I 7802 | 36.6 ± 2.6 | 22.4 ± 2.8 |
+| Rb I 7949 | 18.6 ± 6.9 (poor fit) | 8.3 ± 6.6 (poor fit) |
+| Na I 8185 | 19.7 ± 6.4 (poor fit) | 5.7 ± 4.5 (poor fit) |
+| Na I 8197 | 43.3 ± 6.3 (poor fit) | 31.4 ± 6.3 (poor fit) |
+| Cs I 8523 | 48.0 ± 2.8 | 14.0 ± 3.2 (poor fit) |
+| Cs I 8946 | 8.6 ± 24.4 (poor fit) | −16.6 ± 23.3 (poor fit) |
+| Method | 34.00 ± 5.48 (τ 11.0; σ_total 22.36) | 18.47 ± 4.76 (τ 9.8; σ_total 22.17) |
+
+z = |RV − 26.2|/√(2.3² + σ²): none and sky-if-needed 1.31 (σ_stat), 0.35 (σ_total); sky 1.46, 0.35. σ_total = σ_stat ⊕ sys_wavezp (12.1) ⊕ sys_star_sky (18.0, slit prior); there is no template term. The uncorrected value agrees with the paper's 36.2 ± 4.4. The pressure-broadened lines (Na I, Rb I 7949, Cs I 8946) have χ²/ν 5–120: their wings reach the continuum windows, and the √(χ²/ν) scaling carries that into the errors.
+
+**Not done:** pixel integration of the profile (negligible for the centre at 2.5 pixels per resolution element); `executor` and `rng` are unused (a few fast deterministic fits).

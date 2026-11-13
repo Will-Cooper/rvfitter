@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
-METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref')  # the keys of methods.REGISTRY (tested)
+METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref', 'linecentre')  # the keys of methods.REGISTRY (tested)
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 MEDIA = ('air', 'vacuum')
 
@@ -98,7 +98,7 @@ class TemplatesConfig:
 @dataclass
 class MethodsConfig:
     """Which RV methods run, and their options"""
-    enabled: list[str] = field(default_factory=lambda: ['template_fit', 'ccf'])
+    enabled: list[str] = field(default_factory=lambda: ['template_fit', 'ccf', 'linecentre'])
     options: dict[str, dict[str, Any]] = field(default_factory=dict)  # method name → keyword options
 
 
