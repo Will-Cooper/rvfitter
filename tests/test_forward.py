@@ -134,7 +134,7 @@ def test_injection_recovery_bt_settl():
 @pytest.mark.slow
 def test_j1745(caplog):
     """J1745−1640 with and without the default sky correction: RV, vsini and Teff are reported, not tuned"""
-    from rvfitter import pipeline
+    from rvfitter import pipeline, results
     root = os.environ.get('RVFITTER_TESTDATA')
     if not root:
         pytest.skip('RVFITTER_TESTDATA not set')
@@ -157,6 +157,8 @@ def test_j1745(caplog):
             log.info('%s %s: %.2f ± %.2f km/s, vsini %.1f ± %.1f, teff %.0f ± %.0f, logg %.2f (flag %d, τ %.0f)',
                      mode, m.region, m.rv, m.rv_err, d['vsini'], d['vsini_err'], d['teff_post'], d['teff_post_err'],
                      d['logg_post'], m.flag, np.max(d['tau']))
-        log.info('%s: forward_mcmc %.2f ± %.2f km/s (%d windows; z %.2f)', mode, res.rv, res.rv_err, res.n_regions,
-                 abs(res.rv - 26.2) / np.hypot(2.3, res.rv_err))
+        total = float(results.to_table([obj]).iloc[0]['rv_total_err'])
+        log.info('%s: forward_mcmc %.2f ± %.2f km/s (total %.2f; %d windows; z %.2f, %.2f)', mode, res.rv, res.rv_err,
+                 total, res.n_regions, abs(res.rv - 26.2) / np.hypot(2.3, res.rv_err),
+                 abs(res.rv - 26.2) / np.hypot(2.3, total))
         assert res.n_regions >= 3 and np.isfinite(res.rv)
