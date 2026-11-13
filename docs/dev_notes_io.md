@@ -1,7 +1,7 @@
 # Dev notes: io, archives, config (P1)
 
 ## io.py
-- Reader order (a plain tuple `_READERS` of `(name, sniff, read)`): `pypeit_spec1d`, `pypeit_coadd`, `fits_generic`, `ascii` (no sniffer; its reader raises for non-text), then `specutils` fallback.
+- Reader order (a plain tuple `_READERS` of `(name, sniff, read)`): `pypeit_spec1d`, `pypeit_coadd`, `spextool` (SpeX, uSpeX, ARCoIRIS 4×N or orders×4×N images; µm, WAVETYPE, TCS_RA/TCS_DEC, average time, SLTW_ARC, RP; INSTR → site), `fits_generic`, `ascii` (no sniffer; its reader raises for non-text), then `specutils` fallback.
   `sniff(path, hdu, columns) -> bool`, `read(...) -> RawSpectrum` (Å, file medium).
   If a sniffed reader's `read` fails the next one is tried; errors are collected in the final `ValueError`.
 - **Medium decisions** (never silent):
