@@ -41,6 +41,10 @@ Details, benchmark and caveats: [docs/methods.md](docs/methods.md); wavelength z
 | `linecentre` | yes (R below 4500) | model-free line centring on atomic lines (opt-in: template-calibrated shape correction) |
 | `telluric_ref` | yes (R above 20000, in place of `ccf`) | RV against the telluric lines (needs `rvfitter templates telluric --build`) |
 | `forward_mcmc` | opt-in | MCMC forward model (needs `[mcmc]`) |
+| `lsd` | opt-in | least-squares deconvolution: RV from the mean line profile |
+
+A single- versus two-component fit (`binary_dbic`, `binary_flag`) flags possible spectroscopic binaries when enabled.
+Two planning tools: `rvfitter forecast` (the RV precision each feature and band can give at your R, S/N and vsini) and `rvfitter inject` (bias and error calibration of your configuration on synthetic spectra). See `rvfitter forecast --help` and `rvfitter inject --help`.
 
 Opt-in calibration: `calibration.wavelength_correction = "auto"` applies the star minus sky constant as well as the sky curve (default `sky-if-needed`).
 

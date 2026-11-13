@@ -192,8 +192,8 @@ Long paths (over 260 characters) can fail; unpack the data near the drive root.
 The BT-Settl grids come from the Spanish Virtual Observatory theory server (SVO, https://svo2.cab.inta-csic.es/theory/newov2/), one spectrum per request.
 Sonora Bobcat, Diamondback, Elf Owl and SAND come from Zenodo as whole files (CC-BY-4.0; cite the papers in `rvfitter.templates.KNOWN_GRIDS`).
 `--source` forces one.
-Known issue in this development version: `templates download` from SVO currently stops with `ValueError: unrecognised SSAP response columns`, and `templates list --available` reports the BT-Settl grids as "NOT available", because SVO changed its reply format.
-Until that is fixed, use `--grid sonora-bobcat --source zenodo`, or copy a BT-Settl grid obtained elsewhere into `<cache>/bt-settl-cifist/` as above, or point to any folder with `local_dir = "/path/to/grid"` under `[templates]` in your config (`rvfitter init spectrum.fits` writes one to edit).
+Each BT-Settl spectrum from SVO is about 60 MB at full resolution, so download only the Teff/log g range you need.
+If a server is down, copy a grid obtained elsewhere into `<cache>/<grid>/`, or point to any folder with `local_dir = "/path/to/grid"` under `[templates]` in your config (`rvfitter init spectrum.fits` writes one to edit).
 
 **Plots mention LaTeX / fonts.** rvfitter bundles its fonts; no LaTeX installation is needed.
 
