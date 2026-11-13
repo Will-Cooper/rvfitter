@@ -4,6 +4,14 @@ x = λ − λ_rest, λ_c = λ_rest D(v) (D the relativistic Doppler factor) and 
 Lorentzian or Voigt profile (`scipy.special.voigt_profile`). The fit uses the line window (the core the catalogue
 gives; pressure-broadened alkali lines get core-only windows) and the region's continuum windows. The error is
 the covariance of v scaled by √max(1, χ²/ν). With `joint`, every line shares one v (the multi-feature fit).
+
+By default the method is model-free: the RVs come from the NIST rest wavelengths alone, with no template
+involvement, so it is the template-independent cross-check of the template methods. With `shape_correction`
+(opt-in) each line's RV is corrected for the bias of the profile fit on the line's real, asymmetric or blended
+shape: the template nearest the priors, at the spectrum's R on its pixels, noise-free and unshifted, is fitted
+exactly like the data, its RV (truth 0) is subtracted, and the standard deviation of that offset over the
+template and its ±1 Teff-step grid neighbours is added in quadrature to the error. The method then depends on
+the template models (logged at INFO).
 """
 import logging
 from collections.abc import Sequence
@@ -30,6 +38,7 @@ DEFAULTS: dict[str, Any] = dict(
     profile='voigt',  # 'gaussian' | 'lorentzian' | 'voigt'
     joint=False,  # one RV shared by every line (per-line depth, widths and continuum)
     outlier_k=5.,  # gross-outlier rejection among lines (0: off)
+    shape_correction=False,  # subtract the template-calibrated per-line fit bias (makes the method model-dependent)
 )
 _EDGE_FRAC = 0.01  # v within this fraction of its range from a bound: at the edge of the line window
 
@@ -148,6 +157,50 @@ def _fit(lines: list[_Line], profile: str, sigma_known: bool, name: str) -> tupl
     return v, err, flag, chi2 / dof, diag
 
 
+def _shape_offsets(spectrum: Spectrum, template: Any, groups: list[list[_Line]], names: list[str],
+                   masks: Sequence[Region], profile: str) -> np.ndarray:
+    """The RV [km/s] the fit measures on a noise-free, unshifted template on the data's pixels, per group"""
+    flux = template.at(spectrum.wave, 0.)
+    synth = replace(spectrum, flux=flux, sigma=np.abs(flux) * 1e-3)
+    out = []
+    for g, n in zip(groups, names, strict=True):
+        try:
+            sg = [_line(synth, ln.region, masks, PROFILES[profile]) for ln in g]
+            out.append(_fit(sg, profile, True, f'{n} (template {template.label})')[0])
+        except ValueError as err:
+            log.warning('%s %s: no shape offset from template %s (%s)', METHOD, n, template.label, err)
+            out.append(np.nan)
+    return np.array(out)
+
+
+def _shape_corrected(spectrum: Spectrum, cfg: Any, groups: list[list[_Line]], names: list[str], fits: list,
+                     masks: Sequence[Region], profile: str) -> list:
+    """`fits` with each group's template-calibrated offset subtracted and its grid-neighbour spread in the error"""
+    from .telluric_ref import neighbour_templates, prior_template
+    res = spectrum.resolution or cfg.input.resolution
+    if not res:
+        raise ValueError('linecentre shape_correction needs the resolving power (input.resolution)')
+    wr = (float(spectrum.wave[0]), float(spectrum.wave[-1]))
+    nominal = prior_template(cfg, res, wr)
+    alts = neighbour_templates(cfg, res, wr, nominal)
+    offs = np.array([_shape_offsets(spectrum, t, groups, names, masks, profile) for t in [nominal, *alts]])
+    log.info('%s: shape_correction on: per-line offsets from template %s (spread over %s) are subtracted; the '
+             'method is now template-dependent and no longer a model-free cross-check', METHOD, nominal.label,
+             ', '.join(t.label for t in alts) or 'no neighbours')
+    out = []
+    for k, (v, err, flag, chi2_red, diag) in enumerate(fits):
+        off = float(offs[0, k])
+        fin = offs[:, k][np.isfinite(offs[:, k])]
+        spread = float(np.std(fin, ddof=1)) if len(fin) > 1 else 0.
+        if not np.isfinite(off):
+            flag |= C.FLAG_FIT_FAILED
+        diag = {**diag, 'shape_correction': True, 'shape_offset': off, 'shape_spread': spread,
+                'shape_template': nominal.label, 'rv_uncorrected_shape': v}
+        log.info('%s %s: shape offset %+.1f km/s (spread %.1f) subtracted', METHOD, names[k], off, spread)
+        out.append((v - off, float(np.hypot(err, spread)), flag, chi2_red, diag))
+    return out
+
+
 def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor: Executor | None = None,
             rng: np.random.Generator) -> MethodResult:
     """
@@ -181,6 +234,10 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
         names = [ln.region.name for ln in lines]
         windows = [ln.region for ln in lines]
     fits = [_fit(g, profile, sigma_known, n) for g, n in zip(groups, names, strict=True)]
+    if opts['shape_correction']:
+        fits = _shape_corrected(spectrum, cfg, groups, names, fits, masks, profile)
+    else:  # model-free: NIST rest wavelengths only
+        fits = [(v, e, f, c, {**d, 'shape_correction': False}) for v, e, f, c, d in fits]
     measurements = [C.window_measurement(METHOD, win, v, err, flag, chi2_red, sigma_known, diag)
                     for win, (v, err, flag, chi2_red, diag) in zip(windows, fits, strict=True)]
     result = C.finish(METHOD, measurements, opts['outlier_k'])

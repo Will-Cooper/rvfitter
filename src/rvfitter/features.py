@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 KINDS = ('line', 'band', 'bandhead', 'telluric')
 _CORE_ONLY = 'core-only window'
+_NO_LINE_CENTRING = 'not for line centring'
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,11 @@ class Feature:
     def core_only(self) -> bool:
         """True if only the line core should be used (pressure-broadened wings)"""
         return _CORE_ONLY in self.caveat
+
+    @property
+    def line_centring(self) -> bool:
+        """False if the caveat rules the line out of line centring (e.g. blended at low resolution)"""
+        return _NO_LINE_CENTRING not in self.caveat
 
     @property
     def span(self) -> tuple[float, float]:

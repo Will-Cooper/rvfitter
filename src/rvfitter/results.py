@@ -122,6 +122,8 @@ _SPEC: tuple[str | tuple, ...] = (
     ('zp_dar_s', 'systematics', 'zp_dar_s', _num, None), ('zp_dar_s_err', 'systematics', 'zp_dar_s_err', _num, None),
     ('star_sky_term', 'systematics', 'star_sky_term', str, ''),  # what sys_star_sky is
     ('slit_prior_kms', 'systematics', 'slit_prior', _num, None),  # the computed slit-centring prior, used or not
+    # line centring used the opt-in template-calibrated shape correction (default False: model-free)
+    ('linecentre_shape_correction', 'systematics', 'linecentre_shape_correction', bool, False),
     ('wavelength_correction', 'barycentric', 'wavelength_correction_mode', str, ''),  # the configured mode
     ('wavelength_correction_applied', 'barycentric', 'wavelength_correction', str, 'none'),  # what was applied
     ('zp_flags', 'barycentric', 'zp_flags', int, 0),  # pipeline.ZP_FLAGS bits
