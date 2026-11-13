@@ -233,13 +233,20 @@ def _cmd_lazy(args) -> int:
 
 def main(argv=None) -> int:
     parser = build_parser()
-    try:
-        args = parser.parse_args(argv)
-    except SystemExit as exc:  # argparse: 0 for --help/--version, 2 for a usage error
-        return 1 if exc.code else 0
-    if args.command is None:
-        parser.print_help()
-        return 1
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in LAZY:  # parse their own options (argparse's REMAINDER rejects leading ones)
+        common = ('-v', '--verbose', '-q', '--quiet')
+        args = argparse.Namespace(command=argv[0], rest=[a for a in argv[1:] if a not in common],
+                                  verbose=any(a in common[:2] for a in argv[1:]),
+                                  quiet=any(a in common[2:] for a in argv[1:]))
+    else:
+        try:
+            args = parser.parse_args(argv)
+        except SystemExit as exc:  # argparse: 0 for --help/--version, 2 for a usage error
+            return 1 if exc.code else 0
+        if args.command is None:
+            parser.print_help()
+            return 1
     handlers = {'measure': _cmd_measure, 'run': _cmd_run, 'init': _cmd_init, 'doctor': _cmd_doctor}
     handler = handlers.get(args.command, _cmd_lazy)
     try:
