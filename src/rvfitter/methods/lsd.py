@@ -153,7 +153,8 @@ def _fit_profile(v: np.ndarray, z: np.ndarray, cov: np.ndarray, sig0: float) -> 
     red = float(np.sum(((z - _gauss(v, *p)) / err_z) ** 2)) / max(len(v) - 4, 1)
     err = np.sqrt(np.diag(pcov))
     edge = p[2] - 2 * p[3] < lo or p[2] + 2 * p[3] > hi
-    return dict(ok=bool(np.all(np.isfinite(err))), edge=bool(edge), mu=float(p[2]), mu_err=float(err[2]),
+    return dict(ok=bool(np.all(np.isfinite(err))), edge=bool(edge), mu=float(p[2]),
+                mu_err=C.bound_error(float(err[2]), lo, hi) if edge else float(err[2]),
                 sig=float(p[3]), sig_err=float(err[3]), chi2_red=red, params=p)
 
 

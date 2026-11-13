@@ -145,6 +145,8 @@ def _fit(lines: list[_Line], profile: str, sigma_known: bool, name: str) -> tupl
     v = float(params[0])
     err = float(np.sqrt(cov[0, 0])) * chi2_scale
     flag = C.FLAG_EDGE if min(v - v_lo, v_hi - v) < _EDGE_FRAC * (v_hi - v_lo) else 0
+    if flag:  # at the window's velocity bound: the covariance error there is 0
+        err = C.bound_error(err, v_lo, v_hi)
     absent = params[1::nb] <= 1e-6 * np.array([ln.p0[0] for ln in lines])  # no absorption
     widths = sum(params[2 + j::nb] for j in range(len(names)))  # σ + γ for a Voigt profile
     unresolved = widths <= half_pix * (1. + 1e-3)  # a width at its bound: a noise spike, not a line

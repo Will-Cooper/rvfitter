@@ -127,6 +127,7 @@ def fit_window(model: _Model, rv_grid: np.ndarray, *, fit_vsini: bool, vsini0: f
                 best = r
         v, s, chi2 = float(best.x[0]), float(best.x[1]), float(best.fun)
         ok = bool(np.isfinite(chi2))
+    edge |= C.at_bound(v, float(rv_grid[0]), float(rv_grid[-1]), step)
     return dict(rv=v, vsini=s, chi2=chi2, edge=bool(edge), ok=ok, scan=scan)
 
 
@@ -248,6 +249,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
             if np.isfinite(boot).sum() >= 5:
                 boot_std = float(np.nanstd(boot, ddof=1))
         err = boot_std if opts['bootstrap'] > 0 else cov_err
+        if fit['edge']:
+            err = C.bound_error(err, float(rv_grid[0]), float(rv_grid[-1]))
         _, coef, best_model = model.solve(fit['rv'], fit['vsini']) if fit['ok'] else (None, None, None)
         diag = dict(tdiag, chi2=fit['chi2'], dof=dof, chi2_red=chi2_red, err_cov=cov_err, err_bootstrap=boot_std,
                     bootstrap_rvs=boot, vsini=fit['vsini'],

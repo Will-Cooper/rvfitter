@@ -404,6 +404,19 @@ def run_chunks(fn: Callable, n_total: int, seeds: Sequence, args: tuple, executo
     return np.concatenate([np.asarray(x, float) for x in pmap(fn, tasks, executor)])
 
 
+def at_bound(v: float, lo: float, hi: float, step: float) -> bool:
+    """An optimum v at, beyond or within half a search step of a search bound [lo, hi]"""
+    return not lo + 0.5 * step < v < hi - 0.5 * step
+
+
+def bound_error(err: float, lo: float, hi: float) -> float:
+    """
+    The error of an optimum at a search bound: at least half the search range, since the optimum may lie anywhere
+    in it or beyond (a covariance error there is 0 or undefined); finite, so it is never mistaken for a precise value
+    """
+    return float(max(err, 0.5 * (hi - lo))) if np.isfinite(err) else 0.5 * float(hi - lo)
+
+
 def window_measurement(method: str, window: Region, rv: float, err: float, flag: int, chi2_red: float,
                        sigma_known: bool, diag: dict) -> Measurement:
     """One window's measurement: fit_failed for a non-finite error, poor_fit for χ²/ν > 3 with known errors"""
