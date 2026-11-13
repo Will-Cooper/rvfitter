@@ -28,8 +28,8 @@ T(λ; X, w) = exp(−X·(τ_dry + w·τ_H2O)), valid for spectral resolutions up
 Terms: HITRAN is free of charge and must be cited (https://hitran.org/citepolicy, read 2026-10-28): HITRAN2024
 (Gordon et al. 2026, JQSRT 353, 109807) and HITRAN2020 (Gordon et al. 2022, JQSRT 277, 107949). HITRAN states no
 redistribution licence, so the built model is for the user's own use: do not redistribute it. The API client
-follows HAPI (MIT licence; Kochanov et al. 2016, JQSRT 177, 15). The metadata stored with the model (and the JSON
-sidecar) record the source, the fetch date and SHA-256 of each line file, the citation and these terms.
+follows HAPI (MIT licence; Kochanov et al. 2016, JQSRT 177, 15). The metadata stored with the model
+record the source, the fetch date and SHA-256 of each line file, the citation and these terms.
 """
 import datetime as _dt
 import hashlib
@@ -38,11 +38,16 @@ import json
 import logging
 import time
 import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+from scipy.constants import N_A
+from scipy.constants import c as C_MS
+from scipy.constants import g as G0
+from scipy.constants import k as KB
+
+from ..grid_sources import _retry, urlopen
 
 __all__ = ['build', 'CITATION', 'TERMS', 'API', 'MOLECULES']
 
@@ -67,17 +72,15 @@ TERMS = ('HITRAN data are free of charge and must be cited (https://hitran.org/c
          'redistribution licence. This model was built locally from line lists fetched by this machine: it is for '
          'your own use and must not be redistributed.')
 C2 = 1.4387769  # second radiation constant [cm K]
-KB, AMU, C_MS, G0 = 1.380649e-23, 1.66053907e-27, 299792458., 9.80665
+AMU = 1.66053907e-27  # [kg]; as rounded in the reference build, which this reproduces bit for bit
 T_REF = 296.
-M_AIR = 28.9647e-3 / 6.02214076e23  # kg per molecule
-_USER_AGENT = 'rvfitter-telluric-build/2'
+M_AIR = 28.9647e-3 / N_A  # kg per molecule
 
 
 def _http_get(url: str, timeout: float = 600.) -> bytes | None:
-    """GET one API chunk (the single network entry point; patched in tests). None when the interval has no lines"""
-    req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
+    """GET one API chunk (patched in tests); None when the interval has no lines"""
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (fixed https URL)
+        with urlopen(url, timeout=timeout) as r:
             try:
                 return r.read()
             except http.client.IncompleteRead as exc:
@@ -104,20 +107,12 @@ def _fetch(name: str, ids: tuple[int, ...], line_cache: Path, get: Callable[[str
         edges = np.arange(np.floor(nu_lo), nu_hi + 1000., 1000.)
         for a, b in zip(edges[:-1], edges[1:], strict=True):  # 1000 cm⁻¹ chunks [a, b), three tries each
             url = API.format(numin=f'{a:.0f}', numax=f'{b - 1e-6:.6f}', ids=','.join(map(str, ids)))
-            for attempt in range(3):
-                try:
-                    log.info('fetching %s', url)
-                    body = get(url)
-                    if body is None:
-                        log.debug('  no lines in %s', url)
-                    else:
-                        parts.append(body)
-                    break
-                except Exception as exc:  # noqa: BLE001 - retried, then raised below
-                    log.warning('  %s failed (%s); retrying', url, exc)
-                    time.sleep(5 * (attempt + 1))
+            log.info('fetching %s', url)
+            body = _retry(lambda url=url: get(url), f'HITRAN query {url}')
+            if body is None:
+                log.debug('  no lines in %s', url)
             else:
-                raise RuntimeError(f'could not fetch {url}')
+                parts.append(body)
         tmp = path.with_suffix('.tmp')
         tmp.write_bytes(b''.join(p if p.endswith(b'\n') or not p else p + b'\n' for p in parts))
         tmp.rename(path)
@@ -127,8 +122,7 @@ def _fetch(name: str, ids: tuple[int, ...], line_cache: Path, get: Callable[[str
 
 def _parse(path: Path) -> dict[str, np.ndarray]:
     """HITRAN 160-character records"""
-    cols = dict(nu=(3, 15), S=(15, 25), g_air=(35, 40), g_self=(40, 45), elow=(45, 55), n_air=(55, 59),
-                d_air=(59, 67))
+    cols = dict(nu=(3, 15), S=(15, 25), g_air=(35, 40), elow=(45, 55), n_air=(55, 59), d_air=(59, 67))
     out = {k: [] for k in cols}
     for line in path.read_text().splitlines():
         if len(line) < 67:
@@ -145,18 +139,18 @@ def _us1976(z_km: np.ndarray) -> np.ndarray:
                                                         228.65 + 2.8 * (z - 32)], 270.65 + 0 * z)
 
 
-def _pressure_profile() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Fine z [km], p [Pa], T [K] by hydrostatic integration from sea level"""
+def _pressure_profile() -> tuple[np.ndarray, np.ndarray]:
+    """Fine z [km] and p [Pa] by hydrostatic integration from sea level"""
     z = np.linspace(0, 60, 60001)
     t = _us1976(z)
     dz = np.diff(z) * 1e3
     lnp = np.concatenate([[0.], -np.cumsum(M_AIR * G0 / (KB * 0.5 * (t[1:] + t[:-1])) * dz)])
-    return z, 101325. * np.exp(lnp), t
+    return z, 101325. * np.exp(lnp)
 
 
 def _layers():
     """Dry and H2O layers: (p [atm], T [K], air column [cm⁻²] or H2O column [cm⁻²])"""
-    z, p, _ = _pressure_profile()
+    z, p = _pressure_profile()
     p_site = np.interp(SITE_KM, z, p)
     edges = np.exp(np.linspace(np.log(p_site), np.log(100.), 25))
     dry = []
@@ -166,7 +160,7 @@ def _layers():
         zm = float(np.interp(-np.log(pm), -np.log(p), z))  # -ln p increases with z
         dry.append((pm / 101325., float(_us1976(zm)), n_air))
     # H2O: n ∝ exp(−(z − site)/H); 1 mm PWV = 0.1 g cm⁻² = 0.1/(18.015/N_A) molecules cm⁻²
-    n_tot = PWV_REF_MM * 0.1 / (18.015 / 6.02214076e23)
+    n_tot = PWV_REF_MM * 0.1 / (18.015 / N_A)
     zed = np.linspace(SITE_KM, 15., 13)
     frac = np.diff(-np.exp(-(zed - SITE_KM) / H2O_SCALE_KM))
     frac /= frac.sum()
@@ -184,7 +178,7 @@ def _tau_species(lines: dict, mol: dict, lay: list, column_scale: float, nu_grid
     nu_s = nu_grid[order]
     tau = np.zeros(len(nu_s))
     keep = lines['S'] >= mol['smin']
-    nu0, s0, ga, _, el, na, da = (lines[k][keep] for k in ('nu', 'S', 'g_air', 'g_self', 'elow', 'n_air', 'd_air'))
+    nu0, s0, ga, el, na, da = (lines[k][keep] for k in ('nu', 'S', 'g_air', 'elow', 'n_air', 'd_air'))
     el = np.where(el < 0, 0., el)
     p = np.array([x[0] for x in lay])
     t = np.array([x[1] for x in lay])
@@ -215,24 +209,10 @@ def _tau_species(lines: dict, mol: dict, lay: list, column_scale: float, nu_grid
 def build(out: str | Path | None = None, *, line_cache: str | Path | None = None, force: bool = False,
           get: Callable[[str], bytes | None] | None = None) -> Path:
     """
-    Build the telluric model from HITRAN into `out` (default `telluric.cache_path()`)
+    Build the telluric model from HITRAN into the .npz `out` (default `telluric.cache_path()`); returns its path.
 
-    Parameters
-    ----------
-    out
-        Output .npz path; a JSON sidecar with the same stem records the provenance and the output's SHA-256
-    line_cache
-        Directory of the fetched HITRAN line files (default: a `hitran_lines` directory next to `out`); files already
-        there are reused, so a rebuild needs no network
-    force
-        Rebuild even if `out` exists
-    get
-        The HTTP GET used for the API (default: urllib; patched in tests)
-
-    Returns
-    -------
-    path
-        The model file
+    HITRAN line files already in `line_cache` (default: `hitran_lines` next to `out`) are reused, so a rebuild
+    needs no network. `get` replaces the HTTP GET of the API (tests).
     """
     from .. import __version__
     from . import telluric
@@ -274,7 +254,7 @@ def build(out: str | Path | None = None, *, line_cache: str | Path | None = None
                     'atmosphere: T = exp(-airmass*(tau_dry + pwv_mm*tau_h2o)); vacuum wavelengths; '
                     'stored pixels are uniform in ln(lambda): ln(lambda_i) = lnlam0 + (i + 0.5)*dlnlam',
         source=f'HITRANonline line-by-line API ({API.split("?")[0]}), fetched {", ".join(fetched)}',
-        citation=CITATION, licence=TERMS, terms=TERMS,
+        citation=CITATION, terms=TERMS,
         builder=f'rvfitter.calibration.telluric_build (rvfitter {__version__})',
         built=_dt.datetime.now(_dt.UTC).isoformat(timespec='seconds'), site_km=SITE_KM, atmosphere='US Standard 1976',
         h2o_scale_km=H2O_SCALE_KM, pwv_ref_mm=PWV_REF_MM, r_store=R_STORE, oversample=OVERSAMPLE,
@@ -282,11 +262,10 @@ def build(out: str | Path | None = None, *, line_cache: str | Path | None = None
         omitted='O3, N2O, CO, collision-induced and continuum absorption, Rayleigh scattering, aerosols')
     tmp = out.with_name(out.name + '.part')
     with open(tmp, 'wb') as fh:
-        np.savez_compressed(fh, lnlam0=np.log(WMIN), dlnlam=1. / R_STORE, n=n_store, tau_dry=store(dry_tau),
+        np.savez_compressed(fh, lnlam0=np.log(WMIN), dlnlam=1. / R_STORE, tau_dry=store(dry_tau),
                             tau_h2o=store(taus['H2O']), meta=json.dumps(meta))
     sha = hashlib.sha256(tmp.read_bytes()).hexdigest()
     tmp.replace(out)
-    out.with_suffix('.json').write_text(json.dumps(dict(meta, file=out.name, sha256=sha), indent=1))
     telluric.reload()
     log.info('Wrote the telluric model %s (%.2f MB, SHA-256 %s) in %.0f s. HITRAN must be cited: %s. %s', out,
              out.stat().st_size / 1e6, sha[:16], time.time() - t0, CITATION, TERMS)

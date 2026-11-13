@@ -172,6 +172,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
                                               + np.arctanh(v_frame / C_KMS)))
         flag = C.FLAG_POOR_FIT if s['chi2_red'] > 3. else 0
         flag |= C.FLAG_OUTSIDE_GRID if template.params.get('outside_grid') else 0
+        flag |= C.FLAG_GRID_HOLE if template.params.get('grid_hole') else 0
         diag.update(rv_stat_err=s['star_minus_tell_err_stat'])
         measurements.append(Measurement(METHOD, name, rv, float(s['star_minus_tell_err']), flag, diag))
         log.info('telluric_ref %s: %.1f ± %.1f km/s (star %+.1f, telluric %+.1f km/s, observatory frame; χ²/ν %.1f)',

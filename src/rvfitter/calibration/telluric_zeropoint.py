@@ -1,46 +1,21 @@
 """
 Wavelength zero point from the telluric absorption bands.
 
-Telluric absorption is imprinted on the starlight itself, so it shares the star's path through the slit and
-the spectrograph. Its lines therefore measure the star's own wavelength zero point Δv(λ), including any offset
-from slit centring, which the uniformly illuminated sky (`sky_zeropoint`) cannot see.
+Telluric absorption shares the starlight's path through the slit, so its lines measure the star's own zero point
+Δv(λ), including the slit-centring offset that the uniformly illuminated sky (`sky_zeropoint`) cannot see.
 
-Method:
-1. Work in the observatory frame: a velocity correction applied to the wavelengths in the header (PypeIt
-   `VEL_CORR`) and a barycentric correction applied by the pipeline (`meta['barycentric_applied_kms']`) are
-   undone.
-2. Take the telluric bands of the feature catalogue (or the `telluric` regions given) that the HITRAN
-   transmission model (`telluric.model`, built into the user cache) shows to be deeper than `min_depth` at the
-   spectrum's airmass and resolution, cut them into segments of at most `seg_width` Å, and pad each by
-   `pad_resel` resolution elements of continuum. Catalogue bands whose Teff range excludes the target's `teff`
-   are skipped (O2 A below 2800 K, filled by the K I wings). Catalogue stellar lines (± `mask_resel` resolution
-   elements) and bandhead edges are masked.
-3. In each segment, fit the observed pixels with
+In the observatory frame (header `VEL_CORR` and any applied barycentric correction undone), each telluric band
+segment (catalogue bands safe at the target's Teff, padded with continuum, stellar lines masked) is fitted with
 
-       F(λ) = P(λ) · [T(λ / D(v); a_dry, a_H2O) ⊗ LSF],
+    F(λ) = P(λ) · [S(λ / D(v_star))] · [T(λ / D(v); a_dry, a_H2O) ⊗ LSF],
 
-   averaged over each pixel, where T = exp(−a_dry τ_dry − a_H2O τ_H2O) is the HITRAN model, the τ scalings
-   (airmass and airmass × PWV) are free when the species is deeper than `min_depth` in that segment, and P is a
-   Legendre polynomial of degree `degree` (the smooth stellar continuum; solved linearly at each trial).
-   With a stellar `template` (rest frame, already at the data's resolution), the model is instead
-   P · S(λ / D(v_star)) · [T ⊗ LSF], with the star's observatory-frame velocity v_star free, and the stellar
-   lines are not masked: the star's features are then modelled rather than assumed smooth, and v_star − v (the
-   star's velocity relative to the telluric lines in the same segment, independent of the wavelength solution)
-   is reported. The velocities are found by scans (star, telluric, star again; telluric over ±`max_lag_kms`)
-   and refined jointly with the scalings.
-4. The errors come from the curvature of the χ² profile in the velocities (the scalings re-optimised at each
-   point; a parabola for v alone, a quadratic surface for (v, v_star)), scaled by the Birge factor
-   √max(1, χ²/ν) of the segment's fit.
-5. The resolution is `resolution`, else `spectrum.resolution`, else (without a template) estimated by
-   minimising the total χ² over R (a telluric-line estimate of the LSF).
+averaged over each pixel: T the HITRAN model with its τ scalings free where the species is deep enough, P a
+Legendre continuum solved linearly, and the stellar template S (with v_star free) only when one is given. The
+velocity errors come from the χ² profile's curvature (scalings re-optimised), scaled by the segment's Birge
+factor. Without a known resolution, R is estimated by minimising the total χ².
 
-Δv(λ) is the piecewise-linear interpolation between the segment values (held constant beyond them), as for the
-sky; its error grows with the distance from the nearest node at the median node-to-node slope. With
-`spread_templates`, each node's error also includes the spread of Δv over neighbouring stellar templates. `zp_kms`
-is only the error-weighted mean of the nodes (Birge-inflated error), a summary that is not "the" zero point when
-Δv varies across the spectrum; the systematics evaluate the curve at the measurements' wavelengths instead.
-
-Sign: positive Δv means the data's wavelengths are too large (too red), as for `sky_zeropoint`.
+Δv(λ) interpolates the segment values as for the sky; `zp_kms` is only their weighted mean, a summary.
+Sign: positive Δv means the data's wavelengths are too red, as for `sky_zeropoint`.
 """
 import logging
 from collections.abc import Sequence
@@ -53,15 +28,21 @@ from scipy.optimize import minimize
 
 from .. import broadening
 from ..constants import C_KMS
+from ..numerics import parabola_vertex, weighted_mean_chi2
 from ..types import Region, Spectrum
 from . import telluric
-from .sky_zeropoint import _curve, observatory_frame_factor
+from .sky_zeropoint import INFLATE_DEFAULT, _Curve, observatory_frame_factor
 
-__all__ = ['TelluricZeroPoint', 'measure', 'star_minus_sky', 'frame_factor']
+__all__ = ['TelluricZeroPoint', 'measure', 'star_minus_sky_direct', 'node_windows', 'frame_factor']
 
 log = logging.getLogger(__name__)
 
 _A_BOUNDS = {'dry': (0.2, 10.), 'h2o': (0.005, 200.)}  # airmass; airmass × PWV [mm]
+_AIRMASS_DEFAULT = 1.2  # starting airmass without a header value (the scalings are fitted)
+_R_GUESS = 3000.  # resolving power used to size the segments before R is known or estimated
+_PAD_RESEL = 15.  # continuum padding on each side of a segment [resolution elements]
+_MASK_RESEL = 5.  # half-width of the stellar-line masks without a template [resolution elements]
+_MIN_PIXELS = 20  # minimum usable pixels in a segment
 
 
 def frame_factor(meta: Any) -> float:
@@ -75,13 +56,8 @@ def frame_factor(meta: Any) -> float:
 
 
 @dataclass
-class TelluricZeroPoint:
-    """
-    The star's zero-point curve Δv(λ) [km/s] from the telluric bands
-
-    Unpacks as ``(zp_kms, zp_err)`` (the architecture's ``measure -> (dv, err)``); ``dv(λ)`` and ``dv_err(λ)``
-    give the curve.
-    """
+class TelluricZeroPoint(_Curve):
+    """The star's zero-point curve Δv(λ) [km/s] from the telluric bands; unpacks as ``(zp_kms, zp_err)``."""
     node_wave: np.ndarray
     node_dv: np.ndarray
     node_err: np.ndarray
@@ -105,28 +81,10 @@ class TelluricZeroPoint:
     def node_span(self) -> np.ndarray:
         return np.zeros(len(self.node_wave), dtype=int)
 
-    @property
-    def n_used(self) -> int:
-        return sum(1 for s in self.segments if s['used'])
-
-    def dv(self, wave: np.ndarray | float) -> np.ndarray:
-        out = _curve(wave, self.node_wave, self.node_dv, self.node_err, self.node_span, self.inflate,
-                     self.span_bounds)[0]
-        return out if np.ndim(wave) else out[0]
-
-    def dv_err(self, wave: np.ndarray | float) -> np.ndarray:
-        out = _curve(wave, self.node_wave, self.node_dv, self.node_err, self.node_span, self.inflate,
-                     self.span_bounds)[1]
-        return out if np.ndim(wave) else out[0]
-
     def as_dict(self) -> dict:
-        return dict(zp_tell_kms=self.zp_kms, zp_tell_err=self.zp_err, birge=self.birge, inflate=self.inflate,
-                    node_wave=[float(x) for x in self.node_wave], node_dv=[float(x) for x in self.node_dv],
-                    node_err=[float(x) for x in self.node_err], node_span=[0] * len(self.node_wave),
-                    span_bounds={int(k): [float(a), float(b)] for k, (a, b) in self.span_bounds.items()},
+        return dict(zp_tell_kms=self.zp_kms, zp_tell_err=self.zp_err, **self._nodes_dict(),
                     resolution=self.resolution, resolution_source=self.resolution_source, airmass=self.airmass,
-                    template=self.template,
-                    n_used=self.n_used, segments=self.segments)
+                    template=self.template)
 
 
 # ------------------------------------------------------------------------------------------------ segments
@@ -194,34 +152,41 @@ class _Segment:
         self.dlnlam = m.dlnlam
         self._key, self._tc = None, None
         self._f_all, self._s_all = f_all, s_all
+        x = 2. * (w_all - w_all[0]) / (w_all[-1] - w_all[0]) - 1.
+        self.basis_all = legendre.legvander(x, degree)
         self.set_use(use)
 
     def set_use(self, use: np.ndarray) -> None:
         """Select the pixels entering χ² (e.g. after clipping outliers)"""
         self.use = np.asarray(use, dtype=bool)
         self.w, self.f, s = self.w_all[self.use], self._f_all[self.use], self._s_all[self.use]
+        # without σ the fit is unweighted (measure warns): χ² and the Birge factor are then in data units
         self.wt = 1. / s ** 2 if np.all(np.isfinite(s)) and np.all(s > 0) else np.ones(len(self.w))
-        x = 2. * (self.w - self.w_all[0]) / (self.w_all[-1] - self.w_all[0]) - 1.
-        self.basis = legendre.legvander(x, self.degree)
+        self.basis = self.basis_all[self.use]
+
+    def _continuum(self, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The design matrix P·t on `use` and its weighted least-squares coefficients"""
+        a = self.basis * t[:, None]
+        sw = np.sqrt(self.wt)
+        c, *_ = np.linalg.lstsq(a * sw[:, None], self.f * sw, rcond=None)
+        return a, c
 
     def residuals(self, vt: float, vs: float, a_dry: float, a_h2o: float, resolution: float) -> np.ndarray:
         """Normalised residuals (data − model)/σ on every pixel of the segment, the continuum fitted on `use`"""
         t_all = self.model_all(vt, vs, a_dry, a_h2o, resolution)
-        a = self.basis * t_all[self.use][:, None]
-        sw = np.sqrt(self.wt)
-        c, *_ = np.linalg.lstsq(a * sw[:, None], self.f * sw, rcond=None)
-        x = 2. * (self.w_all - self.w_all[0]) / (self.w_all[-1] - self.w_all[0]) - 1.
-        model = legendre.legvander(x, self.degree) @ c * t_all
+        c = self._continuum(t_all[self.use])[1]
+        model = self.basis_all @ c * t_all
         s = self._s_all
         if not np.any(np.isfinite(s) & (s > 0)):
             s = np.ones(len(self.w_all))
         with np.errstate(invalid='ignore', divide='ignore'):
             return np.where(np.isfinite(s) & (s > 0), (self._f_all - model) / s, np.nan)
 
+    def _lsf(self, t: np.ndarray, resolution: float) -> np.ndarray:
+        return broadening.convolve(t, broadening.gaussian_kernel(telluric.lsf_sigma_pix(resolution, self.dlnlam)))
+
     def depth(self, which: str, a: float, resolution: float) -> float:
-        tau = self.td if which == 'dry' else self.th
-        t = broadening.convolve(np.exp(-a * tau), broadening.gaussian_kernel(
-            telluric.lsf_sigma_pix(resolution, self.dlnlam)))
+        t = self._lsf(np.exp(-a * (self.td if which == 'dry' else self.th)), resolution)
         inside = (self.fw >= self.w[0]) & (self.fw <= self.w[-1])
         return float(1. - np.min(t[inside])) if inside.any() else 0.
 
@@ -229,9 +194,7 @@ class _Segment:
         """Telluric (shifted by vt) × stellar template (shifted by vs), averaged over the contiguous pixels"""
         key = (a_dry, a_h2o, resolution)
         if key != self._key:
-            t = np.exp(-a_dry * self.td - a_h2o * self.th)
-            self._tc = broadening.convolve(t, broadening.gaussian_kernel(
-                telluric.lsf_sigma_pix(resolution, self.dlnlam)))
+            self._tc = self._lsf(np.exp(-a_dry * self.td - a_h2o * self.th), resolution)
             self._key = key
         tm = broadening.rebin(self.fw * broadening.doppler_factor(vt), self._tc, self.w_all)
         return tm if self.template is None else tm * self.template.at(self.w_all, vs)
@@ -240,9 +203,7 @@ class _Segment:
         t = self.model_all(vt, vs, a_dry, a_h2o, resolution)[self.use]
         if not np.all(np.isfinite(t)):
             return np.inf
-        a = self.basis * t[:, None]
-        sw = np.sqrt(self.wt)
-        c, *_ = np.linalg.lstsq(a * sw[:, None], self.f * sw, rcond=None)
+        a, c = self._continuum(t)
         r = self.f - a @ c
         return float(np.sum(self.wt * r * r))
 
@@ -277,8 +238,9 @@ class _Fitter:
                      options=dict(xatol=1e-3, fatol=1e-3, maxiter=400))
         return float(r.fun), r.x
 
-    def best(self, max_lag: float, step: float, star_range: tuple[float, float]) -> dict:
+    def best(self, step: float) -> dict:
         """Scans (star, then telluric, then star again), then a joint Nelder–Mead refinement"""
+        max_lag, star_range = self.max_lag, self.star_range
         p0 = np.log([self.a0[n] for n in self.names]) if self.names else np.zeros(0)
         vs0 = 0.
         if self.star:
@@ -315,13 +277,11 @@ class _Fitter:
             for v in vs:
                 val, p = self.profile(v, np.nan, p)
                 c2.append(val)
-            cc = np.polyfit(vs - fit['vt'], c2, 2)
-            if cc[0] <= 0:
+            d, c2_min, curv = parabola_vertex(vs - fit['vt'], c2)
+            if curv <= 0:
                 return dict(vt=fit['vt'], cov=np.full((1, 1), np.nan), chi2=float(np.min(c2)))
-            d = -cc[1] / (2 * cc[0])
             vt = fit['vt'] + d if abs(d) < 2 * h else fit['vt']
-            return dict(vt=float(vt), cov=np.array([[1. / cc[0]]]),
-                        chi2=float(min(np.min(c2), np.polyval(cc, d))))
+            return dict(vt=float(vt), cov=np.array([[2. / curv]]), chi2=float(min(np.min(c2), c2_min)))
         rows, vals = [], []
         for i in (-1, 0, 1):
             for j in (-1, 0, 1):
@@ -343,18 +303,24 @@ class _Fitter:
         return dict(vt=float(vt), vs=float(vs), cov=cov, chi2=chi2)
 
 
+def _scalings(seg: _Segment, resolution: float, airmass: float, pwv: float, min_depth: float
+              ) -> tuple[dict, dict, list[str]]:
+    """Starting τ scalings, model depths, and the species deep enough to be fitted"""
+    a0 = {'dry': airmass, 'h2o': airmass * pwv}
+    depths = {k: seg.depth(k, a0[k], resolution) for k in ('dry', 'h2o')}
+    return a0, depths, [k for k in ('dry', 'h2o') if depths[k] >= min_depth]
+
+
 def _segment_fit(seg: _Segment, resolution: float, airmass: float, pwv: float, min_depth: float, max_lag: float,
                  star_range: tuple[float, float], clip: float = 5.) -> dict:
     """Fit one segment at fixed R: Δv (and the star's velocity with a template), errors and diagnostics"""
-    a0 = {'dry': airmass, 'h2o': airmass * pwv}
-    depths = {k: seg.depth(k, a0[k], resolution) for k in ('dry', 'h2o')}
-    free = [k for k in ('dry', 'h2o') if depths[k] >= min_depth]
+    a0, depths, free = _scalings(seg, resolution, airmass, pwv, min_depth)
     out = dict(depth_dry=depths['dry'], depth_h2o=depths['h2o'], free=','.join(free))
     if not free:
         return dict(out, reason=f'telluric depth {max(depths.values()):.3f} < {min_depth}')
     step = max(1., 0.1 * C_KMS / resolution)
     fitter = _Fitter(seg, resolution, a0, free, max_lag, star_range)
-    fit = fitter.best(max_lag, step, star_range)
+    fit = fitter.best(step)
     # one round of outlier clipping (bad pixels, cosmic rays): |residual| > clip × robust scatter
     a = fitter.scalings(fit['p'])
     r = seg.residuals(fit['vt'], fit['vs'], a['dry'], a['h2o'], resolution)
@@ -363,7 +329,7 @@ def _segment_fit(seg: _Segment, resolution: float, airmass: float, pwv: float, m
     out['n_clipped'] = int(bad.sum())
     if bad.any():
         seg.set_use(seg.use & ~bad)
-        fit = fitter.best(max_lag, step, star_range)
+        fit = fitter.best(step)
     if abs(fit['vt']) > max_lag - step:
         return dict(out, dv=fit['vt'], reason='optimum at the edge of the search range')
     if fitter.star and not star_range[0] + step < fit['vs'] < star_range[1] - step:
@@ -393,11 +359,10 @@ def _total_chi2(segs: list[_Segment], resolution: float, airmass: float, pwv: fl
                 max_lag: float, star_range: tuple[float, float]) -> float:
     total = 0.
     for seg in segs:
-        a0 = {'dry': airmass, 'h2o': airmass * pwv}
-        free = [k for k in ('dry', 'h2o') if seg.depth(k, a0[k], resolution) >= min_depth]
+        a0, _, free = _scalings(seg, resolution, airmass, pwv, min_depth)
         if free:
-            fitter = _Fitter(seg, resolution, a0, free, max_lag, star_range)
-            total += fitter.best(max_lag, max(1., 0.1 * C_KMS / resolution), star_range)['chi2']
+            total += _Fitter(seg, resolution, a0, free, max_lag, star_range).best(max(1., 0.1 * C_KMS / resolution))[
+                'chi2']
     return total
 
 
@@ -411,85 +376,43 @@ def _estimate_resolution(segs, airmass, pwv, min_depth, max_lag, star_range) -> 
     c2f = np.array([_total_chi2(segs, r, *args) for r in fine])
     j = int(np.argmin(c2f))
     if 0 < j < len(fine) - 1:
-        p = np.polyfit(np.log(fine[j - 1:j + 2]), c2f[j - 1:j + 2], 2)
-        if p[0] > 0:
-            return float(np.exp(-p[1] / (2 * p[0])))
+        x0, _, curv = parabola_vertex(np.log(fine[j - 1:j + 2]), c2f[j - 1:j + 2])
+        if curv > 0:
+            return float(np.exp(x0))
     return float(fine[j])
 
 
 # ------------------------------------------------------------------------------------------------ public
 def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, resolution: float | None = None,
-            airmass: float | None = None, pwv: float = telluric.DEFAULT_PWV, seg_width: float = 250.,
-            pad_resel: float = 15., mask_resel: float = 5., degree: int = 2, min_depth: float = 0.05,
-            max_lag_kms: float = 150., template: Any = None,
-            star_rv_range: tuple[float, float] = (-400., 400.), min_pixels: int = 20, teff: float | None = None,
+            seg_width: float = 250., degree: int = 2, min_depth: float = 0.05, max_lag_kms: float = 150.,
+            template: Any = None, star_rv_range: tuple[float, float] = (-400., 400.), teff: float | None = None,
             spread_templates: Sequence[Any] = ()) -> TelluricZeroPoint | None:
     """
-    Measure the star's wavelength zero point Δv(λ) from the telluric absorption bands
+    Measure the star's zero point Δv(λ) from the telluric bands of a spectrum NOT telluric-corrected.
 
-    Parameters
-    ----------
-    spectrum
-        A spectrum whose telluric absorption has NOT been corrected; its meta says which velocity corrections
-        were applied to the wavelengths (undone here)
-    regions
-        Telluric regions to use (kind 'telluric'); default: the catalogue's telluric bands within the coverage
-    resolution
-        Resolving power; default `spectrum.resolution`, else estimated from the telluric lines
-    airmass
-        Starting airmass (default meta['airmass'], else 1.2); the τ scalings are fitted where the bands are deep
-    pwv
-        Starting precipitable water vapour [mm]
-    seg_width
-        Maximum segment width [Å]
-    pad_resel
-        Continuum padding on each side of a segment [resolution elements]
-    mask_resel
-        Half-width of the masks around catalogue stellar lines and bandheads [resolution elements]; not used
-        with a template
-    degree
-        Legendre degree of the smooth stellar continuum in each segment
-    min_depth
-        A species is fitted (and a segment used) only if its model absorption depth exceeds this
-    max_lag_kms
-        Search range [km/s]
-    template
-        Optional rest-frame stellar template already at the data's resolution, with ``at(wave, v)`` (e.g.
-        `methods._common.Template`); requires a known resolution
-    star_rv_range
-        Search range of the star's observatory-frame velocity with a template [km/s]
-    min_pixels
-        Minimum number of usable pixels in a segment
-    teff
-        The target's Teff [K] (e.g. the prior): catalogue bands that are not a safe reference at this Teff are
-        skipped (see `_band_windows`); None keeps every band
-    spread_templates
-        Alternative stellar templates (e.g. the neighbouring grid points in Teff); each used segment is refitted
-        with each, and the standard deviation of Δv over the templates (including `template`) is added in
-        quadrature to its error (`err_template`)
-
-    Returns
-    -------
-    zp
-        The TelluricZeroPoint (unpacks as (zp_kms, zp_err)), or None if no segment is usable or the telluric model
-        has not been built (logged with the instruction to build it)
+    `regions` of kind 'telluric' replace the catalogue's bands. `resolution` defaults to `spectrum.resolution`,
+    else is estimated from the telluric lines (a `template` needs it known). `seg_width` [Å] caps the segments,
+    `degree` is the Legendre continuum degree, a species is fitted only where its model depth exceeds `min_depth`,
+    and `max_lag_kms` / `star_rv_range` [km/s] bound the telluric and stellar velocity searches. `template` is a
+    rest-frame stellar template at the data's resolution with ``at(wave, v)``. Catalogue bands that are not a safe
+    reference at `teff` [K] are skipped. Each used segment is refitted with every template in `spread_templates`,
+    and the standard deviation of Δv over the templates is added in quadrature to its error (`err_template`).
+    Returns None (logged) if no segment is usable or the telluric model is not built.
     """
     if not telluric.available():
         log.warning('Telluric zero point not measured: %s', telluric.unavailable_message())
         return None
+    from ..regions import meta_airmass
     ff = frame_factor(spectrum.meta)
     wave = spectrum.wave / ff
     flux, sigma = np.asarray(spectrum.flux, float), np.asarray(spectrum.sigma, float)
-    if airmass is None:
-        am = spectrum.meta.get('airmass') if hasattr(spectrum.meta, 'get') else None
-        airmass = float(am) if am is not None and np.isfinite(am) and am >= 1 else 1.2
-        if am is None:
-            log.info('Telluric zero point: no airmass in the header; starting from %.1f', airmass)
+    airmass = meta_airmass(spectrum.meta, _AIRMASS_DEFAULT)
+    pwv = telluric.DEFAULT_PWV
     if template is not None and resolution is None and not spectrum.resolution:
         raise ValueError('a stellar template needs a known resolution')
     tm = telluric.model()
     lo_cov, hi_cov = max(float(wave[0]), tm.wmin), min(float(wave[-1]), tm.wmax)
-    r_guess = resolution or spectrum.resolution or 3000.
+    r_guess = resolution or spectrum.resolution or _R_GUESS
     bands = _band_windows(regions, lo_cov, hi_cov, teff)
     pieces = []
     for a, b, name in bands:
@@ -500,17 +423,20 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
     good = np.isfinite(flux) & np.isfinite(wave)
     if np.isfinite(sigma).any():
         good &= np.isfinite(sigma) & (sigma > 0)
+    else:
+        log.warning('Telluric zero point: the spectrum has no σ; the segments are fitted unweighted, so their χ² '
+                    'and Birge factors are in data units')
     for a, b, name in pieces:
-        pad = pad_resel * 0.5 * (a + b) / r_guess
+        pad = _PAD_RESEL * 0.5 * (a + b) / r_guess
         lo, hi = max(a - pad, lo_cov), min(b + pad, hi_cov)
         span = (wave >= lo) & (wave <= hi)
         use = good[span]
         if template is None:
-            use &= ~_stellar_mask(wave[span], r_guess, mask_resel)
+            use &= ~_stellar_mask(wave[span], r_guess, _MASK_RESEL)
         info = dict(band=name, wmin=float(a), wmax=float(b), centre=float(np.sqrt(a * b)), dv=np.nan, err=np.nan,
                     used=False, reason='', n_pix=int(use.sum()))
         meta_segs.append(info)
-        if use.sum() < min_pixels:
+        if use.sum() < _MIN_PIXELS:
             info['reason'] = f'{int(use.sum())} usable pixels'
             segs.append(None)
             continue
@@ -558,15 +484,16 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
     x = np.array([s['centre'] for s in used])
     v = np.array([s['dv'] for s in used])
     e = np.array([s['err'] for s in used])
-    w = 1. / e ** 2
-    mean = float(np.sum(w * v) / np.sum(w))
-    chi2 = float(np.sum(w * (v - mean) ** 2))
+    mean, formal, chi2 = weighted_mean_chi2(v, e)
     birge = float(np.sqrt(max(1., chi2 / (len(v) - 1)))) if len(v) > 1 else 1.
-    steps = [abs(v[i + 1] - v[i]) / (x[i + 1] - x[i]) for i in range(len(v) - 1)]
-    inflate = float(np.median(steps)) if steps else 0.02
+    if len(v) > 1:
+        inflate = float(np.median([abs(v[i + 1] - v[i]) / (x[i + 1] - x[i]) for i in range(len(v) - 1)]))
+    else:
+        inflate = INFLATE_DEFAULT
+        log.warning('Telluric zero point: a single node; its error grows at the default %.2f km/s per Å', inflate)
     zp = TelluricZeroPoint(x, v, e, meta_segs, ff, resolution, r_src, airmass,
                            template=getattr(template, 'label', None) if template is not None else None, zp_kms=mean,
-                           zp_err=float(birge / np.sqrt(np.sum(w))), birge=birge, inflate=inflate,
+                           zp_err=birge * formal, birge=birge, inflate=inflate,
                            span_bounds={0: (float(min(s['wmin'] for s in used)),
                                             float(max(s['wmax'] for s in used)))})
     log.info('Telluric zero point: Δv(λ) %+.1f to %+.1f km/s over %.0f-%.0f Å from %d of %d segments (node-weighted '
@@ -595,13 +522,8 @@ def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) 
     interpolation. Each usable node gives d_i = Δv_tell,i − Δv_sky,i with error √(σ_tell,i² + σ_sky,i²); the
     constant is their weighted mean. It is measured only with at least `STAR_SKY_MIN_NODES` nodes. Their χ² against
     the constant tests "the star sees the sky's distortion plus a constant": when its p-value is ≤ `STAR_SKY_P_MIN`,
-    the error is inflated by the Birge factor and `consistent` is False.
-
-    Returns
-    -------
-    info
-        {'zp_star_sky', 'zp_star_sky_err', 'n_nodes', 'chi2', 'dof', 'p', 'birge', 'consistent', 'method',
-        'reason', 'nodes': [...]}; the constant and its error are NaN when fewer than the minimum nodes are usable
+    the error is inflated by the Birge factor and `consistent` is False. With fewer nodes the constant and its
+    error are NaN (`reason` says why).
     """
     from scipy.stats import chi2 as chi2_dist
     lam = np.asarray(tell.node_wave, float)
@@ -628,14 +550,12 @@ def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) 
         log.info('Star - sky zero point not measured: %s', reason)
         return dict(zp_star_sky=nan, zp_star_sky_err=nan, n_nodes=int(ok.sum()), chi2=nan, dof=0, p=nan, birge=nan,
                     consistent=False, reason=reason, **base)
-    w = 1. / e[ok] ** 2
-    mean = float(np.sum(w * d[ok]) / np.sum(w))
-    chi2 = float(np.sum(w * (d[ok] - mean) ** 2))
+    mean, formal, chi2 = weighted_mean_chi2(d[ok], e[ok])
     dof = int(ok.sum()) - 1
     p = float(chi2_dist.sf(chi2, dof))
     consistent = p > STAR_SKY_P_MIN
     birge = 1. if consistent else float(np.sqrt(chi2 / dof))
-    err = float(birge / np.sqrt(np.sum(w)))
+    err = birge * formal
     log.info('Star - sky zero point: %+.1f ± %.1f km/s from %d telluric node(s) with the sky measured in the same '
              'windows (%s); χ² %.1f for %d dof, p = %.2g%s', mean, err, int(ok.sum()),
              ', '.join(f"{n['band']} {n['diff']:+.1f} ± {n['err']:.1f}" for n in nodes if n['used']), chi2, dof, p,
@@ -645,54 +565,3 @@ def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) 
                 consistent=bool(consistent), reason='ok' if consistent else 'inconsistent nodes (Birge-inflated)',
                 **base)
 
-
-def star_minus_sky(tell: TelluricZeroPoint, sky: Any) -> dict:
-    """
-    The star − sky zero-point constant from the telluric nodes that lie inside the sky's measured range (the sky
-    curve's value at each node; the pipeline uses `star_minus_sky_direct` instead)
-
-    Only a telluric node whose wavelength falls inside a used (measured) sky segment is compared: there the sky
-    value is a measurement, not an interpolation across an unmeasured gap, a value held flat beyond the last node
-    or a ramp towards an edge node. Each such node gives d_i = Δv_tell,i − Δv_sky(λ_i), with error
-    √(σ_tell,i² + σ_sky(λ_i)²). The constant is their weighted mean, its error Birge-inflated, with the sky curve's
-    model spread (the spread of reasonable curve models, as in `zp_sky_model_spread`) added in quadrature; the χ²
-    against a constant tests whether the star sees the same distortion as the sky (with two or more nodes).
-
-    Returns
-    -------
-    info
-        {'zp_star_sky', 'zp_star_sky_err', 'n_nodes', 'chi2', 'dof', 'birge', 'reason', 'nodes': [...]}; the
-        constant and its error are NaN when no node lies in the measured sky range (`reason` says why)
-    """
-    lam = np.asarray(tell.node_wave, float)
-    s_dv = np.asarray(sky.dv(lam), float)
-    s_err = np.asarray(sky.dv_err(lam), float)
-    measured = [(float(s['wmin']), float(s['wmax'])) for s in getattr(sky, 'segments', []) if s.get('used')]
-    inside = np.array([any(a <= x <= b for a, b in measured) for x in lam], dtype=bool)
-    d = tell.node_dv - s_dv
-    e = np.hypot(tell.node_err, s_err)
-    ok = inside & np.isfinite(d) & np.isfinite(e) & (e > 0)
-    nodes = [dict(wave=float(lam[i]), tell=float(tell.node_dv[i]), tell_err=float(tell.node_err[i]),
-                  sky=float(s_dv[i]), sky_err=float(s_err[i]), diff=float(d[i]), err=float(e[i]),
-                  sky_measured=bool(inside[i]), used=bool(ok[i]))
-             for i in range(len(lam))]
-    nan = float('nan')
-    if not ok.any():
-        reason = (f'none of the {len(lam)} telluric node(s) ({", ".join(f"{x:.0f}" for x in lam)} Å) lies inside a '
-                  f'measured sky segment ({", ".join(f"{a:.0f}-{b:.0f}" for a, b in measured) or "none"} Å)')
-        log.info('Star - sky zero point not measured: %s', reason)
-        return dict(zp_star_sky=nan, zp_star_sky_err=nan, n_nodes=0, chi2=nan, dof=0, birge=nan, reason=reason,
-                    nodes=nodes)
-    w = 1. / e[ok] ** 2
-    mean = float(np.sum(w * d[ok]) / np.sum(w))
-    chi2 = float(np.sum(w * (d[ok] - mean) ** 2))
-    dof = int(ok.sum()) - 1
-    birge = float(np.sqrt(max(1., chi2 / dof))) if dof > 0 else 1.
-    spread = getattr(sky, 'model_spread', nan)
-    spread = float(spread) if spread is not None and np.isfinite(spread) else 0.
-    err = float(np.hypot(birge / np.sqrt(np.sum(w)), spread))
-    log.info('Star - sky zero point: %+.1f ± %.1f km/s from %d telluric node(s) inside the measured sky range (%d '
-             'outside it not used; χ² %.1f for %d dof; sky model spread %.1f km/s included)', mean, err,
-             int(ok.sum()), int((~inside).sum()), chi2, dof, spread)
-    return dict(zp_star_sky=mean, zp_star_sky_err=err, n_nodes=int(ok.sum()), chi2=chi2, dof=dof, birge=birge,
-                reason='ok', nodes=nodes)

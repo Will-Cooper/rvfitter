@@ -1,9 +1,9 @@
 """Unit 3b: N-dimensional grids, best-template parameters, edge guidance, results columns and refit_object."""
-import socket
 
 import numpy as np
 import pytest
 
+from conftest import reachable
 from rvfitter import pipeline, results
 from rvfitter import templates as T
 from rvfitter.medium import vac_to_air
@@ -40,11 +40,7 @@ def _grid4(directory, medium='air', extra=None):
     return directory
 
 
-@pytest.fixture(autouse=True)
-def _clear():
-    T.clear_cache()
-    yield
-    T.clear_cache()
+pytestmark = pytest.mark.usefixtures('clear_template_cache')
 
 
 def test_metadata_roundtrip_with_extra_axes(tmp_path):
@@ -203,19 +199,11 @@ def test_refit_object_applies_and_records_patch(monkeypatch):
     assert seen['rng'] == first  # deterministic
 
 
-def _online() -> bool:
-    try:
-        socket.create_connection(('svo2.cab.inta-csic.es', 80), timeout=5).close()
-        return True
-    except OSError:
-        return False
-
-
 @pytest.mark.slow
 @pytest.mark.network
 def test_svo_known_models_live():
     """Live check of the SVO model ids (unverified ids are reported, not asserted, except CIFIST)"""
-    if not _online():
+    if not reachable('svo2.cab.inta-csic.es', 80):
         pytest.skip('SVO not reachable')
     status = T.available(grids=list(T.KNOWN_GRIDS))
     err = status['bt-settl-cifist']['error']

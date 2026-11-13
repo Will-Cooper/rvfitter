@@ -99,9 +99,6 @@ def test_sky_bias_test_downweights_and_excludes(monkeypatch):
     assert max(used, key=lambda s: s['bias'])['wmax'] == pytest.approx(7592., abs=5.)
     monkeypatch.setattr(Z, 'BIAS_FAIL_RESEL', 1e-6)  # every segment fails
     assert Z.measure(spec) is None
-    monkeypatch.undo()
-    off = Z.measure(spec, bias_test=False)
-    assert all(np.isnan(s['bias']) and s['err'] == s['err_stat'] for s in off.segments if s['used'])
 
 
 def test_measure_windows_inside_telluric_bands():

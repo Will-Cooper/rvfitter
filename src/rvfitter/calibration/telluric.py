@@ -1,5 +1,5 @@
 """
-Telluric transmission model and masks.
+Telluric transmission model.
 
 The model (built on demand into the user cache by `rvfitter templates telluric --build`, i.e.
 `telluric_build.build`; never shipped with rvfitter) holds zenith optical depths on a grid uniform in ln λ
@@ -37,7 +37,7 @@ from .. import broadening
 from ..constants import C_KMS
 
 __all__ = ['TelluricModel', 'TelluricModelUnavailable', 'model', 'available', 'cache_path', 'reload',
-           'unavailable_message', 'transmission', 'mask', 'DEFAULT_PWV', 'BUILD_COMMAND']
+           'unavailable_message', 'transmission', 'DEFAULT_PWV', 'BUILD_COMMAND']
 
 log = logging.getLogger(__name__)
 
@@ -60,11 +60,6 @@ class TelluricModel:
     meta: dict
 
     @property
-    def wave(self) -> np.ndarray:
-        """Vacuum wavelengths of the grid [Å]"""
-        return np.exp(self.lnlam0 + (np.arange(len(self.tau_dry)) + 0.5) * self.dlnlam)
-
-    @property
     def wmin(self) -> float:
         return float(np.exp(self.lnlam0))
 
@@ -77,7 +72,8 @@ class TelluricModel:
         i0 = max(0, int(np.floor((np.log(wmin) - self.lnlam0) / self.dlnlam)) - 1)
         i1 = min(len(self.tau_dry), int(np.ceil((np.log(wmax) - self.lnlam0) / self.dlnlam)) + 2)
         if i1 <= i0:
-            return np.empty(0), np.empty(0), np.empty(0)
+            raise ValueError(f'{wmin:.0f}-{wmax:.0f} Å lies outside the telluric model '
+                             f'({self.wmin:.0f}-{self.wmax:.0f} Å)')
         w = np.exp(self.lnlam0 + (np.arange(i0, i1) + 0.5) * self.dlnlam)
         return w, self.tau_dry[i0:i1], self.tau_h2o[i0:i1]
 
@@ -114,14 +110,7 @@ def _load(path: str) -> TelluricModel:
 
 
 def model() -> TelluricModel:
-    """
-    The telluric model at `cache_path()` (loaded once per path)
-
-    Raises
-    ------
-    TelluricModelUnavailable
-        If it has not been built
-    """
+    """The telluric model at `cache_path()` (loaded once per path); `TelluricModelUnavailable` if not built."""
     path = cache_path()
     if not path.is_file():
         raise TelluricModelUnavailable(unavailable_message(path))
@@ -146,27 +135,10 @@ def lsf_sigma_pix(resolution: float, dlnlam: float) -> float:
 def transmission(wave: np.ndarray, airmass: float = 1., pwv: float = DEFAULT_PWV, *,
                  resolution: float | None = None, dv: float = 0.) -> np.ndarray:
     """
-    The telluric transmission at `wave`
+    The telluric transmission at vacuum `wave` [Å] (increasing) for airmass X and PWV [mm]; 1 outside the model.
 
-    Parameters
-    ----------
-    wave
-        Vacuum wavelengths [Å], strictly increasing
-    airmass
-        Airmass X (scales every optical depth)
-    pwv
-        Precipitable water vapour [mm]
-    resolution
-        Resolving power of a Gaussian LSF; the transmission is then convolved and averaged over each pixel of
-        `wave`. None: the model sampled at `wave` (pixel-averaged where the pixels are coarser than the grid)
-    dv
-        Velocity shift of the telluric lines [km/s]: the model is evaluated at λ / D(dv), so positive dv moves
-        the features to the red (as a wavelength scale that is too red would)
-
-    Returns
-    -------
-    t
-        Transmission (1 outside the model's 6000–25 000 Å coverage)
+    With `resolution`, the model is convolved with a Gaussian LSF before being averaged over the pixels. The model
+    is evaluated at λ / D(dv) [km/s], so a positive dv moves the features to the red.
     """
     wave = np.atleast_1d(np.asarray(wave, dtype=float))
     out = np.ones(len(wave))
@@ -188,27 +160,7 @@ def transmission(wave: np.ndarray, airmass: float = 1., pwv: float = DEFAULT_PWV
     elif inside.any():
         out[inside] = np.interp(wave[inside], w * f, t)
     if not inside.all():
-        log.debug('telluric transmission: %d pixel(s) outside the model coverage set to 1', int((~inside).sum()))
+        log.warning('Telluric transmission: %d pixel(s) outside the model coverage (%.0f-%.0f Å) set to 1',
+                    int((~inside).sum()), m.wmin, m.wmax)
     return out
 
-
-def mask(wave: np.ndarray, threshold: float = 0.05, *, airmass: float = 1., pwv: float = DEFAULT_PWV,
-         resolution: float | None = None) -> np.ndarray:
-    """
-    Pixels whose telluric absorption 1 − T exceeds `threshold`
-
-    Parameters
-    ----------
-    wave
-        Vacuum wavelengths [Å]
-    threshold
-        Absorption depth above which a pixel is masked
-    airmass, pwv, resolution
-        As for `transmission`
-
-    Returns
-    -------
-    masked
-        Boolean array, True where telluric absorption is deeper than `threshold`
-    """
-    return 1. - transmission(wave, airmass, pwv, resolution=resolution) > threshold

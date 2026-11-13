@@ -61,16 +61,12 @@ class Feature:
     rest_ref: str
     caveat: str
     depth: float
-    model_fidelity: str = 'n/a'
+    model_fidelity: str
 
     @property
     def core_only(self) -> bool:
         """True if only the line core should be used (pressure-broadened wings)"""
         return _CORE_ONLY in self.caveat
-
-    @property
-    def teff_range(self) -> tuple[float, float]:
-        return self.teff_min, self.teff_max
 
     @property
     def span(self) -> tuple[float, float]:
@@ -101,14 +97,7 @@ def _read() -> Table:
 
 
 def load_catalogue() -> Table:
-    """
-    Load the feature catalogue (cached)
-
-    Returns
-    -------
-    table
-        A copy of the cached `astropy.table.Table`, so callers may modify it freely
-    """
+    """A copy of the cached catalogue `astropy.table.Table`, which callers may modify freely."""
     return _read().copy()
 
 
@@ -118,5 +107,5 @@ def features() -> tuple[Feature, ...]:
     table = _read()
     return tuple(Feature(str(r['name']), str(r['species']), str(r['kind']), float(r['wave_vac']), float(r['wmin']),
                          float(r['wmax']), float(r['teff_min']), float(r['teff_max']), float(r['r_min']),
-                         str(r['rest_ref']), str(r['caveat']), float(r['depth']),
-                         str(r['model_fidelity']) if 'model_fidelity' in table.colnames else 'n/a') for r in table)
+                         str(r['rest_ref']), str(r['caveat']), float(r['depth']), str(r['model_fidelity']))
+                 for r in table)

@@ -54,11 +54,11 @@ LICENCE = 'CC-BY-4.0'
 RETRIES = 3  # attempts per network operation
 _BACKOFF = 2.  # s; the wait before attempt n + 1 is _BACKOFF * 2 ** (n - 1) seconds
 _C_ANGSTROM = 2.99792458e18  # Å/s
-_USER_AGENT = 'rvfitter (github.com/Will-Cooper/rvfitter)'
+USER_AGENT = 'rvfitter (github.com/Will-Cooper/rvfitter)'
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# network entry points (patched in tests)
+# network entry points, shared by templates (SVO) and calibration.telluric_build (HITRAN); patched in tests
 # ---------------------------------------------------------------------------------------------------------------
 class RangeError(OSError):
     """A range request was not honoured by the server (not retried)"""
@@ -80,7 +80,7 @@ def _retry(func: Callable, what: str, *, attempts: int = RETRIES):
     for attempt in range(1, attempts + 1):
         try:
             return func()
-        except Exception as exc:
+        except (OSError, http.client.HTTPException) as exc:
             if attempt == attempts or not _transient(exc):
                 raise
             wait = _BACKOFF * 2 ** (attempt - 1)
@@ -89,20 +89,27 @@ def _retry(func: Callable, what: str, *, attempts: int = RETRIES):
             _sleep(wait)
 
 
-def _fetch_json(url: str, timeout: float = 60.) -> dict:
+def urlopen(url: str, *, headers: Mapping[str, str] | None = None, timeout: float = 60.):
+    """GET `url` with the rvfitter User-Agent (not retried; wrap in `_retry`)."""
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT, **(headers or {})})
+    return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310 (fixed http(s) URLs)
+
+
+def fetch(url: str, what: str, timeout: float = 60.) -> bytes:
+    """The body of `url`, transient errors retried."""
     def get():
-        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (fixed https Zenodo URLs)
-            return json.load(resp)
-    return _retry(get, f'Zenodo query {url}')
+        with urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    return _retry(get, what)
+
+
+def _fetch_json(url: str, timeout: float = 60.) -> dict:
+    return json.loads(fetch(url, f'Zenodo query {url}', timeout))
 
 
 def _open_stream(url: str, timeout: float = 120.):
     """A readable binary stream of a whole file"""
-    def get():
-        req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
-        return urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
-    return _retry(get, f'Opening {url}')
+    return _retry(lambda: urlopen(url, timeout=timeout), f'Opening {url}')
 
 
 class _RangeFile(io.RawIOBase):
@@ -131,8 +138,7 @@ class _RangeFile(io.RawIOBase):
         return self.pos
 
     def _get(self, start: int, end: int) -> bytes:
-        req = urllib.request.Request(self.url, headers={'Range': f'bytes={start}-{end}', 'User-Agent': _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310
+        with urlopen(self.url, headers={'Range': f'bytes={start}-{end}'}, timeout=120) as r:
             status = getattr(r, 'status', None)
             if status != 206:
                 raise RangeError(f'{self.url}: range request bytes={start}-{end} answered with HTTP {status}, '
@@ -172,10 +178,8 @@ def _text_columns(data: bytes, skip: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _sorted(w: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    order = np.argsort(w)
-    w, f = w[order], f[order]
-    keep = np.concatenate([[True], np.diff(w) > 0])
-    return w[keep], f[keep]
+    w, i = np.unique(w, return_index=True)  # sorted, duplicates dropped
+    return w, f[i]
 
 
 def read_bobcat(data: bytes) -> tuple[np.ndarray, np.ndarray, str | None]:
@@ -354,10 +358,10 @@ class _HashingReader(io.RawIOBase):
 
 def _safe_name(path: str) -> str | None:
     """The member's base name if its path is safe (relative, no '..'), else None"""
-    from .archives import _check_name
+    from .archives import UnsafeArchiveError, _check_name
     try:
         _check_name(path)
-    except Exception:  # noqa: BLE001 - unsafe names are skipped, with a warning
+    except UnsafeArchiveError:
         log.warning('Skipping unsafe archive member name %r', path)
         return None
     return PurePosixPath(path).name
@@ -409,26 +413,9 @@ def download_zenodo(grid: str, want: Mapping[str, tuple[float, float]], director
     Each model is written by `write` to the temporary name ``<path>.part`` (see `_Staging.part`) and renamed to
     ``<path>`` only once its checksum has passed (MD5 of the whole tar.gz stream, CRC-32 of each zip member). If
     anything fails (after the retries of transient errors), every file written by this call is removed and the
-    exception is re-raised.
-
-    Parameters
-    ----------
-    grid
-        A key of `ZENODO_GRIDS`
-    want
-        {axis: (min, max)} ranges (axes absent from a model's parameters are ignored)
-    directory
-        Output directory (used by `write`)
-    axes
-        The grid's axes (for range checks)
-    write
-        Callback (params, wave [Å], F_λ, medium or None, provenance) → final path; it must write the data to
-        ``<final path>.part`` and not to the final path itself
-
-    Returns
-    -------
-    paths
-        The written files
+    exception is re-raised. `want` holds {axis: (min, max)} (axes absent from a model's parameters are ignored).
+    `write(params, wave [Å], F_λ, medium or None, provenance)` returns the final path and must write the data to
+    ``<final path>.part``. Returns the written paths.
     """
     spec = ZENODO_GRIDS[grid]
     stage = _Staging()
