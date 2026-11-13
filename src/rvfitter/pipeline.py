@@ -19,7 +19,7 @@ import numpy as np
 from . import __version__, archives, barycentric, combine, regions, systematics
 from .calibration import sky_zeropoint
 from .calibration import wavelength_correction as wcorr
-from .methods import REGISTRY
+from .methods import REGISTRY, forward
 from .refit import apply_patch, config_for_object, object_seed, plain
 from .results import EXCLUDE_FLAGS, FLAGS
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
@@ -96,13 +96,19 @@ def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor
     for m in names:
         if cancel is not None and cancel.is_set():
             raise _Cancelled
-        try:
-            out[m] = REGISTRY[m](spec, sel.get(m, []), cfg, executor=executor, rng=rngs[m])
-        except Exception as exc:  # noqa: BLE001 - the one (object, method) guard: a failure never stops a batch
-            log.exception('%s: method %s failed', name, m)
-            failures.append((f'{name} {m}', f'{type(exc).__name__}: {exc}'))
-            out[m] = _failed(m, exc)
+        out[m] = _guarded(lambda m=m: REGISTRY[m](spec, sel.get(m, []), cfg, executor=executor, rng=rngs[m]),
+                          m, name, failures)
     return out
+
+
+def _guarded(call: Callable[[], Any], method: str, name: str, failures: Failures, n: int | None = None) -> Any:
+    """call(); if it raises, the failure is logged and recorded and `_failed` is returned (a list of n with n)"""
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001 - the one (object, method) guard: a failure never stops a batch
+        log.exception('%s: method %s failed', name, method)
+        failures.append((f'{name} {method}', f'{type(exc).__name__}: {exc}'))
+        return _failed(method, exc) if n is None else [_failed(method, exc) for _ in range(n)]
 
 
 def _measurement_wave(meas: Measurement) -> float:
@@ -179,8 +185,18 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
     sels = [_drop_uncovered(select(spec), info) for spec, info in zip(corrected, cal_infos, strict=True)]
-    per_epoch = [_run_methods(spec, sel, names, cfg, executor, method_rngs, name, cancel, failures)
+    joint = forward.METHOD in names and len(corrected) > 1  # one forward model shared by the epochs
+    per_epoch = [_run_methods(spec, sel, [m for m in names if not (joint and m == forward.METHOD)], cfg, executor,
+                              method_rngs, name, cancel, failures)
                  for spec, sel in zip(corrected, sels, strict=True)]
+    if joint:
+        if cancel is not None and cancel.is_set():
+            raise _Cancelled
+        fits = _guarded(lambda: forward.fit_epochs(corrected, [s.get(forward.METHOD, []) for s in sels], cfg,
+                                                   executor=executor, rng=method_rngs[forward.METHOD]),
+                        forward.METHOD, name, failures, n=len(corrected))
+        for res, fit in zip(per_epoch, fits, strict=True):
+            res[forward.METHOD] = fit
     zp_epochs = _zero_point_terms(corrected, cal_infos, _uncorrect(per_epoch, corrected), cfg, name)
 
     # several epochs: regions become '<epoch>:<region>', and the epochs are combined in a second level

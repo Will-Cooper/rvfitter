@@ -177,3 +177,22 @@ def test_valid_range_config_overrides_arc_range(caplog):
     cfg.calibration.wave_valid_range = (7600., 9000.)
     assert wcorr.valid_range(cfg, 'obj', s) == (7600., 9000.)
     assert wcorr.valid_range(config.Config(), 'obj', spec('B')) is None
+
+
+def test_forward_mcmc_epochs_share_one_fit(fakes, monkeypatch):
+    """forward_mcmc on a multi-epoch object goes through forward.fit_epochs once; single epochs use measure"""
+    calls = []
+
+    def fit_epochs(spectra, regs, cfg, *, executor, rng):
+        calls.append(len(spectra))
+        return [MethodResult('forward_mcmc', 10. + k, 1., 1, [Measurement('forward_mcmc', 'r', 10. + k, 1.)])
+                for k in range(len(spectra))]
+
+    monkeypatch.setattr(pipeline.forward, 'fit_epochs', fit_epochs)
+    monkeypatch.setitem(pipeline.REGISTRY, 'forward_mcmc', FakeMethod('forward_mcmc'))
+    cfg = config.Config()
+    cfg.methods.enabled = ['ccf', 'forward_mcmc']
+    res = {r.object: r for r in pipeline.run(cfg, INPUTS, n_procs=1)}
+    assert calls == [2]  # A only
+    assert [m.rv for m in res['A'].methods['forward_mcmc'].measurements] == [10., 11.]
+    assert res['B'].methods['forward_mcmc'].rv > 12.  # FakeMethod: 10 + noise + 9
