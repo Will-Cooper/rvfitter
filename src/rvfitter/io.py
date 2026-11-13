@@ -1,55 +1,22 @@
 """
-Reading spectra (FITS, text, PypeIt) from files, directories and archives, and grouping them into objects.
+Reading spectra (FITS, text, PypeIt) into `Spectrum` objects.
 
-`read_spectrum` is the single entry point.
-It tries a registry of readers in order (PypeIt spec1d, PypeIt coadd/tellcorr tables, generic 1D FITS, ASCII/CSV/TSV)
-and finally falls back to ``specutils``.
-Further readers can be added with `register_reader`.
+`read_spectrum` is the single entry point: it tries PypeIt spec1d, PypeIt coadd/tellcorr tables, generic 1D FITS and
+ASCII/CSV/TSV readers in turn, and finally ``specutils``.
 
-Conventions applied to every spectrum, whatever the reader:
+Conventions applied whatever the reader:
 
-* σ = 1/√ivar, with NaN where ivar ≤ 0.
-* PypeIt pixels masked in ``OPT_MASK`` (``BOX_MASK`` for box extraction) are dropped.
-* Sky pixels that are non-finite or above 10³ × the median |sky| are set to NaN.
-* Non-finite (or non-positive) wavelengths and non-finite fluxes are dropped, the rest is sorted by wavelength and
-  duplicate wavelengths are removed (the first is kept).
-* The wavelength medium is never guessed silently.
-  With ``medium='auto'`` it is read from the header
-  (``AIRORVAC``, ``VACUUM``, ``WAVE_MED`` or ``CTYPE1`` 'AWAV'/'WAVE').
-  PypeIt products carry no such keyword and are documented to be in vacuum, so PypeIt readers fall back to
-  vacuum (recorded in ``meta['medium_source']``).
-  Anything else raises a `ValueError` asking for ``medium='air'`` or ``medium='vacuum'``.
-  The wavelengths are then converted to vacuum with `rvfitter.medium`.
+* σ = 1/√ivar, NaN where ivar ≤ 0; PypeIt pixels masked in ``OPT_MASK`` (``BOX_MASK`` for box extraction) are dropped;
+  sky pixels that are non-finite or above 10³ × the median |sky| are set to NaN.
+* Non-finite or non-positive wavelengths and non-finite fluxes are dropped, the rest is sorted and duplicate
+  wavelengths removed (first kept).
+* The wavelength medium is never guessed silently: ``medium='auto'`` reads it from the header (``AIRORVAC``,
+  ``VACUUM``, ``WAVE_MED`` or ``CTYPE1``); PypeIt products are documented to be vacuum (``meta['medium_source']``);
+  anything else raises `ValueError`. Wavelengths are then converted to vacuum with `rvfitter.medium`.
 
-Header keywords used for the metadata (`Spectrum.meta`):
-
-========== =============================================================================================
-object      ``OBJECT``, ``TARGNAME``, ``TARGET``, ``OBJNAME`` (first non-empty)
-ra, dec     ``RA``/``DEC`` (or ``OBJRA``/``OBJDEC``, ``TELRA``/``TELDEC``); floats are degrees,
-            sexagesimal strings are hours (RA) and degrees (Dec)
-mjd_mid     ``MJD_MID``/``MJD-MID`` if present (already mid-exposure).
-            Otherwise ``MJD``, ``MJD-OBS`` or ``DATE-OBS`` (+ ``TIME-OBS``), which all mean the *start* of the
-            exposure, plus ``EXPTIME``/2.
-            ``meta['mjd_source']`` records which was used.
-site        ``OBSERVAT`` if present, else ``TELESCOP`` (``meta['telescope']`` is always ``TELESCOP``)
-exptime     ``EXPTIME``, ``EXPOSURE`` or ``ITIME`` [s]
-airmass     ``AIRMASS``, else the mean of ``AMSTART`` and ``AMEND``
-medium_in   'air' or 'vacuum': the medium of the file as read (before conversion)
-frame_in    ``VEL_TYPE`` (e.g. 'barycentric', 'heliocentric') if present, else None
-vel_corr    ``VEL_CORR`` if present (PypeIt: the multiplicative factor already applied to the wavelengths);
-            ``vel_corr_kms`` is the same as a velocity, c(f²-1)/(f²+1)
-arc_range   (PypeIt only) [min, max] vacuum Å of the fitted arc lines of a ``wvcalib.fits`` / ``WaveCalib*.fits`` found
-            next to the file or in ``Calibrations/`` (`find_wvcalib`); ``arc_file`` is its path.
-            PypeIt stores arc wavelengths in vacuum, so they are never converted.
-slit_*      ``slit_width_arcsec`` (``SLITW``, else 'N.NNarcsec' in ``MASKNAME``/``DECKER``/``SLIT``…), the
-            ``binning_spec``/``binning_spat`` factors (PypeIt ``BINNING``), ``pixscale_arcsec`` (``PIXSCALE``…),
-            ``instrument`` (``INSTRUME``) and, for PypeIt spec1d, ``trace_fwhm_pix`` (median ``FWHMFIT``):
-            the inputs of the slit-centring prior (`rvfitter.calibration.slit`)
-========== =============================================================================================
-
-``meta['velocity_keywords']`` additionally holds any of the velocity-correction keywords found in the headers
-(``VHELIO``, ``BCV``, ``BERV``, ``VELOSYS``, ``QC VRAD BARYCOR`` …), so that the barycentric module can tell whether a
-spectrum is already corrected.
+The header keywords behind each `Spectrum.meta` entry are listed in `_meta_from_header` and `_slit_meta`.
+``meta['velocity_keywords']`` holds any velocity-correction keywords found (``VHELIO``, ``BCV``, ``BERV``,
+``VELOSYS``…), so that `rvfitter.barycentric` can tell whether a spectrum is already corrected.
 """
 import gzip
 import logging
@@ -61,12 +28,13 @@ from typing import Any
 
 import numpy as np
 from astropy.io import fits
+from astropy.io.registry import IORegistryError
 
 from .barycentric import vel_corr_to_kms
 from .medium import to_vacuum
 from .types import Spectrum
 
-__all__ = ['read_spectrum', 'register_reader', 'RawSpectrum', 'Reader', 'readers']
+__all__ = ['read_spectrum', 'RawSpectrum']
 
 log = logging.getLogger(__name__)
 
@@ -137,51 +105,6 @@ class RawSpectrum:
     sky: np.ndarray | None = None
 
 
-@dataclass(frozen=True)
-class Reader:
-    """A registered reader: ``sniff(path, hdu, columns) -> bool`` and ``read(path, hdu, columns) -> RawSpectrum``"""
-    name: str
-    sniff: Callable[..., bool]
-    read: Callable[..., RawSpectrum]
-
-
-_READERS: list[Reader] = []
-
-
-def register_reader(name: str, sniff: Callable[..., bool], read: Callable[..., RawSpectrum], *,
-                    first: bool = False) -> None:
-    """
-    Register a spectrum reader.
-
-    Parameters
-    ----------
-    name
-        Unique name; registering an existing name replaces it
-    sniff
-        ``sniff(path, hdu=None, columns=None) -> bool``; whether the reader understands the file.
-        Exceptions are treated as False.
-    read
-        ``read(path, hdu=None, columns=None) -> RawSpectrum`` with wavelengths in Å
-    first
-        Put the reader at the front of the queue (so that it takes priority over the built-in ones)
-        rather than at the end
-    """
-    reader = Reader(name, sniff, read)
-    for i, old in enumerate(_READERS):
-        if old.name == name:
-            _READERS[i] = reader
-            return
-    if first:
-        _READERS.insert(0, reader)
-    else:
-        _READERS.append(reader)
-
-
-def readers() -> list[str]:
-    """Names of the registered readers, in the order they are tried"""
-    return [r.name for r in _READERS]
-
-
 # ----------------------------------------------------------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------------------------------------------------------
@@ -203,10 +126,7 @@ def _header_dict(*headers: fits.Header) -> dict[str, Any]:
             key = card.keyword.upper().strip()
             if key in ('', 'COMMENT', 'HISTORY', 'END'):
                 continue
-            try:
-                value = _clean_value(card.value)
-            except Exception:  # undefined card value
-                continue
+            value = _clean_value(card.value)
             if value is not None and not isinstance(value, fits.card.Undefined):
                 out[key] = value
     return out
@@ -255,7 +175,7 @@ def _unit_scale(unit: Any) -> float | None:
     try:
         from astropy import units as u
         return float(u.Unit(str(unit).strip()).to(u.AA))
-    except Exception:
+    except ValueError:
         return None
 
 
@@ -313,17 +233,16 @@ def _parse_coord(value: Any, is_ra: bool) -> float | None:
     if value is None:
         return None
     number = _as_float(value)
-    if number is None and isinstance(value, str):
+    if number is None:
         try:
             from astropy import units as u
             from astropy.coordinates import Angle
-            number = float(Angle(value.strip(), unit=u.hourangle if is_ra else u.deg).deg)
-        except Exception:
+            number = float(Angle(str(value).strip(), unit=u.hourangle if is_ra else u.deg).deg)
+        except ValueError:
+            log.warning('Ignoring unparseable %s %r', 'RA' if is_ra else 'Dec', value)
             return None
-    if number is None:
-        return None
-    lim = 360. if is_ra else 90.
-    if (is_ra and not 0. <= number <= lim) or (not is_ra and abs(number) > lim):
+    if not 0. <= number <= 360. if is_ra else not -90. <= number <= 90.:
+        log.warning('Ignoring out-of-range %s %r', 'RA' if is_ra else 'Dec', value)
         return None
     return number
 
@@ -340,12 +259,25 @@ def _date_to_mjd(header: Mapping[str, Any]) -> float | None:
     try:
         from astropy.time import Time
         return float(Time(date, format='isot', scale='utc').mjd)
-    except Exception:
+    except ValueError:
+        log.warning('Ignoring unparseable DATE-OBS %r', date)
         return None
 
 
 def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the metadata dictionary of a `Spectrum` from a flat header"""
+    """
+    Build the `Spectrum.meta` dictionary from a flat header.
+
+    - object: ``OBJECT``, ``TARGNAME``, ``TARGET``, ``OBJNAME`` (first non-empty).
+    - ra, dec: ``RA``/``DEC`` (or ``OBJRA``/``OBJDEC``, ``TELRA``/``TELDEC``); floats are degrees, sexagesimal strings
+      hours (RA) and degrees (Dec).
+    - mjd_mid: ``MJD_MID``/``MJD-MID`` (already mid-exposure), else ``MJD``, ``MJD-OBS`` or ``DATE-OBS`` (+
+      ``TIME-OBS``), which mean the exposure start, plus ``EXPTIME``/2; ``mjd_source`` records which.
+    - site: ``OBSERVAT``, else ``TELESCOP`` (``telescope`` is always ``TELESCOP``); site_lat/site_lon: ``SITELAT``...
+    - exptime: ``EXPTIME``, ``EXPOSURE`` or ``ITIME`` [s]; airmass: ``AIRMASS``, else the mean of ``AMSTART``/``AMEND``.
+    - frame_in: ``VEL_TYPE``; vel_corr: ``VEL_CORR`` (PypeIt's factor already applied to the wavelengths) and
+      ``vel_corr_kms``, the same as a velocity.
+    """
     meta: dict[str, Any] = {}
     obj, _ = _first(header, ('OBJECT', 'TARGNAME', 'TARGET', 'OBJNAME'))
     if obj is not None and str(obj).strip().lower() not in ('none', 'unknown', 'n/a', ''):
@@ -419,7 +351,7 @@ def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
     out['pypeit_spec'] = None if pyp is None else str(pyp).strip()
     width, key = None, None
     w = _as_float(header.get('SLITW'))
-    if w is not None and np.isfinite(w) and w > 0:
+    if w is not None and w > 0:
         width, key = w, 'SLITW'
     else:
         for k in ('MASKNAME', 'DECKER', 'SLIT', 'SLITNAME', 'APERTURE'):
@@ -501,10 +433,6 @@ def _is_fits(path: Path) -> bool:
         return False
 
 
-def _open_fits(path: Path) -> fits.HDUList:
-    return fits.open(path, memmap=False)
-
-
 def _hdu_index(hdul: fits.HDUList, hdu: int | str) -> int:
     try:
         return hdul.index_of(hdu)
@@ -520,7 +448,7 @@ def _table_columns(hdu_obj: Any) -> list[str]:
 def _table_wave_unit(hdu_obj: Any, name: str) -> str | None:
     try:
         return hdu_obj.columns[name].unit
-    except Exception:
+    except KeyError:
         return None
 
 
@@ -619,20 +547,20 @@ def _pypeit_trace_fwhm(data: Any, names: list[str], ext_header: Any) -> float | 
         if len(x):
             return float(np.median(x))
     v = _as_float(ext_header.get('FWHM'))
-    return v if v is not None and np.isfinite(v) and v > 0 else None
+    return v if v is not None and v > 0 else None
 
 
 def _sniff_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
     if not _is_fits(path):
         return False
-    with _open_fits(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         if hdu is None:
             return bool(_pypeit_tables(hdul))
         return _pypeit_hdu(hdul, hdu) is not None
 
 
 def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
-    with _open_fits(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         idx = _pypeit_hdu(hdul, hdu, path)
         if idx is None:
             raise ValueError('no PypeIt OPT_/BOX_ extraction columns found')
@@ -739,12 +667,12 @@ def _coadd_hdu(hdul: fits.HDUList, hdu: int | str | None) -> int | None:
 def _sniff_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
     if columns is not None or not _is_fits(path):
         return False
-    with _open_fits(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         return _coadd_hdu(hdul, hdu) is not None
 
 
 def _read_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
-    with _open_fits(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         idx = _coadd_hdu(hdul, hdu)
         if idx is None:
             raise ValueError('no wave/flux/ivar table found')
@@ -772,7 +700,7 @@ def _generic_kind(hdu_obj: Any, columns: Any) -> str | None:
     """Classify an HDU as 'table', 'wcs' (1D image with CRVAL1) or 'rows' (2×N or 3×N image), else None"""
     names = _table_columns(hdu_obj)
     if names:
-        roles = _role_lookup(names, columns) if columns else _role_lookup(names, None)
+        roles = _role_lookup(names, columns)
         return 'table' if 'wave' in roles and 'flux' in roles else None
     data = getattr(hdu_obj, 'data', None)
     if data is None or getattr(data, 'dtype', None) is None or data.dtype.names:
@@ -797,7 +725,7 @@ def _generic_hdu(hdul: fits.HDUList, hdu: int | str | None, columns: Any) -> tup
 def _sniff_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
     if not _is_fits(path):
         return False
-    with _open_fits(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         return _generic_hdu(hdul, hdu, columns) is not None
 
 
@@ -834,13 +762,14 @@ def _image_unit(header: Mapping[str, Any]) -> str | None:
 
 
 def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
-    with _open_fits(path) as hdul:
+    with fits.open(path, memmap=False) as hdul:
         found = _generic_hdu(hdul, hdu, columns)
         if found is None:
             raise ValueError('no table with wave/flux columns, 1D image with CRVAL1 or 2×N/3×N image found')
         idx, kind = found
         ext = hdul[idx]
         header = _header_dict(hdul[0].header, ext.header)
+        sky = None
         if kind == 'table':
             names = _table_columns(ext)
             roles = _role_lookup(names, columns)
@@ -854,7 +783,6 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
             sky = get(roles['sky']) if 'sky' in roles else None
             unit = _table_wave_unit(ext, names[roles['wave']])
         elif kind == 'wcs':
-            sky = None
             flux = np.asarray(np.squeeze(ext.data), dtype=float)
             wave = _wcs_wave(header, len(flux))
             sigma = np.full(len(flux), np.nan)
@@ -867,7 +795,6 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
                     break
             unit = _image_unit(header)
         else:  # rows
-            sky = None
             arr = np.asarray(np.squeeze(ext.data), dtype=float)
             if arr.shape[0] > 3:
                 arr = arr.T
@@ -912,7 +839,7 @@ def _parse_ascii(path: Path) -> tuple[np.ndarray, list[str], list[str], dict[str
     header_rows: list[str] = []
     pseudo: dict[str, Any] = {}
     names: list[str] | None = None
-    ncol = None
+    ncol, n_dropped = None, 0
     with open(path, encoding='utf-8', errors='replace') as fh:
         for raw in fh:
             line = raw.strip()
@@ -942,6 +869,10 @@ def _parse_ascii(path: Path) -> tuple[np.ndarray, list[str], list[str], dict[str
                 ncol = len(vals)
             if len(vals) == ncol:
                 rows.append(vals)
+            else:
+                n_dropped += 1
+    if n_dropped:
+        log.warning('%s: dropped %d row(s) with a column count other than %s', path.name, n_dropped, ncol)
     if ncol is None or ncol < 2 or len(rows) < 2:
         raise ValueError('fewer than two numeric columns or rows')
     if names is not None and len(names) != ncol:
@@ -949,17 +880,9 @@ def _parse_ascii(path: Path) -> tuple[np.ndarray, list[str], list[str], dict[str
     return np.asarray(rows, dtype=float), comments, header_rows, pseudo, names
 
 
-def _sniff_ascii(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
-    if _is_fits(path):
-        return False
-    try:
-        _parse_ascii(path)
-    except (ValueError, OSError):
-        return False
-    return True
-
-
 def _read_ascii(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
+    if _is_fits(path):
+        raise ValueError('a FITS file, not text')
     data, comments, header_rows, pseudo, names = _parse_ascii(path)
     ncol = data.shape[1]
     text = '\n'.join(comments + header_rows)
@@ -993,10 +916,8 @@ def _read_ascii(path: Path, hdu: int | str | None = None, columns: Any = None) -
 
 def _read_specutils(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
     from astropy import units as u
-    try:
-        from specutils import Spectrum as SpectrumCls
-    except ImportError:  # specutils < 2
-        from specutils import Spectrum1D as SpectrumCls
+    from specutils import Spectrum as SpectrumCls
+
     kwargs = {} if hdu is None else {'hdu': hdu}
     spec = SpectrumCls.read(str(path), **kwargs)
     wave = np.asarray(spec.spectral_axis.to(u.AA, equivalencies=u.spectral()).value, dtype=float)
@@ -1063,58 +984,33 @@ def _clean_sky(sky: np.ndarray | None, name: str = '') -> np.ndarray | None:
     return sky
 
 
-def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None, medium_in: str,
-                      medium_method: str) -> None:
-    """Set ``meta['arc_range']`` (vacuum Å) and ``meta['arc_file']`` from a neighbouring PypeIt wavecal file"""
+def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None) -> None:
+    """Set ``meta['arc_range']`` and ``arc_file`` (PypeIt arc solutions are vacuum) from a neighbouring wavecal file"""
     try:
         calib = find_wvcalib(path)
         span = None if calib is None else arc_line_range(calib, extname)
-    except Exception as exc:  # an unreadable calibration file is never fatal
-        log.debug('%s: could not read the arc-line range: %s', path.name, exc)
+    except (OSError, ValueError) as exc:
+        log.warning('%s: could not read the arc-line range: %s', path.name, exc)
         return
-    if calib is None or span is None:
+    if span is None:
         return
-    # PypeIt's arc solutions are always vacuum, whatever medium the spectrum itself was written in
-    lo, hi = span
-    meta.update(arc_range=(lo, hi), arc_file=str(calib))
-    log.info('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, lo, hi, calib)
+    meta.update(arc_range=span, arc_file=str(calib))
+    log.info('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, *span, calib)
 
 
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
                   hdu: int | str | None = None,
                   columns: Mapping[str, str | int] | None = None, resolution: float | None = None) -> Spectrum:
     """
-    Read a one-dimensional spectrum and return it in vacuum Å.
+    Read a one-dimensional spectrum (FITS, ASCII/CSV/TSV, else ``specutils``) and return it in vacuum Å.
 
-    Parameters
-    ----------
-    path
-        FITS (PypeIt spec1d or coadd, generic 1D image, 2×N/3×N image, binary table), or ASCII/CSV/TSV file;
-        anything else is passed to ``specutils``
-    medium
-        'auto' (read the header; raise `ValueError` if it cannot be determined; PypeIt files default to vacuum),
-        'air' or 'vacuum'.
-        An explicit value overrides the header (a conflict is logged as a warning).
-    medium_method
-        Air to vacuum formula: 'ciddor' (default), 'edlen' or 'morton'
-    hdu
-        HDU index or name to read (default: the first suitable one; for a PypeIt spec1d holding several
-        objects, the table matching the target name, else the highest-S/N science object, which is logged)
-    columns
-        Column overrides, role → column name or (ASCII, FITS) index, with roles 'wave', 'flux' and one of
-        'err', 'ivar', 'var'
-    resolution
-        Resolving power R = λ/Δλ to attach; overrides any value found in the header
+    ``medium`` is 'auto' (read the header; PypeIt files default to vacuum; otherwise `ValueError`), 'air' or
+    'vacuum' (overrides the header, a conflict is logged); ``medium_method`` is the air formula of `rvfitter.medium`.
+    ``hdu`` selects an HDU (default: the first suitable; for a multi-object PypeIt spec1d the table matching the
+    target name, else the highest-S/N science object, which is logged). ``columns`` maps the roles 'wave', 'flux' and
+    one of 'err', 'ivar', 'var' to a column name or index. ``resolution`` (R = λ/Δλ) overrides the header's.
 
-    Returns
-    -------
-    spectrum
-        Cleaned `Spectrum` with ``meta`` filled (see the module docstring)
-
-    Raises
-    ------
-    ValueError
-        If the file cannot be read or the medium cannot be determined with ``medium='auto'``
+    Raises `ValueError` if the file cannot be read or the medium cannot be determined.
     """
     path = Path(path)
     medium = str(medium).strip().lower()
@@ -1125,26 +1021,21 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
         raise FileNotFoundError(f'Spectrum file not found: {path}')
     errors: list[str] = []
     raw: RawSpectrum | None = None
-    for reader in _READERS:
+    for name, sniff, read in _READERS:
         try:
-            if not reader.sniff(path, hdu, columns):
+            if sniff is not None and not sniff(path, hdu, columns):
                 continue
-        except Exception as exc:
-            log.debug('%s: sniff by %s failed: %s', path.name, reader.name, exc)
-            continue
-        try:
-            raw = reader.read(path, hdu, columns)
+            raw = read(path, hdu, columns)
             break
-        except Exception as exc:
-            log.debug('%s: reader %s failed: %s', path.name, reader.name, exc)
-            errors.append(f'{reader.name}: {exc}')
+        except (OSError, ValueError, KeyError, IndexError) as exc:
+            log.debug('%s: reader %s failed: %s', path.name, name, exc)
+            errors.append(f'{name}: {exc}')
     if raw is None:
         try:
             raw = _read_specutils(path, hdu, columns)
-        except Exception as exc:
+        except (OSError, ValueError, KeyError, IndexError, IORegistryError) as exc:
             errors.append(f'specutils: {exc}')
-            why = '; '.join(errors) or 'no reader recognised it'
-            raise ValueError(f'Could not read {path} as a spectrum ({why})') from exc
+            raise ValueError(f"Could not read {path} as a spectrum ({'; '.join(errors)})") from exc
     log.debug('%s: read with %s', path.name, raw.reader)
     try:
         wave, flux, sigma, sky = _clean_arrays(raw.wave, raw.flux, raw.sigma, raw.sky)
@@ -1182,13 +1073,17 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     if r is not None and not (np.isfinite(r) and r > 0):
         raise ValueError(f'resolution must be positive, not {r}')
     if raw.reader in ('pypeit_spec1d', 'pypeit_coadd'):
-        _attach_arc_range(meta, path, raw.header.get('RVF_EXTNAME'), medium_in, medium_method)
+        _attach_arc_range(meta, path, raw.header.get('RVF_EXTNAME'))
     log.debug('%s: %d pixels, %.1f-%.1f Å (vacuum), medium_in=%s (%s)', path.name, len(wave), wave[0], wave[-1],
               medium_in, source)
     return Spectrum(wave, flux, sigma, None if r is None else float(r), meta, str(path), sky)
 
 
-register_reader('pypeit_spec1d', _sniff_pypeit_spec1d, _read_pypeit_spec1d)
-register_reader('pypeit_coadd', _sniff_pypeit_coadd, _read_pypeit_coadd)
-register_reader('fits_generic', _sniff_fits_generic, _read_fits_generic)
-register_reader('ascii', _sniff_ascii, _read_ascii)
+# (name, sniff, read) in the order tried; ASCII has no sniffer (its reader raises for anything else) and `specutils`
+# is the last resort in `read_spectrum`.
+_READERS = (
+    ('pypeit_spec1d', _sniff_pypeit_spec1d, _read_pypeit_spec1d),
+    ('pypeit_coadd', _sniff_pypeit_coadd, _read_pypeit_coadd),
+    ('fits_generic', _sniff_fits_generic, _read_fits_generic),
+    ('ascii', None, _read_ascii),
+)
