@@ -214,26 +214,32 @@ def test_wavelength_zero_point_systematic():
 
 def test_sky_measured_in_each_regions_window(caplog):
     """
-    A distortion with structure on scales below the 250 Å segments: each region gets the sky measured in its own
-    window (grown until the synthetic bias test passes), which follows the truth better than the curve does; a
-    region whose window cannot pass falls back to the curve with a WARNING and a flag
+    A distortion with structure on scales below the 250 Å segments: a region gets the sky measured in its own
+    window (grown until the synthetic bias test passes and it is no noisier than the curve), which follows the
+    truth better than the curve does; a region whose window cannot pass falls back to the curve with a WARNING
+    and a flag (here Na I, where the packaged OH list has few lines)
     """
     def dv(w):
-        return 15. + 25. * np.sin(2. * np.pi * (w - 7700.) / 400.)
+        return 15. + 25. * np.sin(2. * np.pi * (w - 7700.) / 700.)
     raw = _sky_spectrum(dv_func=dv)
     curve = Z.measure(raw)
     cfg = config.Config()
     cfg.calibration.wavelength_correction = 'sky'
     spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=ALKALI)
     assert info['applied'] == 'sky'
+    windowed = [r for r in ALKALI if info['sky_windows'][r.name]['source'].startswith('window')]
+    assert {r.name for r in windowed} == {'Rb I', 'Cs I'}
     for r in ALKALI:
         c = 0.5 * (r.wmin + r.wmax)
         win = info['sky_windows'][r.name]
-        assert win['source'].startswith('window') and abs(win['dv'] - dv(c)) < 3. * win['err'] + 2., (r.name, win)
+        assert abs(win['dv'] - dv(c)) < 3. * win['err'] + 2., (r.name, win)
+        assert win['err'] <= float(curve.dv_err(c)) + 1e-9
         assert float(Z.applied_dv(spec.meta, c)) == pytest.approx(win['dv'])
-    err_win = [abs(info['sky_windows'][r.name]['dv'] - dv(0.5 * (r.wmin + r.wmax))) for r in ALKALI]
-    err_curve = [abs(float(curve.dv(0.5 * (r.wmin + r.wmax))) - dv(0.5 * (r.wmin + r.wmax))) for r in ALKALI]
+    mid = [0.5 * (r.wmin + r.wmax) for r in windowed]
+    err_win = [abs(info['sky_windows'][r.name]['dv'] - dv(c)) for r, c in zip(windowed, mid, strict=True)]
+    err_curve = [abs(float(curve.dv(c)) - dv(c)) for c in mid]
     assert np.mean(err_win) < np.mean(err_curve)
+    assert info['zp_flags'] & wcorr.ZP_FLAGS['sky_window_fallback']
     # no OH lines around a region (sky zeroed there): the curve is used, loudly
     blank = replace(raw, sky=np.where((raw.wave > 8350.) & (raw.wave < 8700.), 5., raw.sky))
     caplog.set_level(logging.WARNING)

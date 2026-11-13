@@ -451,11 +451,15 @@ def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str,
     region, so each region gets its local zero point rather than the curve interpolated between 250 Å segments
 
     The window starts at the region's width (at least `sky_zeropoint.MIN_WIDTH`) and grows by 25 per cent until
-    `measure_windows` uses it (correlation ≥ 0.7 and the synthetic bias test within 0.1 resolution elements), up
-    to ``calibration.sky_segment_width``; it is clipped to the telluric-free span holding the region, so no deep
-    telluric band enters it. Where no window passes, the curve's own value and error are used (WARNING, flag
-    sky_window_fallback). Without regions the curve is returned unchanged.
+    `measure_windows` uses it (correlation ≥ 0.7 and the synthetic bias test within 0.1 resolution elements: the
+    minimum width the bias test allows) and its error (statistical ⊕ bias) is no larger than the curve's there,
+    so the local value is never noisier than the curve; up to ``calibration.sky_segment_width``, clipped to the
+    telluric-free span holding the region, so no deep telluric band enters it. Where no window passes, the
+    curve's own value and error are used (WARNING, flag sky_window_fallback). Regions that the coverage test
+    drops (`_sky_needed`) are skipped. Without regions the curve is returned unchanged.
     """
+    dropped = set(info.get('sky_tests', {}).get('uncovered', ()))
+    regions = [r for r in regions if r.name not in dropped]
     if not regions:
         return zp
     ff = telluric_zeropoint.frame_factor(spec.meta)
@@ -463,11 +467,13 @@ def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str,
     for r in regions:
         lo, hi = r.wmin / ff, r.wmax / ff
         c = 0.5 * (lo + hi)
+        curve_err = float(zp.dv_err(c))
         span = next(((a, b) for a, b in zp.span_bounds.values() if a <= c <= b), None)
         width, res = max(hi - lo, sky_zeropoint.MIN_WIDTH), None
         while span is not None:
             a, b = max(c - width / 2., span[0]), min(c + width / 2., span[1])
             res = sky_zeropoint.measure_windows(zp.source_spectrum, [(a, b)], zp.fwhm)[0]
+            res['used'] &= bool(res['err'] <= curve_err)
             if res['used'] or width >= cfg.calibration.sky_segment_width or (a, b) == span:
                 break
             width = min(1.25 * width, cfg.calibration.sky_segment_width)
@@ -475,12 +481,12 @@ def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str,
             nodes.append((c, res['dv'], res['err'], r.name, f"window {res['wmin']:.0f}-{res['wmax']:.0f} Å"))
         else:
             fallback.append(r.name)
-            nodes.append((c, float(zp.dv(c)), float(zp.dv_err(c)), r.name, 'sky curve (fallback)'))
+            nodes.append((c, float(zp.dv(c)), curve_err, r.name, 'sky curve (fallback)'))
     nodes.sort()
     if fallback:
         info['zp_flags'] |= ZP_FLAGS['sky_window_fallback']
-        log.warning('%s: no usable sky window for region(s) %s (too few lines or the bias test failed); the sky curve '
-                    'is applied there instead', name, ', '.join(fallback))
+        log.warning('%s: no usable sky window for region(s) %s (too few lines, the bias test failed or noisier than '
+                    'the curve); the sky curve is applied there instead', name, ', '.join(fallback))
     info['sky_windows'] = {n: dict(wave=w, dv=v, err=e, source=src) for w, v, e, n, src in nodes}
     log.info('%s: sky Δv per region: %s', name, '; '.join(f'{n} {v:+.1f} ± {e:.1f} km/s ({src})'
                                                            for w, v, e, n, src in nodes))

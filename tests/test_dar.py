@@ -93,3 +93,36 @@ def test_osiris_pa_convention_against_header_wcs():
     assert geo['q_deg'][0][0] == pytest.approx(37.9, abs=0.3)
     assert -0.1 < geo['s'] < 0. and 0. < geo['s_err'] < 0.05 and geo['zenith_deg'] == pytest.approx(58., abs=0.5)
     assert geo['pressure_hpa'] == pytest.approx(782.5, abs=0.1)
+
+
+@pytest.mark.data
+@pytest.mark.slow
+@pytest.mark.skipif(not TESTDATA, reason='RVFITTER_TESTDATA not set')
+def test_j1745_star_minus_sky_with_dar(real_telluric_model):
+    """
+    J1745−1640 (auto): with the raw header the slit PA is known and s ≈ −0.05 is fixed; without it s is fitted
+    with a uniform prior, which widens the constant's error. Reported, not tuned to the benchmark.
+    """
+    from rvfitter import config
+    from rvfitter.calibration import wavelength_correction as wcorr
+    sci = Path(TESTDATA) / 'pypeit/R2500I/GTC54-15A0/OB0055/Science'
+    spec1d = str(next(sci.glob('spec1d_*.fits')))
+    raw = io.read_spectrum(sci / 'DENISJ174534.6-164053_tellcorr.fits', medium='vacuum', resolution=2602.)
+    out = {}
+    for known in (True, False):
+        c = config.Config()
+        c.input.telluric_corrected, c.input.resolution = True, 2602.
+        c.templates.local_dir = str(Path(TESTDATA) / 'templates/bt-settl-cifist/useful')
+        c.templates.teff_prior = 2100.
+        c.calibration.wavelength_correction = 'auto'
+        c.calibration.sky_source = c.calibration.telluric_source = spec1d
+        c.input.raw_header_dir = str(Path(TESTDATA) / 'raw_headers') if known else None
+        _, info = wcorr.correct(raw, raw, c, 'J1745')
+        out[known] = info
+        assert np.isfinite(info['zp_star_sky']) and info['star_sky']['n_nodes'] >= 2
+        assert bool(info['zp_flags'] & wcorr.ZP_FLAGS['dar_pa_unknown']) is not known
+    k, f = out[True], out[False]
+    assert k['star_sky']['dar_mode'] == 'known' and k['zp_dar_s'] == pytest.approx(k['dar']['s'], abs=0.003)
+    assert -0.1 < k['zp_dar_s'] < 0. and k['zp_dar_s_err'] < 0.05
+    assert f['star_sky']['dar_mode'] == 'fitted' and f['zp_dar_s_err'] > 0.1
+    assert f['zp_star_sky_err'] > k['zp_star_sky_err']
