@@ -24,7 +24,7 @@ from .refit import apply_patch, config_for_object, object_seed, plain
 from .results import EXCLUDE_FLAGS, FLAGS
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
-__all__ = ['run', 'measure_object', 'refit_object', 'enabled_methods', 'NoMethodsError']
+__all__ = ['run', 'measure_object', 'refit_object', 'enabled_methods', 'region_selector', 'NoMethodsError']
 
 log = logging.getLogger(__name__)
 
@@ -73,13 +73,14 @@ def _barycentric(spectra: Sequence[Spectrum], cfg: Any, mode: str, name: str) ->
     return corrected, {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
 
 
-def _selector(cfg: Any, names: list[str]) -> Callable[[Spectrum], dict]:
+def region_selector(cfg: Any, names: list[str], overrides: bool = True) -> Callable[[Spectrum], dict]:
+    """`regions.select` for these methods with the configured options (and ``regions.overrides`` if `overrides`)"""
     knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
              'telluric_corrected': True if cfg.input.telluric_corrected else None,
              'template_windows': cfg.regions.template_windows}
     opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})  # None: the default
-    return lambda spec: regions.select(spec, teff=cfg.templates.teff_prior, methods=names,
-                                       overrides=cfg.regions.overrides, options=opts)
+    ov = cfg.regions.overrides if overrides else None
+    return lambda spec: regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=ov, options=opts)
 
 
 def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor: Executor | None,
@@ -160,7 +161,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     failures = [] if failures is None else failures
     name = name or str(spectra[0].meta.get('object', Path(spectra[0].source).stem))
     corrected, bary_info = _barycentric(spectra, cfg, bary or cfg.velocity_frame.correction, name)
-    select = _selector(cfg, names)
+    select = region_selector(cfg, names)
 
     # wavelength zero point, applied once to the wavelengths; the regions the methods will use (selected before
     # any correction, which moves them by much less than their width) feed the sky-if-needed and telluric tests

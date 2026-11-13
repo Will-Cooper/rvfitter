@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from .backend import Backend, LazyBackend
-from .cfgutil import find_field, get_path, set_path
-from .diagnostics import DiagnosticsTabs
+from .diagnostics import DiagnosticsPanel
 from .forms import ConfigForm
 from .logpane import LogPane, QtLogHandler
 from .regions_editor import RegionEditor
@@ -172,7 +170,7 @@ class MainWindow(QMainWindow):
         self._build_guidance(rv)
         self.tabs.addTab(res, 'Results')
 
-        self.diagnostics = DiagnosticsTabs(self.backend)
+        self.diagnostics = DiagnosticsPanel()
         self.tabs.addTab(self.diagnostics, 'Diagnostics')
         self.tabs.currentChanged.connect(self._tab_changed)
 
@@ -312,7 +310,7 @@ class MainWindow(QMainWindow):
             for p in paths:
                 try:
                     files.extend(backend.collect_inputs(p))
-                except Exception as exc:
+                except (OSError, ValueError) as exc:  # one bad input never stops the others
                     log.warning('Could not read %s: %s', p, exc)
             if not files:
                 return {}
@@ -383,11 +381,7 @@ class MainWindow(QMainWindow):
 
     # ---- regions -------------------------------------------------------------------------------------------
     def _overrides_changed(self, overrides: dict) -> None:
-        if not self.form.set_value(OVERRIDES_PATH, overrides):
-            try:
-                set_path(self.form._cfg, OVERRIDES_PATH, overrides)
-            except Exception as exc:
-                log.warning('Config has no %s: %s', OVERRIDES_PATH, exc)
+        self.form.set_value(OVERRIDES_PATH, overrides)
         log.info('Region overrides updated (%d edit%s).', len(overrides), '' if len(overrides) == 1 else 's')
 
     def load_regions_for(self, name: str) -> None:
@@ -399,8 +393,7 @@ class MainWindow(QMainWindow):
         try:
             spec = self.backend.read_spectrum(files[0], cfg)
             auto = self.backend.select_regions(spec, cfg, False)
-            overrides = get_path(cfg, OVERRIDES_PATH) or {}
-            effective = self.backend.select_regions(spec, cfg, True) if overrides else auto
+            effective = self.backend.select_regions(spec, cfg, True) if cfg.regions.overrides else auto
         except Exception as exc:
             log.warning('Could not select regions for %s: %s', name, exc)
             self.region_editor.info.setText(f'Regions unavailable for {name}: {exc}')
@@ -419,7 +412,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._error('Invalid settings', str(exc))
             return None
-        n_procs = get_path(cfg, 'parallel.n_procs') or find_field(cfg, 'n_procs') or max(1, (os.cpu_count() or 2) - 1)
+        n_procs = cfg.parallel.n_procs
         self.results.clear()
         self.model.clear()
         self.guidance.clear()
@@ -449,10 +442,7 @@ class MainWindow(QMainWindow):
 
     def _on_result(self, res: Any) -> None:
         self.results.append(res)
-        try:
-            self.model.append(self.backend.to_table([res]))
-        except Exception as exc:
-            log.error('Could not tabulate %s: %s', getattr(res, 'object', '?'), exc)
+        self.model.append(self.backend.to_table([res]))
         self.count_label.setText(f'{len(self.results)} object{"" if len(self.results) == 1 else "s"} measured.')
         self._note_guidance(len(self.results) - 1, res)
         if len(self.results) == 1:
@@ -487,16 +477,17 @@ class MainWindow(QMainWindow):
 
     def _autowrite(self) -> None:
         cfg = self._run_cfg
-        out = get_path(cfg, 'output.path') if cfg is not None else None
+        out = cfg.output.path if cfg is not None else None
         if not out or not self.results:
             return
-        formats = get_path(cfg, 'output.formats') or ['csv']
+        formats = cfg.output.formats or ['csv']
         try:
             Path(out).parent.mkdir(parents=True, exist_ok=True)
             self.backend.write_results(self.results, Path(out), list(formats))
             log.info('Wrote results to %s (%s).', out, ', '.join(formats))
-        except Exception as exc:
-            log.warning('Could not write results to %s: %s', out, exc)
+        except OSError as exc:  # shown: the results are not saved
+            log.error('Could not write results to %s: %s', out, exc)
+            self.statusBar().showMessage(f'Could not save the results to {out}: {exc}')
 
     # ---- results and selection -----------------------------------------------------------------------------
     def export_results(self) -> None:
@@ -545,11 +536,7 @@ class MainWindow(QMainWindow):
     def _note_guidance(self, row: int, res: Any) -> None:
         """Record the guidance of the result in ``row`` and mark the row."""
         name = getattr(res, 'object', '')
-        try:
-            sugg = list(self.backend.suggested_refits(res))
-        except Exception as exc:
-            log.debug('No guidance for %s: %s', name, exc)
-            sugg = []
+        sugg = self.backend.suggested_refits(res)
         if sugg:
             self.guidance[name] = sugg
             self.model.set_note(row, f'{name}: ' + ' | '.join(s['message'] for s in sugg))
@@ -596,10 +583,7 @@ class MainWindow(QMainWindow):
             new_res, new_cfg = out
             self._refitting = False
             self.results[idx] = new_res
-            try:
-                self.model.replace(idx, backend.to_table([new_res]))
-            except Exception as exc:
-                log.error('Could not tabulate %s: %s', name, exc)
+            self.model.replace(idx, backend.to_table([new_res]))
             self._run_cfg = new_cfg
             self.set_config(new_cfg)  # the session config now carries the [[refits]] entry
             self._note_guidance(idx, new_res)

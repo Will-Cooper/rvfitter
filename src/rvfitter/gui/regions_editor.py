@@ -7,7 +7,6 @@ All wavelengths are vacuum Angstrom.
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -45,15 +44,6 @@ class Span:
     @property
     def key(self) -> Key:
         return (self.method, self.name)
-
-
-def _style_context():
-    """``plotting.style_context()`` when available, else a no-op (never touches global rcParams)."""
-    try:
-        from rvfitter import plotting
-        return plotting.style_context()
-    except Exception:
-        return contextlib.nullcontext()
 
 
 class RegionEditor(QWidget):
@@ -222,23 +212,22 @@ class RegionEditor(QWidget):
 
     def _redraw(self) -> None:
         xlim = self.ax.get_xlim() if len(self.wave) and self.ax.lines else None
-        with _style_context():
-            self.ax.clear()
-            self._style_axes()
-            if len(self.wave):
-                self.ax.step(self.wave, self.flux, where='mid', color='k', lw=0.6)
-                if xlim is not None:
-                    self.ax.set_xlim(xlim)
-            for span in self.spans.values():
-                sel = span.key == self.selected
-                colour = SELECT_COLOUR if sel else AUTO_COLOUR
-                span.patch = self.ax.axvspan(span.wmin, span.wmax, facecolor=colour, edgecolor=colour,
-                                             alpha=0.5 if sel else 0.35, lw=1.5, ls='-' if span.auto else '--')
-                span.label = self.ax.annotate(span.name, (0.5 * (span.wmin + span.wmax), 1.0),
-                                              xycoords=('data', 'axes fraction'), xytext=(0, 3),
-                                              textcoords='offset points', rotation=90, ha='center', va='bottom',
-                                              fontsize=7, color=GREY, annotation_clip=False)
-            self.canvas.draw_idle()
+        self.ax.clear()
+        self._style_axes()
+        if len(self.wave):
+            self.ax.step(self.wave, self.flux, where='mid', color='k', lw=0.6)
+            if xlim is not None:
+                self.ax.set_xlim(xlim)
+        for span in self.spans.values():
+            sel = span.key == self.selected
+            colour = SELECT_COLOUR if sel else AUTO_COLOUR
+            span.patch = self.ax.axvspan(span.wmin, span.wmax, facecolor=colour, edgecolor=colour,
+                                         alpha=0.5 if sel else 0.35, lw=1.5, ls='-' if span.auto else '--')
+            span.label = self.ax.annotate(span.name, (0.5 * (span.wmin + span.wmax), 1.0),
+                                          xycoords=('data', 'axes fraction'), xytext=(0, 3),
+                                          textcoords='offset points', rotation=90, ha='center', va='bottom',
+                                          fontsize=7, color=GREY, annotation_clip=False)
+        self.canvas.draw_idle()
         n_auto = sum(s.auto for s in self.spans.values())
         self.info.setText(f'{len(self.spans)} regions ({n_auto} automatic, {len(self.spans) - n_auto} added); '
                           f'{len(self.removed)} removed. Drag a span or its edges to adjust it.')
