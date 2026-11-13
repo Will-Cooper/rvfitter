@@ -20,7 +20,8 @@
 - `systematics`: `template_spread(_details)` (templates, grids, window modes; a variant that raises ValueError is NaN with a WARNING), `wavelength_zero_point(spectrum, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
 - `pipeline` (orchestration only): `run(..., failures=)`, `measure_object`, `refit_object`, `enabled_methods` (NoMethodsError, a ValueError), `region_selector`. `calibration/wavelength_correction`: `correct(raw, spec, cfg, name, regions=)` (sky-if-needed, sky, auto, telluric, none), `ZP_FLAGS`, `zp_flag_names`, `star_sky_term` (sys_star_sky per epoch), `combine_epochs`, `arc_kms`, `valid_range`, `matching_object`. `refit`: `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
 - `methods/forward` (`forward_mcmc`, opt-in): `measure`, `fit_epochs(spectra, regions_per_epoch, cfg, *, executor, rng)`; `pipeline.measure_object` routes multi-epoch objects through `fit_epochs`. See Unit 6.
-- `plotting`, LSD and binaries: not written (`config.METHOD_NAMES` lists implemented methods only).
+- `methods/lsd` (`lsd`, opt-in), `methods/binary` (`test`; `methods.binary`), `forecast`, `inject`: see Unit 7a.
+- `plotting`: not written (`config.METHOD_NAMES` lists implemented methods only).
 
 **Decisions in force:**
 - Per method, regions are combined by random effects (`hierarchical` with one method; Birge is kept in the diagnostics). Across methods, the hierarchical line × method model gives the adopted RV.
@@ -62,7 +63,7 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
    - `docs/architecture.md` (shared) should list `wavelength_zero_point(spectrum, cfg, *, wave=None)` and `telluric_zeropoint.measure(..., teff=, spread_templates=)`;
    - the arc-line range is not read automatically from `wvcalib.fits` (set `calibration.wave_valid_range`);
    - a telluric model inside `template_fit` (the unimplemented `telluric_model` option was deleted).
-3. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
+3. Unit 7b: systematics, `plotting` (the LSD profile and binary solutions are in the diagnostics).
 
 **Gotchas:**
 - Run with `PYTHONPATH=<wt>/src`. Test-data tests need `RVFITTER_TESTDATA=/home/wcooper/Documents/rvfitter-testdata` and are marked `data`; the J1745 files are under `pypeit/R2500I/GTC54-15A0/OB0055/`.
@@ -88,6 +89,17 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
 - The synthetic spectra are point-sampled whilst the model is pixel-averaged, so the model is slightly broader: Teff is biased by up to ≈ 80 K on the toy grid and ≈ 10 K on BT-Settl; the RV is not (symmetric).
 - J1745 (R 2602, tellcorr, BT-Settl useful, teff_prior 2100; reported, not tuned): 4 feature windows. `none` 37.58 ± 4.85 (σ_total 21.04; z 2.12, 0.54 total); `sky-if-needed` 18.83 ± 2.45 (σ_total 20.62; z 2.19, 0.36). Per window (none): Cs I 8523 49.2 ± 2.8, Na I 8185+8197 34.6 ± 3.7, Rb I 7802 36.5 ± 3.8, Rb I 7949 23.1 ± 6.9; every window `poor_fit` (χ²/ν 3.1–10.5), all converged (τ 54–67). vsini 39–88 km/s and Teff 1810–1970 K vary between windows: at R 2600 vsini is degenerate with the template mismatch of the pressure-broadened alkali lines, so neither is a physical measurement. Runtime (`none`, whole pipeline): 194 s with n_procs 1, 76 s with 20 (only 4 windows to share).
 - Not done: a per-window or global joint fit of all windows with one shared atmosphere (only epochs share it); wavelength terms and LSF width as free parameters; the corner plot (Unit 7 `plotting`).
+
+### Unit 7a: LSD, binary test, inject and forecast (branch unit7a-tools)
+- `methods/lsd.py`: ln F = ln P − M Z on every segment (`segment_res`; one polynomial each, one shared profile Z; `joint=False` gives one profile per segment). The mask is the best template's minima at `mask_resolution` 50 000, weighted by optical depth −ln(1 − depth) below a local maximum over 5 resolution elements (`mask='catalogue'`: catalogue lines, weight 1). Solved in ln F because optical depths add, so the deep, blended BT-Settl features stay linear; the flux-space model P(1 − M Z) gave a flat template profile on J1745. The template is chosen by the template-fit χ² (`template_fit._score_candidate`).
+- RV: Gaussian + constant fitted to Z with its diagonal errors, error by the sandwich H JᵀW C W J H with the full covariance (C is near-singular for dense masks, so a full-covariance χ² blew up on J1745), minus the mask zero point: the same LSD of the noiseless template shifted to the first estimate, so pixel phase and blends cancel (a zero point at rest left a −0.4σ bias at 23.4 km/s). vsini from σ_profile² − σ_template² with the Gray-kernel σ per km/s; NaN unless > 2σ (2σ upper limit in `vsini_upper`); 60 km/s injected → 60.1 ± 6.5.
+- Pulls (R 2500, SNR 30, synthetic, 200 spectra): width 0.93, bias −0.05σ. On BT-Settl injections with tellurics the LSD error is conservative (mean error 7.8 against a scatter of 1.0 km/s, three seeds): the mask model leaves χ²/ν ≫ 1, which scales the covariance.
+- `methods/binary.py`: P·T(v) against P·(T(v₁) + q T(v₂)) over the template-fit windows, shared v, v₁, v₂, q ∈ (0, 1]; a batched normal-equation grid (49 velocities within ±300 km/s of the single RV, 8 flux ratios) then bounded Nelder–Mead. ΔBIC = (χ²₁ − χ²₂)/max(1, χ²₁/ν) − 2 ln N; flagged above 10 (Kass & Raftery 1995). An SB2 (−60 and +90 km/s, q 0.6, SNR 50) gives ΔBIC ≈ 400, a single star −14. `pipeline` runs it per epoch when `methods.binary` (default off); a ValueError is logged and recorded as a failure.
+- `forecast`: `regions.rv_precision` on the noiseless broadened template, per template-method feature window and line window ('feature'), per telluric-free span ('band') and in total; recommended = the best features holding 90 per cent of their information. Matches the analytic Gaussian-line value within 3 per cent. BT-Settl 2100 K at R 2500, SNR 30, 7300–10 200 Å: total 0.88 km/s.
+- `inject`: the template at R/vsini shifted with `Template.at`, × telluric transmission (`--tellurics`, `--airmass`, `--pwv`), photon noise √(A A_med)/SNR; `pipeline.measure_object` with the user's config, barycentric skipped, wavelength correction "none". Seeded (noise and method streams from `SeedSequence(seed)`).
+- `cli`: lazy subcommands now get every argument after their name; argparse's REMAINDER refused leading options (`rvfitter forecast --snr 30` failed).
+- J1745 (R 2602, tellcorr, BT-Settl useful, teff_prior 2100; reported, not tuned): LSD `none` 33.57 ± 10.94 (σ_total 22.40; z 0.66, 0.33 total), `sky-if-needed` 10.61 ± 10.63 (σ_total 22.26; z 1.43, 0.70 total); one profile over the three spans, ~2720 mask lines, χ²/ν ≈ 94 (`poor_fit`), mask zero point 1.3 and −1.9 km/s, vsini unresolved (< 126 km/s). Binary (`none`): ΔBIC 6.7, not flagged; the second component (64 and −15 km/s, q 0.53) absorbs template mismatch (χ²/ν 16).
+- Not done: an LSD regularisation for dense masks (the profile is noisy beyond the core); per-band (J/H/K) grouping in `forecast` (bands are the telluric-free spans: no wavelength windows outside the catalogue); a multi-process `inject` (serial).
 
 Here, we record the design decisions, validation and J1745−1640 results of the methods package (`broadening`, `combine`, `templates`, `calibration/*`, `methods/*`, `systematics`, `plotting`).
 
