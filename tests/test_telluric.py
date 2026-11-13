@@ -290,6 +290,8 @@ def test_distortion_plus_constant_recovered_and_applied():
     ss = info['star_sky']
     assert ss['n_nodes'] >= 2 and ss['consistent'] and ss['p'] > 0.01
     assert abs(info['zp_star_sky'] - 25.) < 3. * info['zp_star_sky_err'] + 1., ss
+    # the spread over the telluric-fit star models (template families, smooth star) is in the constant's error
+    assert ss['family'] and ss['zp_star_sky_err'] == pytest.approx(np.hypot(ss['err_fit'], ss['err_family']))
     # the applied correction is the distortion plus the constant, wherever the sky is measured
     for lam in (7950., 8190., 8520.):
         applied = float(sky_zeropoint.applied_dv(spec.meta, lam))

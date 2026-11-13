@@ -389,7 +389,7 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
         info.update(zp_tell_kms=tzp.zp_kms, zp_tell_err=tzp.zp_err)
         spec = replace(spec, meta={**spec.meta, 'telluric_zeropoint': tzp.as_dict()})
         if zp is not None:
-            ss = _star_minus_sky(tzp, zp, info)
+            ss = _star_minus_sky(tzp, zp, info, tsrc, cfg, name)
             info.update(zp_star_sky=ss['zp_star_sky'], zp_star_sky_err=ss['zp_star_sky_err'],
                         zp_star_sky_n=ss['n_nodes'], zp_dar_s=ss['s'], zp_dar_s_err=ss['s_err'], star_sky=ss)
             if not np.isfinite(ss['zp_star_sky']):
@@ -478,16 +478,70 @@ def _dar_nodes(info: dict, lam: np.ndarray) -> np.ndarray | None:
     return dar.dar_kms(info['dar'], info['slit'], lam, info.get('dar_ref', float(np.mean(lam))))
 
 
-def _star_minus_sky(tzp: Any, zp: Any, info: dict) -> dict:
-    """The star − sky fit a + s·D(λ) on the telluric nodes, the sky measured directly in each node's window"""
-    # the sky measured directly in each telluric node's own window (inside the bands too), never the curve
-    windows = sky_zeropoint.measure_windows(zp.source_spectrum, telluric_zeropoint.node_windows(tzp), zp.fwhm)
+def _star_minus_sky(tzp: Any, zp: Any, info: dict, tsrc: Spectrum, cfg: Any, name: str) -> dict:
+    """
+    The star − sky fit a + s·D(λ) on the telluric nodes, the sky measured directly in each node's window. The
+    telluric fit is repeated with the other template families (`_family_templates`), and the standard deviation of
+    a over the families (`err_family`) is added in quadrature to its error.
+    """
     info['dar_ref'] = float(np.mean(tzp.node_wave))
     geo = info['dar']
     s_prior = (geo['s'], geo['s_err']) if geo['pa_known'] else None
-    ss = telluric_zeropoint.star_minus_sky_direct(tzp, windows, _dar_nodes(info, tzp.node_wave), s_prior)
+
+    def fit(t: Any) -> dict:
+        windows = sky_zeropoint.measure_windows(zp.source_spectrum, telluric_zeropoint.node_windows(t), zp.fwhm)
+        return telluric_zeropoint.star_minus_sky_direct(t, windows, _dar_nodes(info, t.node_wave), s_prior)
+
+    ss = fit(tzp)
     ss['dar_ref'] = info['dar_ref']
+    if not np.isfinite(ss['zp_star_sky']):
+        return ss
+    family = {tzp.template or 'smooth star': ss['zp_star_sky']}
+    for label, template in _family_templates(tsrc, cfg, name, tzp):
+        alt = telluric_zeropoint.measure(tsrc, resolution=tzp.resolution, template=template,
+                                         teff=cfg.templates.teff_prior,
+                                         seg_width=cfg.calibration.telluric_segment_width)
+        family[label] = fit(alt)['zp_star_sky'] if alt is not None else float('nan')
+    vals = [v for v in family.values() if np.isfinite(v)]
+    spread = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.
+    log.info('%s: star - sky constant over the telluric-fit template families: %s; spread %.1f km/s added in '
+             'quadrature to its error', name, ', '.join(f'{k} {v:+.1f}' for k, v in family.items()), spread)
+    ss.update(family=family, err_family=spread, err_fit=ss['zp_star_sky_err'],
+              zp_star_sky_err=float(np.hypot(ss['zp_star_sky_err'], spread)))
     return ss
+
+
+def _family_templates(tsrc: Spectrum, cfg: Any, name: str, tzp: Any) -> list[tuple[str, Any]]:
+    """
+    The other star models of the telluric fit: a smooth star, and the prior template of every other configured or
+    cached grid (e.g. SAND next to BT-Settl); a grid with no template near the priors is skipped (INFO)
+    """
+    import copy
+
+    from .. import templates as T
+    from ..methods.guidance import grid_names
+    from ..methods.telluric_ref import prior_template
+    out: list[tuple[str, Any]] = [('smooth star', None)] if tzp.template is not None else []
+    if not cfg.calibration.telluric_template or not np.isfinite(tzp.resolution):
+        return out
+    configured = grid_names(cfg.templates)
+    cache = T.cache_dir()
+    cached = sorted(d.name for d in cache.iterdir() if d.is_dir() and d.name in T.KNOWN_GRIDS) if cache.is_dir() else []
+    wr = (float(tsrc.wave[0]), float(tsrc.wave[-1]))
+    for grid in dict.fromkeys(configured[1:] + cached):
+        if grid == configured[0]:
+            continue
+        alt = copy.deepcopy(cfg)
+        alt.templates.grid = grid
+        if not isinstance(alt.templates.local_dir, dict):
+            alt.templates.local_dir, alt.templates.medium = None, None  # that directory was the first grid's
+        try:
+            t = prior_template(alt, tzp.resolution, wr)
+        except ValueError as exc:
+            log.info('%s: grid %s gives no telluric-fit template (%s)', name, grid, exc)
+            continue
+        out.append((t.label, t))
+    return out
 
 
 def _dar_table(info: dict, spec: Spectrum) -> dict | None:
