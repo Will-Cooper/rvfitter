@@ -262,8 +262,14 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         bary_info['wavelength_correction_epochs'] = [
             {k: v for k, v in z.items() if k != 'sky_tests'} | {'epoch': lab}
             for z, lab in zip(zp_epochs, labels, strict=True)]
-    sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
-                                                                rng=rng.spawn(1)[0]))
+    if 'linecentre' in results:  # True only with the opt-in, template-calibrated shape correction
+        sysd['linecentre_shape_correction'] = any(m.diagnostics.get('shape_correction')
+                                                  for m in results['linecentre'].measurements)
+    if set(results) <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
+        sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
+    else:
+        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
+                                                                    rng=rng.spawn(1)[0]))
     sysd['floor'] = float(cfg.combine.systematic_floor)
     unknown = [k for k, v in (('the adopted error', adopted.get('err')), ('sys_template', sysd['template_spread']),
                               ('sys_wavezp', sysd.get('wavelength_zero_point')),
@@ -272,9 +278,6 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     if unknown:  # results._quad never counts an unknown term as 0
         bary_info['zp_flags'] |= wcorr.ZP_FLAGS['total_err_undefined']
         log.warning('%s: rv_total_err is NaN: %s unknown (zp flag total_err_undefined)', name, ', '.join(unknown))
-    if 'linecentre' in results:  # True only with the opt-in, template-calibrated shape correction
-        sysd['linecentre_shape_correction'] = any(m.diagnostics.get('shape_correction')
-                                                  for m in results['linecentre'].measurements)
     return ObjectResult(object=name, files=[s.source for s in spectra], methods=results, adopted=adopted,
                         systematics=sysd, barycentric=bary_info, binary=binary_info, config_hash=_config_hash(cfg),
                         version=__version__)
