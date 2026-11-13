@@ -51,7 +51,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 | Method | v1 (paper) | v1 after Phase A fixes | v2 | z (quadrature) |
 |---|---|---|---|---|
-| Line centring | 36.2 ± 4.4 | | `sky-if-needed` (default): 15.49 ± 4.16 (σ_total 20.40); `none`: 34.00 ± 5.48 (σ_total 22.36) | default 2.24 (0.52 total); none 1.31 (0.35 total) |
+| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (default): 13.55 ± 3.62 (σ_total 19.42); `none`: 34.99 ± 5.55 (σ_total 22.83) | default 2.95 (0.65 total); none 1.46 (0.38 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
 | Forward model (MCMC) | — | | | |
@@ -119,8 +119,69 @@ On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (1
 `io` sets non-finite sky pixels and those above 10³ times the median |sky| to NaN.
 
 For J1745−1640, all three sky tests pass: 6 segments with every region 100 per cent measured, a mean offset of +14.9 ± 3.6 km/s (4.1σ), a segment variation with χ² = 53 for 5 degrees of freedom (p = 3 × 10⁻¹⁰), and a largest correction of 33.5 km/s at the regions against a floor of 5.8 km/s.
-The sky and the star − sky constant (−23.8 ± 3.6 km/s, four nodes) are therefore both applied.
+The sky is therefore applied; the star − sky constant (−23.7 ± 4.3 km/s from four nodes, its error including the 2.3 km/s spread over the telluric-fit star models) is applied with it only in `auto`.
 The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the paper's RVs about the literature (`docs/calibration_audit.md`).
+
+### Differential atmospheric refraction across the slit
+
+The sky fills the slit, whilst the star's image is displaced towards the zenith by the atmospheric refraction R(λ), which is larger in the blue.
+The component of that displacement across the slit moves the star's light along the dispersion, so the star − sky zero point is not a constant but a + s·D(λ).
+Here, D(λ) = c g [R(λ) − R(λ_ref)] d(λ)/(s_spec λ) is the across-slit differential refraction as a velocity (d the dispersion, s_spec the plate scale along it, g the gain of the slit-clipped centroid, 0.72 for J1745−1640, and λ_ref the mean node wavelength), and s = sin(PA_slit − q) is the signed sine of the angle between the slit and the parallactic angle q (`calibration/dar.py`).
+R(λ) comes from ERFA's refraction model with the pressure, temperature and humidity of the raw header (otherwise a standard atmosphere, with a WARNING), and q and the zenith distance come from astropy, sampled over the exposure.
+The reduced spec1d keeps none of the slit-angle keywords, so the raw-frame headers are read through `input.raw_header` (a path or glob) or `input.raw_header_dir` (matched by the frame number in `PypeIt`'s FILENAME).
+
+For GTC/OSIRIS, the raw header's PA is the sky position angle (east of north) of the detector +Y axis, which is the dispersion direction with the wavelength increasing along +Y, and the long slit lies along X, at PA + 90°.
+We took this from the raw header's own WCS (its CD matrix puts +Y at PA, and IPA = IPA0 + PA), from the OSIRIS User Manual v3.0 (§1.1.6, §6 and §9.2) and from `PypeIt`'s `gtc_osiris` spectrograph (no spectral flip).
+We note that the manual's sentence "IPA = 150.54 − P.A." has the opposite sign; we followed the header, with which the slit (PA + 90°) lies close to the parallactic angle at acquisition for the targets and standards in the test data, as observers request (within 0.3–5° for J1745−1640, 2MUCD20444, GD 153 and G 191-B2B, and up to ≈20° near the zenith, where q changes quickly).
+The convention was never inferred from an RV.
+
+When the PA is known, s is fixed at its exposure mean and its error is the drift over the exposure, and only a is fitted from the telluric nodes.
+When it is unknown, s is fitted with a uniform prior in [−1, 1] (WARNING, `zp_flags` bit `dar_pa_unknown`), and its posterior width enters `sys_star_sky` through σ²(a + s·D) = σ_a² + D²σ_s² + 2D cov(a, s) at the measurements' wavelengths.
+In every mode the slit prior gains a DAR term in quadrature, the RMS of s·(D − mean D) over the measurements' wavelengths: (s² + σ_s²)^½ times that RMS of D for a known PA, and 1/√3 of it otherwise.
+The results report `zp_dar_s` and `zp_dar_s_err` next to `zp_star_sky` (the fitted a).
+
+For J1745−1640 (frame 0000809229), the slit was at PA 36.1° against a parallactic angle of 37.9–40.2° during the exposure at a zenith distance of 58°, so s = −0.052 ± 0.016.
+D(λ) spans +27 to −9 km/s per unit s between 7700 and 9800 Å, so the DAR moves the star by less than 1.5 km/s here, but it would reach 25 km/s for a slit perpendicular to the parallactic angle.
+Without the raw header, the four nodes give s = +0.20 ± 0.44, consistent with the known value but far less precise.
+
+### J1745−1640 after the task-15 fixes
+
+Since the table below was first made, four changes were made, all decided before the benchmark was looked at:
+the DAR term above;
+the sky applied at each region is measured in a window centred on that region, grown from the region's width until the synthetic bias test passes and its error is no larger than the curve's (otherwise the curve is used, with a WARNING and the bit `sky_window_fallback`; on J1745−1640 this happens for the Na I doublet, where the packaged OH list has few lines);
+the star − sky constant carries the spread over the telluric-fit star models (BT-Settl −23.7, SAND −23.0 and a smooth star −19.4 km/s; 2.3 km/s);
+and the tellcorr file inherits `VEL_CORR` from its spec1d, so the curves are evaluated in the observatory frame.
+
+Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d; `input.raw_header_dir` = the raw headers). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0). In every mode zp_star_sky = −23.7 ± 4.3 km/s, zp_dar_s = −0.052 ± 0.016 and the slit prior is 18.0 km/s (its DAR share is below 0.5 km/s).
+
+| Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
+|---|---|---|---|---|---|---|---|---|
+| none | none | 37.73 | 5.03 (2.08) | 22.21 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior ⊕ DAR) |
+| sky-if-needed (default) | sky | 16.26 | 3.50 (2.37) | 21.09 (0.47) | 2.7 | 8.7 | 5.6 | 18.0 (slit prior ⊕ DAR) |
+| auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 41.18 | 3.34 (3.70) | 11.75 (1.25) | 2.7 | 8.8 | 5.6 | 4.3 (measured) |
+| auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.62 | 3.38 (2.55) | 14.05 (0.73) | 2.4 | 8.0 | 5.6 | 9.5 (measured) |
+
+The per-region sky windows lower `sys_wavezp` from 9.7 to 5.6 km/s and τ_line stays small (2.4–2.7 km/s), whilst the default moves from 18.95 to 16.26 km/s.
+With the PA known, the DAR barely changes the constant, and `auto` lands 15.0 km/s above the benchmark (z = 1.25 with the total error, 3.7 with the statistical error alone), much as before (42.86 km/s).
+With the PA unknown, the fitted s takes up some of the slope between the 8200 Å node and the 9300 Å nodes and the RV falls to 36.6 km/s; this is not evidence for either value of s, since the known s is well inside the fitted posterior.
+We therefore do not regard the DAR as the cause of the `auto` offset on this spectrum: the slit was close to the parallactic angle.
+
+Line centring is model-free by default: its RVs come from the NIST rest wavelengths alone, with no template, so it is the template-independent cross-check of CCF and the template fit, whose agreement would otherwise rest on the same models.
+The opt-in `shape_correction` subtracts, line by line, the RV that the same profile fit measures on the noise-free template nearest the priors (same R, pixels and windows), and adds the spread over the ±1 Teff-step neighbours to the error; the method is then template-dependent (INFO, and `linecentre_shape_correction` in the results).
+Cs I 8946 is no longer used for line centring: its catalogue caveat now says it is blended at R ≈ 2600 (BT-Settl fits of it range from −54 to +3 km/s).
+
+Table: J1745−1640 line centring (Voigt; R 2602; same inputs as above), with the default (model-free) and with `shape_correction`.
+
+| Mode | shape_correction | RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_wavezp | sys_star_sky |
+|---|---|---|---|---|---|---|---|
+| none | off (default) | 34.99 | 5.55 (1.46) | 22.83 (0.38) | 11.0 | 12.7 | 18.1 |
+| none | on | 36.60 | 6.26 (1.56) | 23.01 (0.45) | 12.8 | 12.7 | 18.1 |
+| sky-if-needed | off (default) | 13.55 | 3.62 (2.95) | 19.42 (0.65) | 6.4 | 6.2 | 18.0 |
+| sky-if-needed | on | 15.54 | 4.45 (2.13) | 19.59 (0.54) | 8.4 | 6.2 | 18.0 |
+
+The shape correction moves the method by +1.6 to +2.0 km/s and increases τ_line, so on this spectrum the profile bias is not what separates line centring from the template methods.
+
+Earlier table (before the task-15 fixes, kept for comparison):
 
 Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0).
 

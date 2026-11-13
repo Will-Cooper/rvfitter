@@ -51,8 +51,8 @@ def _osiris_dispersion_pa(h: dict) -> float:
     # left) and §6 (the spectral direction is the detector's vertical, the spatial offsets ΔX); (3) PypeIt's
     # gtc_osiris.py (GTCOSIRISSpectrograph: specaxis = 0, specflip = False, i.e. the wavelength increases with
     # the raw row number Y). The manual's §1.1.6 sentence "IPA = 150.54 - P.A." has the opposite sign of the
-    # header relation; the header is preferred because PA + 90 deg (the slit) matches the parallactic angle at
-    # acquisition for every GTC54-15A0 / GTC8-15ITP target and standard in the test data, as observers request.
+    # header relation; the header is followed, and with it PA + 90 deg (the slit) lies close to the parallactic angle
+    # at acquisition (0.3-5 deg for J1745, 2MUCD20444, GD 153, G 191-B2B; up to ~20 deg near the zenith), as requested.
     return float(h['PA'])
 
 
