@@ -5,7 +5,6 @@ Exit codes: 0 clean, 1 usage, config or runtime error, 2 the run finished but a 
 import argparse
 import importlib
 import logging
-import shutil
 import sys
 import urllib.request
 from pathlib import Path
@@ -25,7 +24,9 @@ LAZY = {
     'templates': ('rvfitter.templates', 'cli_main', True),
     'gui': ('rvfitter.gui.app', 'main', False),
 }
-SVO_URL = 'https://svo2.cab.unige.ch/theory/newov2/index.php'
+SVO_URL = 'https://svo2.cab.inta-csic.es/theory/newov2/index.php'
+ZENODO_URL = 'https://zenodo.org'
+NET_TIMEOUT = 3  # s
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -139,48 +140,56 @@ def _cmd_init(args) -> int:
     return 0
 
 
-def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, bool]]:
-    """(name, ok, detail, required) for each check"""
+def _reachable(url: str) -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(url, timeout=NET_TIMEOUT):  # noqa: S310
+            return True, url
+    except OSError as exc:  # URLError and timeouts
+        return False, f'{url}: {type(exc).__name__}'
+
+
+def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, str]]:
+    """(name, ok, detail, fix hint) for each check"""
     checks = []
 
-    def add(name, ok, detail='', required=True):
-        checks.append((name, bool(ok), detail, required))
+    def add(name, ok, detail='', hint=''):
+        checks.append((name, bool(ok), detail, hint))
 
-    for mod, req in (('numpy', True), ('scipy', True), ('astropy', True), ('specutils', True), ('pandas', True),
-                     ('matplotlib', True), ('PySide6', False), ('emcee', False)):
+    v = sys.version_info
+    add('Python >= 3.11', v >= (3, 11), f'{v.major}.{v.minor}.{v.micro}',
+        'conda create -n rvfitter -c conda-forge python=3.12')
+    for mod, extra in (('numpy', None), ('scipy', None), ('astropy', None), ('specutils', None), ('pandas', None),
+                       ('matplotlib', None), ('PySide6', 'gui'), ('emcee', 'mcmc'), ('corner', 'mcmc')):
+        hint = f'pip install "rvfitter[{extra}]"' if extra else 'pip install --force-reinstall rvfitter'
         try:
             m = importlib.import_module(mod)
-            add(f'import {mod}', True, getattr(m, '__version__', ''), req)
+            add(f'import {mod}', True, getattr(m, '__version__', ''), hint)
         except (ImportError, OSError) as exc:
-            add(f'import {mod}', False, f'{type(exc).__name__}: {exc}'.splitlines()[0], req)
+            add(f'import {mod}', False, f'{type(exc).__name__}: {exc}'.splitlines()[0], hint)
     try:
-        import os
         QtCore = importlib.import_module('PySide6.QtCore')
         plugdir = Path(QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.PluginsPath)) / 'platforms'
-        plats = sorted(p.name for p in plugdir.glob('libq*')) if plugdir.is_dir() else []
-        add('Qt platform plugin', bool(plats), f"{os.environ.get('QT_QPA_PLATFORM', 'default')}; {len(plats)} found",
-            False)
+        plats = sorted(p.stem.removeprefix('libq') for p in plugdir.glob('*q*')) if plugdir.is_dir() else []
+        add('Qt platform plugin', bool(plats), ', '.join(plats) or 'none found',
+            'headless machine: set QT_QPA_PLATFORM=offscreen; otherwise reinstall PySide6')
     except (ImportError, OSError) as exc:
-        add('Qt platform plugin', False, f'PySide6 unavailable ({type(exc).__name__})', False)
-    add('LaTeX (plot labels)', shutil.which('latex') is not None, shutil.which('latex') or 'not on PATH', False)
+        add('Qt platform plugin', False, f'PySide6 unavailable ({type(exc).__name__})', 'pip install "rvfitter[gui]"')
+    from . import templates
+    cache = templates.cache_dir()
     try:
-        import platformdirs
-        cache = Path(platformdirs.user_cache_dir('rvfitter'))
         cache.mkdir(parents=True, exist_ok=True)
         probe = cache / '.doctor'
         probe.write_text('ok')
         probe.unlink()
-        add('Template cache writable', True, str(cache))
+        add('Template cache writable', True, str(cache), '')
     except OSError as exc:
-        add('Template cache writable', False, str(exc))
-    if offline:
-        add('SVO reachable', True, 'skipped (--offline)', False)
-    else:
-        try:
-            with urllib.request.urlopen(SVO_URL, timeout=3):  # noqa: S310
-                add('SVO reachable', True, SVO_URL, False)
-        except OSError as exc:  # URLError and timeouts
-            add('SVO reachable', False, f'{type(exc).__name__}', False)
+        add('Template cache writable', False, f'{cache}: {exc}', 'fix its permissions, or pass --dir to templates')
+    for name, url in (('SVO reachable', SVO_URL), ('Zenodo reachable', ZENODO_URL)):
+        if offline:
+            add(name, True, 'skipped (--offline)')
+        else:
+            ok, detail = _reachable(url)
+            add(name, ok, detail, 'check the proxy (HTTPS_PROXY), or use --offline and a local template directory')
     return checks
 
 
@@ -188,15 +197,13 @@ def _cmd_doctor(args) -> int:
     logging_setup.configure(_verbosity(args))
     checks = _doctor_checks(args.offline)
     width = max(len(c[0]) for c in checks)
-    for name, ok, detail, required in checks:
-        mark = '✓' if ok else '✗'
-        note = '' if ok or required else ' (optional)'
-        log.info('%s %s  %s%s', mark, name.ljust(width), detail, note)
-    bad = [c[0] for c in checks if not c[1] and c[3]]
+    for name, ok, detail, hint in checks:
+        log.info('%s  %s  %s%s', 'OK  ' if ok else 'FAIL', name.ljust(width), detail, '' if ok else f'  -> fix: {hint}')
+    bad = [c[0] for c in checks if not c[1]]
     if bad:
-        log.error('Required checks failed: %s', ', '.join(bad))
+        log.error('Failed: %s', ', '.join(bad))
         return 1
-    log.info('All required checks passed')
+    log.info('All checks passed')
     return 0
 
 

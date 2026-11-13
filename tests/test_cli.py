@@ -53,17 +53,29 @@ def test_runtime_error_exit_1(tmp_path, monkeypatch):
     assert cli.main(['inject']) == 1
 
 
-def test_doctor_offline(capsys):
+def test_doctor_offline(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, '_reachable', lambda url: pytest.fail('network used with --offline'))
+    monkeypatch.setenv('RVFITTER_CACHE', str(tmp_path))
     code = cli.main(['doctor', '--offline'])
     out = capsys.readouterr().out
-    assert code == 0, out
-    assert '✓' in out and 'import numpy' in out and 'skipped (--offline)' in out
+    assert 'OK    import numpy' in out and 'skipped (--offline)' in out and 'Template cache writable' in out
+    assert ('FAIL' in out) == (code == 1)  # extras (e.g. PySide6) may be missing in CI
+
+
+def test_doctor_network_checks(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv('RVFITTER_CACHE', str(tmp_path))
+    monkeypatch.setattr(cli, '_reachable', lambda url: (False, f'{url}: URLError') if 'zenodo' in url else (True, url))
+    checks = {c[0]: c for c in cli._doctor_checks(False)}
+    assert checks['SVO reachable'][1] and not checks['Zenodo reachable'][1]
+    assert cli.main(['doctor']) == 1
+    out = capsys.readouterr().out
+    assert 'FAIL  Zenodo reachable' in out and 'fix:' in out
 
 
 def test_doctor_failure(monkeypatch, capsys):
-    monkeypatch.setattr(cli, '_doctor_checks', lambda offline: [('thing', False, 'broken', True)])
+    monkeypatch.setattr(cli, '_doctor_checks', lambda offline: [('thing', False, 'broken', 'do x')])
     assert cli.main(['doctor', '--offline']) == 1
-    assert '✗' in capsys.readouterr().out
+    assert 'FAIL  thing' in capsys.readouterr().out
 
 
 def test_missing_optional_dependency_exit_1(monkeypatch, capsys):
