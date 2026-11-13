@@ -458,3 +458,16 @@ def test_j1745_telluric_zero_point(real_telluric_model):
     zp = TZ.measure(src, resolution=2602.)
     assert zp is not None and zp.n_used >= 5
     assert all(abs(s['dv']) < 100. for s in zp.segments if s['used'])
+
+
+def test_family_templates_skip_partial_cache(tmp_path, monkeypatch):
+    """The telluric-fit families: a smooth star always; an empty cache directory is not a cached grid"""
+    from types import SimpleNamespace
+    (tmp_path / 'sonora-bobcat').mkdir()
+    monkeypatch.setenv('RVFITTER_CACHE', str(tmp_path))
+    raw = _observed()
+    cfg = _budget_cfg()
+    cfg.calibration.telluric_template = True
+    fams = wcorr._family_templates(raw, cfg, 'X', SimpleNamespace(template='bt 2100/5.0', resolution=R))
+    assert fams == [('smooth star', None)]
+    assert wcorr._family_templates(raw, _budget_cfg(), 'X', SimpleNamespace(template=None, resolution=R)) == []

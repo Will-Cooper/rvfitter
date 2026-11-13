@@ -577,7 +577,9 @@ def _family_templates(tsrc: Spectrum, cfg: Any, name: str, tzp: Any) -> list[tup
         return out
     configured = grid_names(cfg.templates)
     cache = T.cache_dir()
-    cached = sorted(d.name for d in cache.iterdir() if d.is_dir() and d.name in T.KNOWN_GRIDS) if cache.is_dir() else []
+    # a downloaded grid has its metadata file (an empty or partial directory is not a cached grid)
+    cached = sorted(d.name for d in cache.iterdir() if d.name in T.KNOWN_GRIDS
+                    and (d / 'rvfitter_grid.toml').is_file()) if cache.is_dir() else []
     wr = (float(tsrc.wave[0]), float(tsrc.wave[-1]))
     for grid in dict.fromkeys(configured[1:] + cached):
         if grid == configured[0]:
