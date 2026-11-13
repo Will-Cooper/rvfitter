@@ -161,12 +161,13 @@ def test_too_many_members(tmp_path):
 def test_load_spectra_skips_bad(tmp_path, caplog):
     (tmp_path / 'good.txt').write_text(TXT)
     (tmp_path / 'bad.txt').write_text('nothing useful\n')
+    failures = []
     with open_inputs(tmp_path) as files:
-        specs = archives.load_spectra(files)
+        specs = archives.load_spectra(files, failures)
     assert [Path(s.source).name for s in specs] == ['good.txt']
     assert 'Skipping unreadable' in caplog.text
-    with pytest.raises(ValueError, match='None of the 1'):
-        archives.load_spectra([tmp_path / 'bad.txt'])
+    assert [Path(p).name for p, _ in failures] == ['bad.txt'] and failures[0][1]
+    assert archives.load_spectra([tmp_path / 'bad.txt']) == []
 
 
 def _spec(source, obj=None):

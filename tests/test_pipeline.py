@@ -5,7 +5,7 @@ import types
 import numpy as np
 import pytest
 
-from rvfitter import archives, barycentric, combine, io, pipeline, regions, results, systematics
+from rvfitter import archives, barycentric, combine, pipeline, regions, results, systematics
 from rvfitter import methods as methods_pkg
 from rvfitter.types import Measurement, MethodResult, Spectrum
 
@@ -42,7 +42,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(archives, 'group_by_object', lambda sp, override=None: {
         n: [s for s in sp if s.meta['object'] == n] for n in dict.fromkeys(s.meta['object'] for s in sp)},
         raising=False)
-    monkeypatch.setattr(io, 'read_spectrum', lambda p, **kw: spectra.pop(0), raising=False)
+    monkeypatch.setattr(archives, 'read_spectrum', lambda p, **kw: spectra.pop(0))
     monkeypatch.setattr(barycentric, 'correction', lambda s, mode='auto', frame='barycentric', overrides=None:
                         (-5.0, 'computed'), raising=False)
     monkeypatch.setattr(barycentric, 'apply', lambda s, kms: s, raising=False)
@@ -103,7 +103,7 @@ def test_sequencing_and_failure(fakes, caplog):
 def test_determinism_across_procs(fakes, monkeypatch):
     t1 = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
     spectra = fresh_spectra()
-    monkeypatch.setattr(io, 'read_spectrum', lambda p, **kw: spectra.pop(0), raising=False)
+    monkeypatch.setattr(archives, 'read_spectrum', lambda p, **kw: spectra.pop(0))
     t2 = results.to_table(pipeline.run(CFG, INPUTS, n_procs=2))
     assert t1.equals(t2)
     assert t1['rv_ccf'].nunique() == 3

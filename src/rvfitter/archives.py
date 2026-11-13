@@ -19,6 +19,7 @@ import zipfile
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
+from .io import read_spectrum
 from .types import Spectrum
 
 __all__ = ['UnsafeArchiveError', 'ArchiveLimitError', 'SPECTRUM_SUFFIXES', 'DEFAULT_MAX_BYTES', 'DEFAULT_MAX_MEMBERS',
@@ -159,14 +160,14 @@ def _extract(path: Path, dest: Path, max_bytes: int, max_members: int) -> None:
     log.debug('extracted %d members (%.1f MB) from %s', budget.members, budget.bytes / 1e6, path.name)
 
 
-def _scan(root: Path, suffixes: tuple[str, ...] = SPECTRUM_SUFFIXES) -> list[Path]:
+def _scan(root: Path) -> list[Path]:
     """Spectrum-like files under ``root`` (recursive), skipping anything hidden or in ``__MACOSX``"""
     files = []
     for p in sorted(root.rglob('*')):
         rel_parts = p.relative_to(root).parts
         if any(part.startswith('.') or part == '__MACOSX' for part in rel_parts):
             continue
-        if p.is_file() and _has_suffix(p.name, suffixes):
+        if p.is_file() and _has_suffix(p.name, SPECTRUM_SUFFIXES):
             files.append(p)
     return files
 
@@ -175,30 +176,11 @@ def _scan(root: Path, suffixes: tuple[str, ...] = SPECTRUM_SUFFIXES) -> list[Pat
 def open_inputs(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES,
                 max_members: int = DEFAULT_MAX_MEMBERS) -> Iterator[list[Path]]:
     """
-    Context manager yielding the spectrum files in ``path``.
+    Yield the sorted spectrum files in ``path``: a file (as is), a directory (scanned recursively, hidden files
+    skipped) or an archive (extracted to a temporary directory deleted on exit).
 
-    Parameters
-    ----------
-    path
-        A single file (returned as is, whatever its extension), a directory (scanned recursively), or a
-        zip/tar(.gz/.bz2/.xz) archive (extracted to a temporary directory that is deleted on exit)
-    max_bytes
-        Cap on the total uncompressed size of an archive [bytes]
-    max_members
-        Cap on the number of archive members
-
-    Yields
-    ------
-    files
-        Sorted paths of the spectrum files (``.fits``, ``.fit``, ``.fits.gz``, ``.txt``, ``.dat``, ``.csv``, ``.tsv``,
-        ``.ascii``; hidden files are skipped)
-
-    Raises
-    ------
-    FileNotFoundError
-        If ``path`` does not exist
-    UnsafeArchiveError
-        If the archive holds absolute or ``..`` paths, links or special files, or exceeds the limits
+    Raises `FileNotFoundError` if ``path`` does not exist and `UnsafeArchiveError` if the archive holds absolute or
+    ``..`` paths, links or special files, or exceeds ``max_bytes`` (total uncompressed) or ``max_members``.
     """
     path = Path(path)
     if not path.exists():
@@ -239,32 +221,22 @@ def collect_inputs(path: str | Path, *, max_bytes: int = DEFAULT_MAX_BYTES,
         return files
 
 
-def load_spectra(files: Sequence[Path], **read_kwargs) -> list[Spectrum]:
+def load_spectra(files: Sequence[Path], failures: list[tuple[str, str]] | None = None, **read_kwargs
+                 ) -> list[Spectrum]:
     """
-    Read every file with `rvfitter.io.read_spectrum`; unreadable files are logged and skipped.
+    Read every file with `rvfitter.io.read_spectrum`, passing ``read_kwargs`` on.
 
-    Parameters
-    ----------
-    files
-        Paths to read
-    **read_kwargs
-        Passed to `read_spectrum` (``medium``, ``hdu``, ``columns``, ``resolution``)
-
-    Raises
-    ------
-    ValueError
-        If ``files`` is non-empty but none could be read (the first error is quoted)
+    One unreadable or unrecognised file never stops the batch: it is skipped with a WARNING naming the reason, and
+    ``(path, reason)`` is appended to ``failures`` for the end-of-run summary.
     """
-    from .io import read_spectrum  # local import keeps archives importable without astropy-heavy io at import time
-    spectra, first_error = [], None
+    spectra = []
     for f in files:
         try:
             spectra.append(read_spectrum(f, **read_kwargs))
-        except Exception as exc:
-            first_error = first_error or f'{f}: {exc}'
+        except (OSError, ValueError, KeyError) as exc:
             log.warning('Skipping unreadable file %s: %s', f, exc)
-    if files and not spectra:
-        raise ValueError(f'None of the {len(files)} input file(s) could be read; first error: {first_error}')
+            if failures is not None:
+                failures.append((str(f), str(exc)))
     return spectra
 
 
@@ -284,23 +256,10 @@ def _stem(source: str) -> str:
 def group_by_object(spectra: Sequence[Spectrum], override: Mapping[str, str] | None = None
                     ) -> dict[str, list[Spectrum]]:
     """
-    Group spectra into objects.
+    Group spectra into objects, named by ``meta['object']`` else the file stem of ``source`` (normalised).
 
-    The object name is ``meta['object']`` (from OBJECT/TARGNAME/TARGET), else the file stem of ``source``.
-    Names are normalised (stripped, whitespace collapsed).
-
-    Parameters
-    ----------
-    spectra
-        Spectra to group
-    override
-        Optional mapping to a group name, looked up by the spectrum's source path, file name, file stem and then
-        its header object name; the first hit wins
-
-    Returns
-    -------
-    groups
-        Object name → spectra, in order of first appearance
+    ``override`` maps a source path, file name, file stem or header object name (first hit wins) to a group name.
+    Returns object name → spectra, in order of first appearance.
     """
     override = {str(k): normalise_name(v) for k, v in (override or {}).items()}
     groups: dict[str, list[Spectrum]] = {}
