@@ -219,7 +219,7 @@ class _Context:
         filled = np.interp(self.wave, self.wave[good], self.flux[good]) if good.sum() >= 2 else np.full_like(
             self.flux, np.nan)
         self.smooth = np.where(good, gaussian_filter1d(filled, sigma_pix, mode='nearest'), np.nan)
-        self.airmass = _airmass(spec)
+        self.airmass = meta_airmass(spec.meta, 1.)
         self.segments = self._segments()
 
     def fwhm(self, w: float) -> float:
@@ -275,12 +275,19 @@ class _Context:
         return rv_precision(self.wave[m], self.smooth[m], snr)
 
 
-def _airmass(spec: Spectrum) -> float:
+def meta_airmass(meta: Any, default: float) -> float:
+    """meta['airmass'], or `default` (with a WARNING) when absent; a malformed or < 1 value raises."""
+    am = (meta or {}).get('airmass')
+    if am is None:
+        log.warning('No airmass in the header; assuming %.1f', default)
+        return default
     try:
-        x = float(spec.meta.get('airmass', 1.))
-    except (TypeError, ValueError):
-        return 1.
-    return x if math.isfinite(x) and x >= 1. else 1.
+        x = float(am)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'malformed airmass {am!r} in the header') from exc
+    if not x >= 1.:
+        raise ValueError(f'invalid airmass {am!r} in the header (must be ≥ 1)')
+    return x
 
 
 def _tellurics(ctx: _Context, feats: Sequence[Feature], strict: float | None = None,

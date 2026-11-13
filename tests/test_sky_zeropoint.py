@@ -44,7 +44,7 @@ def test_recovers_zero_point_curve(frame_kms):
     assert zp is not None and zp.n_used >= 3
     assert abs(zp.fwhm - 5.5) < 0.6
     for lam in np.linspace(*zp.main_span, 5):
-        err = float(zp.dv_err(lam)[0])
+        err = float(zp.dv_err(lam))
         assert abs(float(zp.dv(lam)) - _dv_true(lam)) < 3. * err, (lam, float(zp.dv(lam)), _dv_true(lam), err)
     # the strong telluric bands are cut out before segmenting: no segment overlaps O2 A or the 9300 Å H2O band
     from rvfitter.features import features

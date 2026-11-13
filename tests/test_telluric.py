@@ -158,7 +158,7 @@ def test_unavailable_model_skips_cleanly(tmp_path, monkeypatch, caplog):
     assert info['applied'] == 'none' and info['zp_flags'] & pipeline.ZP_FLAGS['telluric_unavailable']
 
 
-def test_transmission_scaling_shift_and_mask():
+def test_transmission_scaling_and_shift():
     w = broadening.log_wave_grid(7550., 7750., 299792.458 / 200_000.)
     t1 = telluric.transmission(w, 1., 2.5, resolution=R)
     t2 = telluric.transmission(w, 2., 2.5, resolution=R)
@@ -167,7 +167,6 @@ def test_transmission_scaling_shift_and_mask():
     ts = telluric.transmission(w, 1., 2.5, resolution=R, dv=50.)
     edge = lambda tt: w[np.argmax(tt < 0.6)]  # noqa: E731
     assert edge(ts) - edge(t1) == pytest.approx(7600. * 50. / 299792.458, abs=0.3)
-    assert telluric.mask(w, 0.3, resolution=R).any() and not telluric.mask(np.array([8000.5, 8001.]), 0.3).any()
     assert np.all(telluric.transmission(np.array([5000., 30000.]), 1., 2.5) == 1.)  # outside the coverage
 
 
@@ -188,33 +187,6 @@ def test_recovers_zero_point_and_distortion(frame_kms):
 def test_estimates_resolution_from_tellurics():
     zp = TZ.measure(_observed())
     assert zp.resolution_source == 'telluric lines' and abs(zp.resolution / R - 1.) < 0.1
-
-
-def test_star_minus_sky_constant():
-    spec = _observed(with_sky=True)
-    sky = sky_zeropoint.measure(spec)
-    # the star sits 12 km/s further to the red than the sky (e.g. off-centre in the slit)
-    star = _observed(dv_func=lambda w: _dv_true(w) + 12.)
-    tell = TZ.measure(star, resolution=R)
-    ss = TZ.star_minus_sky(tell, sky)
-    assert abs(ss['zp_star_sky'] - 12.) < 3. * ss['zp_star_sky_err'] + 1., ss
-    assert len(ss['nodes']) == tell.n_used
-    # only nodes inside a measured sky segment are compared: never the ramps across the O2 A / H2O 9300 gaps
-    measured = [(s['wmin'], s['wmax']) for s in sky.segments if s['used']]
-    assert ss['n_nodes'] >= 1
-    for node in ss['nodes']:
-        assert node['used'] == any(a <= node['wave'] <= b for a, b in measured)
-    assert ss['n_nodes'] < tell.n_used  # the 9300 Å nodes lie in the sky's unmeasured gap
-    assert ss['zp_star_sky_err'] >= sky.model_spread - 1e-9
-
-
-def test_star_minus_sky_without_overlap_is_nan(caplog):
-    sky = sky_zeropoint.measure(_observed(with_sky=True))
-    tell = TZ.measure(_observed(), [Region('H2O 9300', 'telluric', 9000., 9800.)], resolution=R)
-    caplog.set_level('INFO')
-    ss = TZ.star_minus_sky(tell, sky)
-    assert ss['n_nodes'] == 0 and np.isnan(ss['zp_star_sky']) and np.isnan(ss['zp_star_sky_err'])
-    assert 'measured sky segment' in ss['reason'] and 'not measured' in caplog.text
 
 
 def test_o2a_dropped_for_cool_targets():

@@ -92,10 +92,10 @@ class ObjectResult:
 | `gui.app` | `main()`; calls only `config`, `archives`, `pipeline`, `results`, `plotting` and `templates` (through `gui.backend`) | P4 |
 | `templates` | `TemplateGrid` (`.get(teff, logg, met, ...) -> Spectrum`, N-D multilinear), `KNOWN_GRIDS`, `download(grid, teff_range, logg_range, met_range, alpha_range, *, ranges, directory, fetch, verify, source="auto") -> TemplateGrid`, `verify_medium(grid)`, `cli_main(argv)`; cache via platformdirs | M |
 | `grid_sources` | Zenodo grids (Sonora Bobcat, Diamondback, Elf Owl; SAND): `ZENODO_GRIDS`, `download_zenodo(grid, want, directory, *, axes, write)`, `provenance(grid)`, `record_files(record)`; used by `templates.download` | M |
-| `broadening` | `instrumental(spec, R)`, `rotational(spec, vsini, epsilon)`, `doppler_shift(spec, v)` | M |
-| `calibration.telluric` | `model()`, `available()`, `cache_path()`, `transmission(wave, airmass=1., pwv=, *, resolution=None, dv=0.) -> ndarray`, `mask(wave, threshold=0.05, *, airmass, pwv, resolution) -> bool ndarray`; the HITRAN-derived model is built into the user cache (`templates telluric --build`), never shipped; raises `TelluricModelUnavailable` without it | M |
+| `broadening` | `doppler_factor(v)`, `log_wave_grid`, `rebin` (flux-conserving), `gaussian_kernel`, `rotation_kernel` (Gray), `convolve`, `broaden_loglam(flux, dv, resolution, vsini, epsilon, resolution_native)` | M |
+| `calibration.telluric` | `model()`, `available()`, `cache_path()`, `transmission(wave, airmass=1., pwv=, *, resolution=None, dv=0.) -> ndarray`; the HITRAN-derived model is built into the user cache (`templates telluric --build`), never shipped; raises `TelluricModelUnavailable` without it | M |
 | `calibration.sky_zeropoint` | `measure(spectrum, *, sky=None, seg_width=250., ..., valid_range=None) -> SkyZeroPoint \| None` (OH sky lines, local Δv(λ)); `apply(spectrum, zp=None, *, constant_kms=0., constant_err=nan)`; `applied_dv(meta, wave)`, `curve_at(curve, wave)` | M |
-| `calibration.telluric_zeropoint` | `measure(spectrum, regions=None, *, resolution, airmass, pwv, seg_width, ..., template=None, teff=None, spread_templates=()) -> TelluricZeroPoint \| None` (unpacks as `(zp, err)`; `.dv(λ)`); `star_minus_sky(tell, sky) -> dict` | M |
+| `calibration.telluric_zeropoint` | `measure(spectrum, regions=None, *, resolution, airmass, pwv, seg_width, ..., template=None, teff=None, spread_templates=()) -> TelluricZeroPoint \| None` (unpacks as `(zp, err)`; `.dv(λ)`); `node_windows(tell)`, `star_minus_sky_direct(tell, sky_windows) -> dict` | M |
 | `methods.telluric_ref` | `measure(spectrum, regions, cfg, *, executor, rng)`: v_star − v_tell per telluric segment; `prior_template`, `neighbour_templates` | M |
 | `methods.*` | each method: `measure(spectrum, regions, cfg, *, executor, rng) -> MethodResult` | M |
 | `combine` | `combine_regions(measurements) -> (rv, err)` (Birge), `hierarchical(values, errors, line_ids, method_ids, ...) -> dict` (ported from legacy, Woodbury) | M |
@@ -159,7 +159,7 @@ class ObjectResult:
   - `calibration.wave_valid_range`, when unset, takes this value (INFO-logged); a configured value always wins.
 - **Calibration modules**
   - `sky_zeropoint` measures Δv(λ) per segment of telluric-free OH lines; `valid_range` drops segments centred outside the arc range.
-  - `telluric` and `telluric_zeropoint` give the star's own Δv(λ) from the telluric bands. `star_minus_sky` gives the slit-centring constant `zp_star_sky`.
+  - `telluric` and `telluric_zeropoint` give the star's own Δv(λ) from the telluric bands. `star_minus_sky_direct` gives the slit-centring constant `zp_star_sky`.
   - `pipeline.wavelength_correction` chooses what to apply from `cfg.calibration.wavelength_correction` (`sky-if-needed` | `sky` | `auto` | `telluric` | `none`) and returns the zero-point record stored in `ObjectResult.barycentric` (`wavelength_correction*`, `zp_flags`; see `pipeline.ZP_FLAGS`).
   - `methods.telluric_ref` uses the telluric curve as a velocity reference: one RV per telluric segment.
 - **`grid_sources`:** each `ZENODO_GRIDS[name]` is a `ZenodoGrid` (record ids, file selector, name parser, reader, DOI, citation). `download_zenodo` streams the files by HTTP range or tar.gz, checks MD5/CRC, writes through a `.part` file and rolls back on error. `templates.download(source="auto")` tries SVO, then Zenodo.
