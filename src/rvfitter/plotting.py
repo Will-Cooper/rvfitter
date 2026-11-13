@@ -170,11 +170,14 @@ def plot_ccf(result: ObjectResult) -> Figure:
         v, c, peak = np.asarray(d['rv_grid']), np.asarray(d['ccf']), d['peak']
         ax.plot(v, c, color=COLOURS[0], lw=1)
         if peak['ok']:
-            x = np.linspace(peak['rv'] - 3 * peak['width'], peak['rv'] + 3 * peak['width'], 100)
+            x = np.linspace(peak['rv'] - 1.5 * peak['width'], peak['rv'] + 1.5 * peak['width'], 100)
             ax.plot(x, peak['height'] + 0.5 * peak['curvature'] * (x - peak['rv']) ** 2, color=COLOURS[1], lw=1.2)
             ax.axvline(peak['rv'], color=COLOURS[2], ls='--', lw=1)
         _top_label(ax, np.nanmean(v), m.region, line=False)
         _rv_text(ax, m)
+    allc = np.concatenate([np.asarray(m.diagnostics['ccf'])[np.isfinite(m.diagnostics['ccf'])] for m in ms])
+    for ax in axes[:, 0]:
+        ax.set_ylim(allc.min() - 0.05 * np.ptp(allc), allc.max() + 0.1 * np.ptp(allc))
     for ax in axes[-1]:
         ax.set_xlabel(f'RV [{_kms()}]')
     for ax in axes[:, 0]:
@@ -193,19 +196,19 @@ def plot_adopted(result: ObjectResult) -> Figure:
     if not methods:
         raise ValueError(f'{result.object}: no finite measurements to plot')
     lines = list(dict.fromkeys(m.region for ms in methods.values() for m in ms))
-    fig = Figure(figsize=(4.5, 0.45 * len(lines) * max(len(methods), 1) ** 0.5 + 1.5))
+    fig = Figure(figsize=(4.5, 0.3 * len(lines) * len(methods) ** 0.5 + 1.2), layout='tight')
     ax = fig.add_subplot()
     step = 0.6 / len(methods)
     cycle = list(mpl.rcParams['axes.prop_cycle'])
     for k, (name, ms) in enumerate(methods.items()):
-        sty = cycle[k % len(cycle)]
+        sty, mark = cycle[k % len(cycle)], 'os'[(k % len(cycle)) >= len(COLOURS)]
         off = (k - 0.5 * (len(methods) - 1)) * step
         y = np.array([lines.index(m.region) + off for m in ms])
         rv, err = np.array([m.rv for m in ms]), np.array([m.rv_err for m in ms])
         used = np.array([not m.flag & EXCLUDE_FLAGS for m in ms])
         kw = dict(color=sty['color'], ecolor=sty['color'], ls='none', capsize=0, elinewidth=1.2, ms=4)
-        ax.errorbar(rv[used], y[used], xerr=err[used], fmt='o', label=_t(name), **kw)
-        ax.errorbar(rv[~used], y[~used], xerr=err[~used], fmt='o', mfc='none', **kw)
+        ax.errorbar(rv[used], y[used], xerr=err[used], fmt=mark, label=_t(name), **kw)
+        ax.errorbar(rv[~used], y[~used], xerr=err[~used], fmt=mark, mfc='none', **kw)
     ad = result.adopted
     if ad.get('median') is not None and np.isfinite(ad['median']):
         ax.axvspan(ad.get('q16', ad['median'] - ad['err']), ad.get('q84', ad['median'] + ad['err']),
@@ -244,7 +247,7 @@ def plot_wavelength_correction(result: ObjectResult) -> Figure:
     sky, tell, applied = cur.get('sky_zeropoint'), cur.get('telluric_zeropoint'), cur.get('wavelength_correction')
     if not (sky or tell):
         raise ValueError(f'{result.object}: no wavelength-correction curves were measured')
-    fig = Figure(figsize=(6, 3))
+    fig = Figure(figsize=(6, 3), layout='tight')
     ax = fig.add_subplot()
     waves = []
     for curve, col, label in ((sky, COLOURS[0], 'Sky segments'), (tell, COLOURS[2], 'Telluric nodes')):
