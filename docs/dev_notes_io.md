@@ -1,8 +1,8 @@
 # Dev notes: io, archives, config (P1)
 
 ## io.py
-- Registry order: `pypeit_spec1d`, `pypeit_coadd`, `fits_generic`, `ascii`, then `specutils` fallback.
-  `register_reader(name, sniff, read, first=False)`; `sniff(path, hdu, columns) -> bool`, `read(...) -> RawSpectrum` (Å, file medium).
+- Reader order (a plain tuple `_READERS` of `(name, sniff, read)`): `pypeit_spec1d`, `pypeit_coadd`, `fits_generic`, `ascii` (no sniffer; its reader raises for non-text), then `specutils` fallback.
+  `sniff(path, hdu, columns) -> bool`, `read(...) -> RawSpectrum` (Å, file medium).
   If a sniffed reader's `read` fails the next one is tried; errors are collected in the final `ValueError`.
 - **Medium decisions** (never silent):
   - explicit `medium` wins (warning if it contradicts the header);
