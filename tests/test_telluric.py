@@ -294,8 +294,13 @@ def test_distortion_plus_constant_recovered_and_applied():
     for lam in (7950., 8190., 8520.):
         applied = float(sky_zeropoint.applied_dv(spec.meta, lam))
         assert applied == pytest.approx(_dv_true(lam) + 25., abs=3. * info['zp_star_sky_err'] + 3.), lam
-    term = wcorr.star_sky_term(info, spec, np.array([8190., 8520.]), _budget_cfg(), 'X')
-    assert term['value'] == pytest.approx(info['zp_star_sky_err']) and 'measured' in term['term']
+    lam = np.array([8190., 8520.])
+    term = wcorr.star_sky_term(info, spec, lam, _budget_cfg(), 'X')
+    # no slit PA: s is fitted, and the term is the RMS of σ(a + s·D) at the measurements' wavelengths
+    d = wcorr._dar_nodes(info, lam)
+    var = info['zp_star_sky_err'] ** 2 + d ** 2 * ss['s_err'] ** 2 + 2. * d * ss['cov_as']
+    assert info['zp_flags'] & wcorr.ZP_FLAGS['dar_pa_unknown'] and abs(ss['s']) < 3. * ss['s_err'] + 0.1
+    assert term['value'] == pytest.approx(np.sqrt(np.mean(var))) and 'measured' in term['term']
     assert np.isfinite(term['prior'])  # the slit prior is reported even when the constant was measured
 
 
@@ -308,7 +313,10 @@ def test_unmeasured_constant_uses_slit_prior(caplog):
     assert info['applied'] == 'sky' and not info['star_sky_applied'] and np.isnan(info['zp_star_sky'])
     at = np.array([8190., 7950., 8520.])
     term = wcorr.star_sky_term(info, spec, at, cfg, 'X')
-    assert term['value'] == pytest.approx(_expected_slit_prior(raw.wave, at), rel=1e-6)
+    dc = wcorr._dar_nodes(info, at) - np.mean(wcorr._dar_nodes(info, at))
+    dar_term = np.sqrt(np.mean(dc ** 2) / 3.)  # PA unknown: s uniform in [-1, 1]
+    assert term['dar'] == pytest.approx(dar_term) and dar_term > 0.
+    assert term['value'] == pytest.approx(np.hypot(_expected_slit_prior(raw.wave, at), dar_term), rel=1e-6)
     assert term['flags'] & wcorr.ZP_FLAGS['slit_prior'] and 'slit prior' in term['term']
     assert 15. < term['value'] < 40.  # ~0.5 binned pixel at 1.4 Å per pixel
     # a number overrides; zero_point_known (fibre/IFU) removes the term; missing inputs: NaN with a WARNING

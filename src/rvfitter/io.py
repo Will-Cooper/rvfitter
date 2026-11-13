@@ -18,6 +18,7 @@ The header keywords behind each `Spectrum.meta` entry are listed in `_meta_from_
 ``meta['velocity_keywords']`` holds any velocity-correction keywords found (``VHELIO``, ``BCV``, ``BERV``,
 ``VELOSYS``…), so that `rvfitter.barycentric` can tell whether a spectrum is already corrected.
 """
+import glob
 import gzip
 import logging
 import re
@@ -34,7 +35,7 @@ from .barycentric import vel_corr_to_kms
 from .medium import to_vacuum
 from .types import Spectrum
 
-__all__ = ['read_spectrum', 'RawSpectrum']
+__all__ = ['read_spectrum', 'RawSpectrum', 'raw_headers']
 
 log = logging.getLogger(__name__)
 
@@ -678,11 +679,12 @@ _COADD_FROM_RE = re.compile(r'From "(spec1d_[^"]+?\.fits)"')
 
 def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     """
-    Header cards a PypeIt coadd (or its ``*_tellcorr.fits``, which has no header) inherits from its spec1d files
+    The frame cards (VEL_CORR, VEL_TYPE) and raw FILENAMEs a PypeIt coadd or its ``*_tellcorr.fits`` inherit from
+    its spec1d files
 
     coadd1d works on the spec1d wavelengths, which already carry each exposure's ``VEL_CORR``, but writes no
     VEL_CORR itself; without it the zero-point curves would be evaluated in the wrong frame. The spec1d names come
-    from the coadd's HISTORY ('From "spec1d_…"'); a tellcorr file takes them, and its other header cards, from the
+    from the coadd's HISTORY ('From "spec1d_…"'); a tellcorr file (often with an empty header) takes them from the
     coadd of the same name next to it. Returns {} (with a WARNING) when the spec1d files are not found.
     """
     def sources(head: fits.Header) -> list[str]:
@@ -693,8 +695,6 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     coadd = path.with_name(path.stem.removesuffix('_tellcorr') + path.suffix)
     if not names and coadd != path and coadd.is_file():
         primary = fits.getheader(coadd, 0)
-        out.update(_header_dict(primary))
-        out['RVF_HEADER_FROM'] = coadd.name
         names = sources(primary)
     found = [path.parent / n for n in names if (path.parent / n).is_file()]
     if not names or len(found) < len(names):
@@ -715,6 +715,40 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
         out['VEL_TYPE'] = heads[0][1]['VEL_TYPE']
     log.info('%s: VEL_CORR %.9f (%s) from %s%s', path.name, out['VEL_CORR'], out.get('VEL_TYPE', 'frame unnamed'),
              ', '.join(names), f' (mean of {len(corr)}; spread {np.ptp(corr):.2g})' if len(corr) > 1 else '')
+    return out
+
+
+def raw_headers(meta: Mapping[str, Any], pattern: str | None = None, directory: str | None = None
+                ) -> list[dict[str, Any]]:
+    """
+    The primary headers of the raw frames behind a reduced spectrum (reduction pipelines drop the slit PA)
+
+    `pattern` (a path or glob, ``input.raw_header``) names them directly: no match raises. Otherwise each raw
+    frame in meta['raw_files'] (PypeIt's FILENAME, e.g. '0000809229-20150803-OSIRIS-….fits') is matched by its
+    leading frame number (0000809229) against ``<frame>*.fits`` anywhere under `directory`
+    (``input.raw_header_dir``): no match logs a WARNING and returns [], several raise. Each dict holds the
+    header cards and 'RVF_FILE'.
+    """
+    if pattern:
+        files = sorted(Path(p) for p in glob.glob(str(Path(pattern).expanduser())))
+        if not files:
+            raise FileNotFoundError(f'input.raw_header {pattern!r} matches no file')
+    elif directory:
+        files = []
+        for name in meta.get('raw_files') or []:
+            m = re.match(r'\d+', Path(name).name)
+            hits = sorted(Path(directory).expanduser().rglob(f'{m.group(0)}*.fits')) if m else []
+            if len(hits) > 1:
+                raise ValueError(f'raw frame {name}: {len(hits)} raw headers under {directory} ({hits[0].name}, ...)')
+            files += hits
+        if not files:
+            log.warning('%s: no raw header for raw frame(s) %s under input.raw_header_dir %s: the slit PA is unknown',
+                        meta.get('object', ''), meta.get('raw_files') or 'unknown', directory)
+            return []
+    else:
+        return []
+    out = [{**_header_dict(fits.getheader(f, 0)), 'RVF_FILE': str(f)} for f in files]
+    log.info('%s: raw header(s) %s', meta.get('object', ''), ', '.join(f.name for f in files))
     return out
 
 

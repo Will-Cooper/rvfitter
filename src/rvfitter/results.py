@@ -118,6 +118,8 @@ _SPEC: tuple[str | tuple, ...] = (
     ('zp_star_sky', 'systematics', 'zp_star_sky', _num, None),
     ('zp_star_sky_err', 'systematics', 'zp_star_sky_err', _num, None),
     ('zp_star_sky_n', 'systematics', 'zp_star_sky_n', _count, None),
+    # the across-slit DAR term s·D(λ) of the star - sky fit: s (known from the slit PA, or fitted) and its error
+    ('zp_dar_s', 'systematics', 'zp_dar_s', _num, None), ('zp_dar_s_err', 'systematics', 'zp_dar_s_err', _num, None),
     ('star_sky_term', 'systematics', 'star_sky_term', str, ''),  # what sys_star_sky is
     ('slit_prior_kms', 'systematics', 'slit_prior', _num, None),  # the computed slit-centring prior, used or not
     ('wavelength_correction', 'barycentric', 'wavelength_correction_mode', str, ''),  # the configured mode

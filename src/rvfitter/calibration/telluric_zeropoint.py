@@ -31,7 +31,7 @@ from ..constants import C_KMS
 from ..numerics import parabola_vertex, weighted_mean_chi2
 from ..types import Region, Spectrum
 from . import telluric
-from .sky_zeropoint import INFLATE_DEFAULT, _Curve, observatory_frame_factor
+from .sky_zeropoint import INFLATE_DEFAULT, _Curve, frame_factor
 
 __all__ = ['TelluricZeroPoint', 'measure', 'star_minus_sky_direct', 'node_windows', 'frame_factor']
 
@@ -43,16 +43,6 @@ _R_GUESS = 3000.  # resolving power used to size the segments before R is known 
 _PAD_RESEL = 15.  # continuum padding on each side of a segment [resolution elements]
 _MASK_RESEL = 5.  # half-width of the stellar-line masks without a template [resolution elements]
 _MIN_PIXELS = 20  # minimum usable pixels in a segment
-
-
-def frame_factor(meta: Any) -> float:
-    """The factor that converts observatory-frame wavelengths into the spectrum's (header + pipeline corrections)"""
-    meta = meta or {}
-    f = observatory_frame_factor(meta)
-    v = meta.get('barycentric_applied_kms')
-    if v is not None and np.isfinite(v) and v != 0:
-        f *= float(broadening.doppler_factor(v))
-    return f
 
 
 @dataclass
@@ -513,23 +503,58 @@ def node_windows(tell: TelluricZeroPoint) -> list[tuple[float, float]]:
     return [(float(s['wmin']), float(s['wmax'])) for s in tell.segments if s.get('used')]
 
 
-def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) -> dict:
+def _fit_constant_dar(d: np.ndarray, e: np.ndarray, dar: np.ndarray | None, s_prior: tuple[float, float] | None
+                      ) -> dict:
     """
-    The star − sky constant from the sky measured directly in each telluric node's own window
+    d_i = a + s·D_i by marginalising over a grid in s: s ≡ 0 without `dar`; uniform in [−1, 1] when `s_prior` is
+    None; else Gaussian (s₀, σ_s) truncated to [−1, 1] (a single point when σ_s = 0). Returns a, s, their
+    posterior variances and covariance, and the χ² at the posterior means.
+    """
+    w = 1. / e ** 2
+    if dar is None:
+        grid, prior = np.zeros(1), np.ones(1)
+    elif s_prior is None:
+        grid = np.linspace(-1., 1., 2001)
+        prior = np.ones(len(grid))
+    elif s_prior[1] > 0:
+        grid = np.clip(s_prior[0] + s_prior[1] * np.linspace(-5., 5., 401), -1., 1.)
+        prior = np.exp(-0.5 * ((grid - s_prior[0]) / s_prior[1]) ** 2)
+    else:
+        grid, prior = np.array([float(s_prior[0])]), np.ones(1)
+    dd = np.zeros(len(d)) if dar is None else dar
+    a_hat = np.sum(w * (d - grid[:, None] * dd), axis=1) / np.sum(w)
+    chi2 = np.sum(w * (d - a_hat[:, None] - grid[:, None] * dd) ** 2, axis=1)
+    post = prior * np.exp(-0.5 * (chi2 - chi2.min()))
+    post /= post.sum()
+    s_mean, a_mean = float(np.sum(post * grid)), float(np.sum(post * a_hat))
+    var_s = float(np.sum(post * (grid - s_mean) ** 2))
+    var_a = float(1. / np.sum(w) + np.sum(post * (a_hat - a_mean) ** 2))
+    cov = float(np.sum(post * (a_hat - a_mean) * (grid - s_mean)))
+    return dict(a=a_mean, s=s_mean, var_a=var_a, var_s=var_s, cov=cov,
+                chi2=float(np.sum(w * (d - a_mean - s_mean * dd) ** 2)))
 
-    `sky_windows` holds one `sky_zeropoint.measure_windows` result per node (`node_windows`), measured with no
-    telluric cut, so the sky and the star are compared over the same pixels, not through the sky curve's
-    interpolation. Each usable node gives d_i = Δv_tell,i − Δv_sky,i with error √(σ_tell,i² + σ_sky,i²); the
-    constant is their weighted mean. It is measured only with at least `STAR_SKY_MIN_NODES` nodes. Their χ² against
-    the constant tests "the star sees the sky's distortion plus a constant": when its p-value is ≤ `STAR_SKY_P_MIN`,
-    the error is inflated by the Birge factor and `consistent` is False. With fewer nodes the constant and its
-    error are NaN (`reason` says why).
+
+def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict], dar: np.ndarray | None = None,
+                          s_prior: tuple[float, float] | None = None) -> dict:
+    """
+    The star − sky zero point a + s·D(λ) from the sky measured directly in each telluric node's own window
+
+    `sky_windows` holds one `sky_zeropoint.measure_windows` result per node (`node_windows`), so the sky and the
+    star are compared over the same pixels, not through the sky curve's interpolation. Each usable node gives
+    d_i = Δv_tell,i − Δv_sky,i with error √(σ_tell,i² + σ_sky,i²). `dar` is the across-slit DAR D(λ) at the nodes
+    [km/s per unit s] (`dar.dar_kms`; None: a constant, s ≡ 0) and `s_prior` the slit's (s, σ_s) when its PA is
+    known (None: s is fitted with a uniform prior in [−1, 1]); see `_fit_constant_dar`. It is measured only with at
+    least `STAR_SKY_MIN_NODES` nodes. The χ² of the nodes tests "the star sees the sky's distortion plus a
+    constant (and DAR)": when its p-value is ≤ `STAR_SKY_P_MIN`, the errors are inflated by the Birge factor and
+    `consistent` is False. With fewer nodes everything is NaN (`reason` says why).
     """
     from scipy.stats import chi2 as chi2_dist
     lam = np.asarray(tell.node_wave, float)
     wins = node_windows(tell)
     if len(sky_windows) != len(lam) or len(wins) != len(lam):
         raise ValueError(f'{len(sky_windows)} sky windows for {len(lam)} telluric nodes')
+    if dar is not None and len(dar) != len(lam):
+        raise ValueError(f'{len(dar)} DAR values for {len(lam)} telluric nodes')
     s_dv = np.array([float(s.get('dv', np.nan)) for s in sky_windows])
     s_err = np.array([float(s.get('err', np.nan)) for s in sky_windows])
     s_ok = np.array([bool(s.get('used')) for s in sky_windows])
@@ -540,28 +565,30 @@ def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) 
     nodes = [dict(band=bands[i], wmin=wins[i][0], wmax=wins[i][1], wave=float(lam[i]), tell=float(tell.node_dv[i]),
                   tell_err=float(tell.node_err[i]), sky=float(s_dv[i]), sky_err=float(s_err[i]),
                   sky_reason=str(sky_windows[i].get('reason', '')), diff=float(d[i]), err=float(e[i]),
-                  used=bool(ok[i])) for i in range(len(lam))]
+                  dar=float(dar[i]) if dar is not None else 0., used=bool(ok[i])) for i in range(len(lam))]
     nan = float('nan')
-    base = dict(method='direct sky', nodes=nodes)
+    mode = 'none' if dar is None else ('fitted' if s_prior is None else 'known')
+    base = dict(method='direct sky', nodes=nodes, dar_mode=mode)
     if ok.sum() < STAR_SKY_MIN_NODES:
         reason = (f'{int(ok.sum())} telluric node(s) with a measured sky in the same window (< {STAR_SKY_MIN_NODES}'
                   f'; ' + ', '.join(f"{n['band']} {n['wmin']:.0f}-{n['wmax']:.0f} Å: {n['sky_reason'] or 'no sky'}"
                                      for n in nodes if not n['used']) + ')')
         log.info('Star - sky zero point not measured: %s', reason)
-        return dict(zp_star_sky=nan, zp_star_sky_err=nan, n_nodes=int(ok.sum()), chi2=nan, dof=0, p=nan, birge=nan,
-                    consistent=False, reason=reason, **base)
-    mean, formal, chi2 = weighted_mean_chi2(d[ok], e[ok])
-    dof = int(ok.sum()) - 1
-    p = float(chi2_dist.sf(chi2, dof))
-    consistent = p > STAR_SKY_P_MIN
-    birge = 1. if consistent else float(np.sqrt(chi2 / dof))
-    err = birge * formal
-    log.info('Star - sky zero point: %+.1f ± %.1f km/s from %d telluric node(s) with the sky measured in the same '
-             'windows (%s); χ² %.1f for %d dof, p = %.2g%s', mean, err, int(ok.sum()),
-             ', '.join(f"{n['band']} {n['diff']:+.1f} ± {n['err']:.1f}" for n in nodes if n['used']), chi2, dof, p,
-             '' if consistent else f' ≤ {STAR_SKY_P_MIN:g}: the nodes disagree, error inflated by the Birge factor '
-                                   f'{birge:.2f}')
-    return dict(zp_star_sky=mean, zp_star_sky_err=err, n_nodes=int(ok.sum()), chi2=chi2, dof=dof, p=p, birge=birge,
-                consistent=bool(consistent), reason='ok' if consistent else 'inconsistent nodes (Birge-inflated)',
-                **base)
-
+        return dict(zp_star_sky=nan, zp_star_sky_err=nan, s=nan, s_err=nan, cov_as=nan, n_nodes=int(ok.sum()),
+                    chi2=nan, dof=0, p=nan, birge=nan, consistent=False, reason=reason, **base)
+    fit = _fit_constant_dar(d[ok], e[ok], None if dar is None else dar[ok], s_prior)
+    dof = int(ok.sum()) - 1 - (mode == 'fitted')
+    p = float(chi2_dist.sf(fit['chi2'], dof)) if dof > 0 else nan
+    consistent = not p <= STAR_SKY_P_MIN
+    birge = 1. if consistent else float(np.sqrt(fit['chi2'] / dof))
+    err, s_err_post = birge * np.sqrt(fit['var_a']), birge * np.sqrt(fit['var_s'])
+    log.info('Star - sky zero point: %+.1f ± %.1f km/s%s from %d telluric node(s) with the sky measured in the same '
+             'windows (%s); χ² %.1f for %d dof, p = %.2g%s', fit['a'], err,
+             '' if mode == 'none' else f" + s·D(λ) with s = {fit['s']:+.3f} ± {s_err_post:.3f} ({mode})",
+             int(ok.sum()), ', '.join(f"{n['band']} {n['diff']:+.1f} ± {n['err']:.1f}" for n in nodes if n['used']),
+             fit['chi2'], dof, p, '' if consistent else f' ≤ {STAR_SKY_P_MIN:g}: the nodes disagree, errors '
+                                                        f'inflated by the Birge factor {birge:.2f}')
+    return dict(zp_star_sky=fit['a'], zp_star_sky_err=float(err), s=fit['s'] if dar is not None else nan,
+                s_err=float(s_err_post) if dar is not None else nan, cov_as=birge ** 2 * fit['cov'],
+                n_nodes=int(ok.sum()), chi2=fit['chi2'], dof=dof, p=p, birge=birge, consistent=bool(consistent),
+                reason='ok' if consistent else 'inconsistent nodes (Birge-inflated)', **base)
