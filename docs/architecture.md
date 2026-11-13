@@ -22,7 +22,7 @@ Changing an interface here requires the orchestrator's agreement.
 - **Randomness:** functions that use random numbers take an `rng: numpy.random.Generator` argument. Seeds are derived per task with `SeedSequence.spawn`. No global random state.
 - **Parallelism:** functions that can use several processes take `executor: concurrent.futures.Executor | None`. With `None` they run serially. Results must be identical either way.
 - **Matplotlib:**
-  - Only a `plotting` module (not yet written) may import pyplot, with the object-oriented API.
+  - `plotting` builds `Figure` objects directly (no pyplot import at all).
   - No rcParams are changed at import.
 
 ## Core data types (`rvfitter.types`)
@@ -105,7 +105,7 @@ class ObjectResult:
 | `methods.*` | `REGISTRY[name](spectrum, regions, cfg, *, executor, rng) -> MethodResult` (`cfg` a `Config`); a method that cannot measure raises ValueError. `methods._common`: `choose_template`, `run_chunks`, `window_measurement`, `TEMPLATE_DEFAULTS`; `methods.guidance`: `template_summary` (best template and edge guidance) | M |
 | `combine` | `combine_regions(measurements) -> (rv, err)` (random effects), `hierarchical(values, errors, line_ids, method_ids, ...) -> dict` (Woodbury); epochs: `epoch_labels`, `epoch_summaries(per_method, labels, tau_scale, name, sys)`, `method_over_epochs`, `adopted_over_epochs` | M |
 | `systematics` | `template_spread(spectrum, regions, cfg, *, executor, rng)`, `template_spread_details(...)`, `wavelength_zero_point(spectrum, *, wave=None)` | M |
-| `plotting` | not written (the stub was deleted; the GUI shows no diagnostic plots yet) | M (+P4 embeds) |
+| `plotting` | `style_context()`, `plot_line_fits`, `plot_ccf`, `plot_adopted`, `plot_corner`, `plot_wavelength_correction` (each `fn(result) -> Figure`), `make_all(result) -> dict[str, Figure]`, `save_all(results, directory)` (PDFs, `<object>_<figure>.pdf`); used by the CLI (`output.plots`) and the GUI Diagnostics tab | M |
 
 **Packages:**
 - P1–P4 are the Sonnet plumbing packages, each in its own worktree.
@@ -149,7 +149,7 @@ class ObjectResult:
 
   `regions.select(..., overrides=cfg.regions.overrides)` applies them. The GUI region editor writes this structure and never re-implements the selection.
 - **pipeline.run** gains `on_object: Callable[[ObjectResult], None] | None = None` (called after each object) and `cancel: threading.Event | None = None` (checked between objects and between methods; on cancel, return the results so far). Pass `cfg.regions.overrides` to `regions.select` and `cfg.combine.tau_scale` to `combine.hierarchical`. Add `cfg.combine.systematic_floor` in quadrature to `rv_total_err`.
-- **Plotting (not yet written):** `plotting.plot_line_fits`, `plot_ccf`, `plot_corner` and `plot_adopted` have the signature `fn(result: ObjectResult) -> matplotlib.figure.Figure`. Methods must therefore store in `Measurement.diagnostics` what their plots need (arrays as lists or ndarrays).
+- **Plotting:** `plotting.plot_*` have the signature `fn(result: ObjectResult) -> matplotlib.figure.Figure`. They read `Measurement.diagnostics` (`wave`, `data`, `model`, `continuum`, `rv_grid`, `ccf`, `peak`, `samples`, ...) and `ObjectResult.barycentric["wavelength_curves"]` (sky, telluric and applied curves).
 - **Output:** the GUI uses `cfg.output.path` and `cfg.output.formats`, as named in the first addendum.
 
 ### Addendum 3 (current signatures; refits, zero points and templates)
