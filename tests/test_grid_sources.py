@@ -1,4 +1,5 @@
 """Tests of the Zenodo grid source (mocked archives; one live test marked network + slow)."""
+import gzip
 import hashlib
 import io
 import json
@@ -19,7 +20,7 @@ from rvfitter import templates as T
 from rvfitter.medium import vac_to_air
 
 
-def _bobcat_text(teff, g, met='+0.0', co=None):
+def _bobcat_text(teff, g, met='0.0', co=None):
     um = np.linspace(1.2, 0.6, 20000)  # descending, as in the files
     w = um * 1e4
     flam = np.ones_like(w) * (teff / 1000.)
@@ -29,8 +30,9 @@ def _bobcat_text(teff, g, met='+0.0', co=None):
     head = (f' {teff:.0f}.  {g}.  0.28 0.00 1.0E+05 0.00 0.50 1.00  Teff, grav (MKS), ...\n'
             '    microns  Flux (erg/cm^2/s/Hz)\n')
     body = '\n'.join(f'{a:.7f} {b:.5E}' for a, b in zip(um, fnu, strict=True))
-    name = f'sp_t{teff:.0f}g{g}nc_m{met}' + (f'_co{co}' if co else '')
-    return name, (head + body + '\n').encode()
+    # as in Zenodo record 5063476: 'spectra/sp_t1000g316nc_m0.0.gz', each member gzip-compressed
+    name = f'spectra/sp_t{teff:.0f}g{g}nc_m{met}' + (f'_co{co}' if co else '') + '.gz'
+    return name, gzip.compress((head + body + '\n').encode())
 
 
 def _sand_fits(teff, logg, z, a, medium='VAC'):
@@ -61,7 +63,10 @@ def fake_zenodo(monkeypatch, tmp_path):
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
-        evil = tarfile.TarInfo('../sp_t1900g1000nc_m+0.0')  # an unsafe member name: must be skipped
+        params = tarfile.TarInfo('spectra/parameters')  # a non-model member, as in the real archive
+        params.size = 5
+        tar.addfile(params, io.BytesIO(b'xxxxx'))
+        evil = tarfile.TarInfo('../sp_t1900g1000nc_m0.0.gz')  # an unsafe member name: must be skipped
         evil.size = 5
         tar.addfile(evil, io.BytesIO(b'xxxxx'))
     zip_path = tmp_path / 'SAND.zip'
@@ -121,6 +126,10 @@ def test_no_upstream_source_message(tmp_path):
 
 def test_parsers():
     assert G.parse_bobcat('sp_t1900g316nc_m-0.5_co1.5') == dict(teff=1900., logg=4.5, met=-0.5, alpha=0., co=1.5)
+    # the real member names end in '.gz' (the cause of "0 model(s) converted"); g = 316 is log g 4.5
+    assert G.parse_bobcat('sp_t1000g316nc_m0.0.gz') == dict(teff=1000., logg=4.5, met=0., alpha=0., co=1.)
+    assert G.parse_bobcat('sp_t1000g1000nc_m0.0_co0.5.gz')['co'] == 0.5
+    assert G.parse_bobcat('parameters') is None
     assert G.parse_diamondback('t1500g31f3_m-0.5_co1.0.spec')['fsed'] == 3.
     assert G.parse_diamondback('t1100g31nc_m0.0_co1.0.spec')['fsed'] == 0.
     p = G.parse_elfowl('spectra_logzz_9.0_teff_450.0_grav_31.0_mh_-1.0_co_0.5.nc')

@@ -40,7 +40,8 @@ from scipy.special import ndtr
 
 from ..constants import C_KMS
 
-__all__ = ['SlitInputs', 'ACQUISITION_ARCSEC', 'centroid_rms', 'instrument_pixscale', 'inputs', 'prior_kms']
+__all__ = ['SlitInputs', 'ACQUISITION_ARCSEC', 'centroid_rms', 'centroid_gain', 'instrument_pixscale', 'inputs',
+           'prior_kms']
 
 log = logging.getLogger(__name__)
 
@@ -166,11 +167,22 @@ def centroid_rms(width: float, fwhm: float) -> float:
     n = 401
     half = max((width - fwhm) / 2., ACQUISITION_ARCSEC)
     x = half * ((2. * np.arange(n) + 1.) / n - 1.)  # midpoints of n equal bins: an unbiased uniform average
+    c = _centroid(x, width, fwhm)
+    return float(np.sqrt(np.mean(c * c)))
+
+
+def _centroid(x: np.ndarray, width: float, fwhm: float) -> np.ndarray:
+    """Centroid c(x) [arcsec] of the light a slit of width `width` transmits from a Gaussian centred at x"""
     sig = fwhm / np.sqrt(8. * np.log(2.))
     a, b = (-width / 2. - x) / sig, (width / 2. - x) / sig
     pdf = np.exp(-0.5 * a * a) - np.exp(-0.5 * b * b)
-    c = x + sig * pdf / np.sqrt(2. * np.pi) / np.maximum(ndtr(b) - ndtr(a), 1e-300)
-    return float(np.sqrt(np.mean(c * c)))
+    return x + sig * pdf / np.sqrt(2. * np.pi) / np.maximum(ndtr(b) - ndtr(a), 1e-300)
+
+
+def centroid_gain(width: float, fwhm: float) -> float:
+    """dc/dx at the slit centre: how much of a small image displacement (e.g. DAR) moves the transmitted centroid"""
+    h = 1e-3 * width
+    return float(np.diff(_centroid(np.array([-h, h]), width, fwhm))[0] / (2. * h))
 
 
 def prior_kms(inp: SlitInputs, wave: np.ndarray | Sequence[float] | float) -> float:

@@ -231,8 +231,9 @@ def test_pipeline_telluric_and_auto_modes():
         assert abs(info_a['zp_star_sky']) < 3. * info_a['zp_star_sky_err'] + 2.  # the star sees the sky's curve
         wc = spec_a.meta['wavelength_correction']
         assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
-        # the constant's error is sys_star_sky, not part of sys_wavezp
-        assert systematics.wavelength_zero_point(spec_a) == pytest.approx(info_a['zp_sky_err'])
+        # the constant's error is sys_star_sky, not part of sys_wavezp, which is the applied per-region sky's
+        assert set(info_a['sky_windows']) == {r.name for r in regs}
+        assert systematics.wavelength_zero_point(spec_a) == pytest.approx(wc['sky']['zp_sky_err'])
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, None, raw.meta, 'x')
     _, info_t = wcorr.correct(nosky, nosky, cfg, 'X', regions=regs)
     assert info_t['applied'] == 'none' and info_t['zp_flags'] & wcorr.ZP_FLAGS['no_sky']
@@ -290,12 +291,19 @@ def test_distortion_plus_constant_recovered_and_applied():
     ss = info['star_sky']
     assert ss['n_nodes'] >= 2 and ss['consistent'] and ss['p'] > 0.01
     assert abs(info['zp_star_sky'] - 25.) < 3. * info['zp_star_sky_err'] + 1., ss
+    # the spread over the telluric-fit star models (template families, smooth star) is in the constant's error
+    assert ss['family'] and ss['zp_star_sky_err'] == pytest.approx(np.hypot(ss['err_fit'], ss['err_family']))
     # the applied correction is the distortion plus the constant, wherever the sky is measured
     for lam in (7950., 8190., 8520.):
         applied = float(sky_zeropoint.applied_dv(spec.meta, lam))
         assert applied == pytest.approx(_dv_true(lam) + 25., abs=3. * info['zp_star_sky_err'] + 3.), lam
-    term = wcorr.star_sky_term(info, spec, np.array([8190., 8520.]), _budget_cfg(), 'X')
-    assert term['value'] == pytest.approx(info['zp_star_sky_err']) and 'measured' in term['term']
+    lam = np.array([8190., 8520.])
+    term = wcorr.star_sky_term(info, spec, lam, _budget_cfg(), 'X')
+    # no slit PA: s is fitted, and the term is the RMS of σ(a + s·D) at the measurements' wavelengths
+    d = wcorr._dar_nodes(info, lam)
+    var = info['zp_star_sky_err'] ** 2 + d ** 2 * ss['s_err'] ** 2 + 2. * d * ss['cov_as']
+    assert info['zp_flags'] & wcorr.ZP_FLAGS['dar_pa_unknown'] and abs(ss['s']) < 3. * ss['s_err'] + 0.1
+    assert term['value'] == pytest.approx(np.sqrt(np.mean(var))) and 'measured' in term['term']
     assert np.isfinite(term['prior'])  # the slit prior is reported even when the constant was measured
 
 
@@ -308,7 +316,10 @@ def test_unmeasured_constant_uses_slit_prior(caplog):
     assert info['applied'] == 'sky' and not info['star_sky_applied'] and np.isnan(info['zp_star_sky'])
     at = np.array([8190., 7950., 8520.])
     term = wcorr.star_sky_term(info, spec, at, cfg, 'X')
-    assert term['value'] == pytest.approx(_expected_slit_prior(raw.wave, at), rel=1e-6)
+    dc = wcorr._dar_nodes(info, at) - np.mean(wcorr._dar_nodes(info, at))
+    dar_term = np.sqrt(np.mean(dc ** 2) / 3.)  # PA unknown: s uniform in [-1, 1]
+    assert term['dar'] == pytest.approx(dar_term) and dar_term > 0.
+    assert term['value'] == pytest.approx(np.hypot(_expected_slit_prior(raw.wave, at), dar_term), rel=1e-6)
     assert term['flags'] & wcorr.ZP_FLAGS['slit_prior'] and 'slit prior' in term['term']
     assert 15. < term['value'] < 40.  # ~0.5 binned pixel at 1.4 Å per pixel
     # a number overrides; zero_point_known (fibre/IFU) removes the term; missing inputs: NaN with a WARNING
@@ -447,3 +458,16 @@ def test_j1745_telluric_zero_point(real_telluric_model):
     zp = TZ.measure(src, resolution=2602.)
     assert zp is not None and zp.n_used >= 5
     assert all(abs(s['dv']) < 100. for s in zp.segments if s['used'])
+
+
+def test_family_templates_skip_partial_cache(tmp_path, monkeypatch):
+    """The telluric-fit families: a smooth star always; an empty cache directory is not a cached grid"""
+    from types import SimpleNamespace
+    (tmp_path / 'sonora-bobcat').mkdir()
+    monkeypatch.setenv('RVFITTER_CACHE', str(tmp_path))
+    raw = _observed()
+    cfg = _budget_cfg()
+    cfg.calibration.telluric_template = True
+    fams = wcorr._family_templates(raw, cfg, 'X', SimpleNamespace(template='bt 2100/5.0', resolution=R))
+    assert fams == [('smooth star', None)]
+    assert wcorr._family_templates(raw, _budget_cfg(), 'X', SimpleNamespace(template=None, resolution=R)) == []

@@ -337,6 +337,14 @@ class TestLocalData:
         air = io.read_spectrum(path, medium='air')
         assert np.all(air.wave > spec.wave)
 
+    def test_coadd_and_tellcorr_inherit_vel_corr(self):
+        """coadd1d writes no VEL_CORR: the coadd takes it from its spec1d (HISTORY), the tellcorr from the coadd"""
+        spec1d = io.read_spectrum(next((self.base / 'Science').glob('spec1d_*DENIS*.fits')))
+        for name in ('DENISJ174534.6-164053.fits', 'DENISJ174534.6-164053_tellcorr.fits'):
+            m = io.read_spectrum(self.base / 'Science' / name).meta
+            assert m['vel_corr'] == spec1d.meta['vel_corr'] and m['frame_in'] == 'heliocentric'
+            assert m['raw_files'] == ['0000809229-20150803-OSIRIS-OsirisLongSlitSpectroscopy.fits']
+
     @pytest.mark.parametrize('sub, vtype', [('nopipecorr', None), ('yespipecorr', 'barycentric'),
                                             ('yespipecorrhelio', 'heliocentric')])
     def test_spec1d_vel_keywords(self, sub, vtype):

@@ -25,7 +25,8 @@ Method:
    (PypeIt's Paranal sky) showed the method unbiased except in the short blue-edge segment, bounded by the O2 A
    band, where it was biased by −8 to −22 km/s.
    `measure_windows` measures the sky in any given windows (e.g. inside the telluric bands, to compare it with
-   the star's telluric nodes); those values never enter the curve.
+   the star's telluric nodes, where the H2O absorption can move the blended OH features); those values never
+   enter the curve.
 5. Δv(λ) is local: within each telluric-free span, the piecewise-linear interpolation between its segment
    values, held constant beyond them; it is never interpolated across an unmeasured gap (a wavelength in a gap
    takes the nearer span's edge value), and its error grows with the distance from the nearest node. Node errors
@@ -50,14 +51,14 @@ from ..numerics import parabola_vertex
 from ..types import Spectrum
 
 __all__ = ['SkyZeroPoint', 'oh_lines', 'model_sky', 'measure', 'measure_windows', 'apply', 'applied_dv', 'curve_at',
-           'observatory_frame_factor']
+           'observatory_frame_factor', 'frame_factor']
 
 log = logging.getLogger(__name__)
 
 _DV = 2.  # grid step [km/s]
 _MAX_LAG = 150.  # search range [km/s]
 _MIN_CORR = 0.7  # minimum peak correlation of a usable segment
-_MIN_WIDTH = 60.  # telluric-free spans narrower than this [Å] are not used
+MIN_WIDTH = 60.  # telluric-free spans (and region sky windows) narrower than this [Å] are not used
 _TELLURIC_DEPTH = 0.3  # catalogue telluric bands at least this deep are cut out (they distort the OH emission)
 _MIN_LINES = 3  # minimum model lines in a segment with ≥ 10 per cent of its strongest amplitude
 INFLATE_DEFAULT = 0.02  # node-error growth [km/s per Å] when no two nodes share a span
@@ -109,6 +110,16 @@ def observatory_frame_factor(meta: Any) -> float:
             raise ValueError(f'invalid header velocity correction {v} km/s')
         return float(broadening.doppler_factor(v))
     return 1.
+
+
+def frame_factor(meta: Any) -> float:
+    """The factor that converts observatory-frame wavelengths into the spectrum's (header + pipeline corrections)"""
+    meta = meta or {}
+    f = observatory_frame_factor(meta)
+    v = meta.get('barycentric_applied_kms')
+    if v is not None and np.isfinite(v) and v != 0:
+        f *= float(broadening.doppler_factor(v))
+    return f
 
 
 def _curve(wave, node_wave, node_dv, node_err, node_span, inflate, span_bounds=None):
@@ -367,7 +378,9 @@ def measure_windows(spectrum: Spectrum, windows: list[tuple[float, float]], fwhm
     The sky Δv measured directly in given windows [Å, observatory frame], with no telluric cut.
 
     Used to compare the sky with the star's telluric nodes in the same windows, including inside the telluric
-    bands (the absorption weakens the OH lines there but does not move them). These values never enter the curve
+    bands. There the OH emission (≈ 90 km up) is absorbed by the whole H2O column, and at R ≈ 2600 the absorbed,
+    blended OH features do move: a synthetic sky × the HITRAN transmission at J1745's airmass gave −5 to +16 km/s
+    in the H2O windows at PWV 11 mm, against < 0.5 km/s without absorption. These values never enter the curve
     that `measure` fits. Each result is {'wmin', 'wmax', 'dv', 'err', 'err_stat', 'corr', 'bias', 'used',
     'reason'}, with the same correlation, error and bias test as the curve's segments.
     """
@@ -418,7 +431,7 @@ def measure(spectrum: Spectrum, *, seg_width: float = 250.,
             and f.depth >= _TELLURIC_DEPTH]
     lags = np.arange(-_MAX_LAG, _MAX_LAG + 1e-9, _DV)
     segs = []
-    for lo, hi, span in _segments(float(w_all[0]), float(w_all[-1]), tell, seg_width, _MIN_WIDTH):
+    for lo, hi, span in _segments(float(w_all[0]), float(w_all[-1]), tell, seg_width, MIN_WIDTH):
         seg = dict(wmin=float(lo), wmax=float(hi), centre=float(0.5 * (lo + hi)), dv=np.nan, err=np.nan, corr=np.nan,
                    bias=np.nan, err_stat=np.nan, used=False, reason='', span=int(span))
         inseg = (lw >= lo) & (lw <= hi)
@@ -493,27 +506,32 @@ def measure(spectrum: Spectrum, *, seg_width: float = 250.,
 
 
 def apply(spectrum: Spectrum, zp: Any = None, *, constant_kms: float = 0., constant_err: float = np.nan,
-          source: str = 'sky') -> Spectrum:
+          dar: dict | None = None, source: str = 'sky') -> Spectrum:
     """
-    Correct the wavelengths for a zero point: λ' = λ / D(Δv(λ) + constant), D the relativistic Doppler factor.
+    Correct the wavelengths for a zero point: λ' = λ / D(Δv(λ) + constant + DAR(λ)), D the relativistic Doppler factor.
 
     `zp` is a sky or telluric curve (None: only `constant_kms`, e.g. the star − sky offset, with error
-    `constant_err`). The spectrum may be in any frame (the correction is a factor). meta['wavelength_correction']
-    records what was applied, the curve under 'sky' or 'telluric' and `source` as the label.
+    `constant_err`); `dar` is {'wave', 'kms'}: the fitted across-slit DAR term s·D(λ) tabulated in the observatory
+    frame. The curves are evaluated in the observatory frame (`frame_factor`), whatever frame the spectrum is in
+    (the correction is a factor). meta['wavelength_correction'] records what was applied, the curve under 'sky'
+    or 'telluric' and `source` as the label.
     """
+    meta = dict(spectrum.meta)
+    obs = spectrum.wave / frame_factor(meta)
     dv = np.full(len(spectrum.wave), float(constant_kms))
     if zp is not None:
-        dv = dv + zp.dv(spectrum.wave)
+        dv = dv + zp.dv(obs)
+    if dar is not None:
+        dv = dv + np.interp(obs, dar['wave'], dar['kms'])
     new_wave = spectrum.wave / broadening.doppler_factor(dv)
     if np.any(np.diff(new_wave) <= 0):
         raise ValueError('the zero-point correction would make the wavelengths non-monotonic; not applied')
-    meta = dict(spectrum.meta)
     kind = getattr(zp, 'kind', 'sky')
     meta['wavelength_correction'] = dict(source=source, constant_kms=float(constant_kms),
                                          constant_err=float(constant_err),
                                          sky=zp.as_dict() if zp is not None and kind == 'sky' else None,
                                          telluric=zp.as_dict() if zp is not None and kind == 'telluric' else None,
-                                         dv_min=float(dv.min()), dv_max=float(dv.max()))
+                                         dar=dar, dv_min=float(dv.min()), dv_max=float(dv.max()))
     return replace(spectrum, wave=new_wave, meta=meta)
 
 
@@ -525,13 +543,17 @@ def curve_at(curve: dict, wave: float | np.ndarray) -> tuple[np.ndarray, np.ndar
 
 
 def applied_dv(meta: Any, wave: float | np.ndarray) -> np.ndarray:
-    """The velocity correction applied at `wave` according to meta['wavelength_correction'] (0 if none)"""
+    """The velocity correction applied at `wave` [Å, the spectrum's frame] according to meta['wavelength_correction']
+    (0 if none)"""
     wc = (meta or {}).get('wavelength_correction')
     if not wc:
         return np.zeros_like(np.asarray(wave, dtype=float))
-    dv = np.full_like(np.asarray(wave, dtype=float), wc.get('constant_kms', 0.))
+    obs = np.asarray(wave, dtype=float) / frame_factor(meta)
+    dv = np.full_like(obs, wc.get('constant_kms', 0.))
     for key in ('sky', 'telluric'):
         curve = wc.get(key)
         if curve:
-            dv = dv + curve_at(curve, wave)[0].reshape(np.shape(dv))
+            dv = dv + curve_at(curve, obs)[0].reshape(np.shape(dv))
+    if wc.get('dar'):
+        dv = dv + np.interp(obs, wc['dar']['wave'], wc['dar']['kms'])
     return dv

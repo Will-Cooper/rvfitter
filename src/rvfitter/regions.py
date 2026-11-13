@@ -466,7 +466,8 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
     cands = []
     for f in lines:
         a, b = _line_window(ctx, f)
-        why = cat = _rejected(f, teff, ctx) or (None if ctx.covered(a, b) else 'outside coverage')
+        why = cat = (_rejected(f, teff, ctx) or (None if f.line_centring else 'blended (catalogue caveat)')
+                     or (None if ctx.covered(a, b) else 'outside coverage'))
         if why is None:
             half = (0. if mode < 0.75 else o.k_core * ctx.fwhm(f.wave_vac) if mode < 1.5 else b - f.wave_vac)
             hit = _overlaps(f.wave_vac - half, f.wave_vac + half, masks)

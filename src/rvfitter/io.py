@@ -18,6 +18,7 @@ The header keywords behind each `Spectrum.meta` entry are listed in `_meta_from_
 ``meta['velocity_keywords']`` holds any velocity-correction keywords found (``VHELIO``, ``BCV``, ``BERV``,
 ``VELOSYS``…), so that `rvfitter.barycentric` can tell whether a spectrum is already corrected.
 """
+import glob
 import gzip
 import logging
 import re
@@ -34,7 +35,7 @@ from .barycentric import vel_corr_to_kms
 from .medium import to_vacuum
 from .types import Spectrum
 
-__all__ = ['read_spectrum', 'RawSpectrum']
+__all__ = ['read_spectrum', 'RawSpectrum', 'raw_headers']
 
 log = logging.getLogger(__name__)
 
@@ -324,6 +325,8 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     meta['vel_corr'] = f
     meta['vel_corr_kms'] = None if f is None else vel_corr_to_kms(f)
     meta['velocity_keywords'] = {k: header[k] for k in _VEL_KEYS if k in header}
+    raw = header.get('RVF_RAW_FILES') or header.get('FILENAME')  # PypeIt: the raw frame(s) behind the spectrum
+    meta['raw_files'] = [s for s in str(raw).split(',') if s] if raw else []
     meta.update(_slit_meta(header))
     return meta
 
@@ -671,6 +674,84 @@ def _sniff_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any =
         return _coadd_hdu(hdul, hdu) is not None
 
 
+_COADD_FROM_RE = re.compile(r'From "(spec1d_[^"]+?\.fits)"')
+
+
+def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
+    """
+    The frame cards (VEL_CORR, VEL_TYPE) and raw FILENAMEs a PypeIt coadd or its ``*_tellcorr.fits`` inherit from
+    its spec1d files
+
+    coadd1d works on the spec1d wavelengths, which already carry each exposure's ``VEL_CORR``, but writes no
+    VEL_CORR itself; without it the zero-point curves would be evaluated in the wrong frame. The spec1d names come
+    from the coadd's HISTORY ('From "spec1d_…"'); a tellcorr file (often with an empty header) takes them from the
+    coadd of the same name next to it. Returns {} (with a WARNING) when the spec1d files are not found.
+    """
+    def sources(head: fits.Header) -> list[str]:
+        return _COADD_FROM_RE.findall(''.join(str(v) for k, v in head.items() if k == 'HISTORY'))
+
+    out: dict[str, Any] = {}
+    names = sources(primary)
+    coadd = path.with_name(path.stem.removesuffix('_tellcorr') + path.suffix)
+    if not names and coadd != path and coadd.is_file():
+        primary = fits.getheader(coadd, 0)
+        names = sources(primary)
+    found = [path.parent / n for n in names if (path.parent / n).is_file()]
+    if not names or len(found) < len(names):
+        log.warning('%s: the spec1d file(s) it was coadded from (%s) are not next to it: the velocity frame '
+                    '(VEL_CORR) is unknown', path.name, ', '.join(names) or 'none named in its HISTORY or a coadd')
+        return out
+    heads = []
+    for p in found:  # PypeIt writes VEL_CORR in the object tables, the raw FILENAME in the primary header
+        with fits.open(p) as hl:
+            ext = next((h.header for h in hl[1:] if 'VEL_CORR' in h.header), fits.Header())
+            heads.append((hl[0].header, ext))
+    corr = [_as_float(e.get('VEL_CORR')) for _, e in heads]
+    out['RVF_RAW_FILES'] = ','.join(str(h.get('FILENAME', '')) for h, _ in heads)
+    if any(c is None for c in corr):
+        return out  # the spec1d files were not velocity-corrected either
+    out['VEL_CORR'] = float(np.mean(corr))
+    if heads[0][1].get('VEL_TYPE') is not None:
+        out['VEL_TYPE'] = heads[0][1]['VEL_TYPE']
+    log.info('%s: VEL_CORR %.9f (%s) from %s%s', path.name, out['VEL_CORR'], out.get('VEL_TYPE', 'frame unnamed'),
+             ', '.join(names), f' (mean of {len(corr)}; spread {np.ptp(corr):.2g})' if len(corr) > 1 else '')
+    return out
+
+
+def raw_headers(meta: Mapping[str, Any], pattern: str | None = None, directory: str | None = None
+                ) -> list[dict[str, Any]]:
+    """
+    The primary headers of the raw frames behind a reduced spectrum (reduction pipelines drop the slit PA)
+
+    `pattern` (a path or glob, ``input.raw_header``) names them directly: no match raises. Otherwise each raw
+    frame in meta['raw_files'] (PypeIt's FILENAME, e.g. '0000809229-20150803-OSIRIS-….fits') is matched by its
+    leading frame number (0000809229) against ``<frame>*.fits`` anywhere under `directory`
+    (``input.raw_header_dir``): no match logs a WARNING and returns [], several raise. Each dict holds the
+    header cards and 'RVF_FILE'.
+    """
+    if pattern:
+        files = sorted(Path(p) for p in glob.glob(str(Path(pattern).expanduser())))
+        if not files:
+            raise FileNotFoundError(f'input.raw_header {pattern!r} matches no file')
+    elif directory:
+        files = []
+        for name in meta.get('raw_files') or []:
+            m = re.match(r'\d+', Path(name).name)
+            hits = sorted(Path(directory).expanduser().rglob(f'{m.group(0)}*.fits')) if m else []
+            if len(hits) > 1:
+                raise ValueError(f'raw frame {name}: {len(hits)} raw headers under {directory} ({hits[0].name}, ...)')
+            files += hits
+        if not files:
+            log.warning('%s: no raw header for raw frame(s) %s under input.raw_header_dir %s: the slit PA is unknown',
+                        meta.get('object', ''), meta.get('raw_files') or 'unknown', directory)
+            return []
+    else:
+        return []
+    out = [{**_header_dict(fits.getheader(f, 0)), 'RVF_FILE': str(f)} for f in files]
+    log.info('%s: raw header(s) %s', meta.get('object', ''), ', '.join(f.name for f in files))
+    return out
+
+
 def _read_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
     with fits.open(path, memmap=False) as hdul:
         idx = _coadd_hdu(hdul, hdu)
@@ -678,6 +759,8 @@ def _read_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any = 
             raise ValueError('no wave/flux/ivar table found')
         ext = hdul[idx]
         header = _header_dict(hdul[0].header, ext.header)
+        if 'VEL_CORR' not in header:
+            header = {**_coadd_provenance(path, hdul[0].header), **header}
         data = ext.data
         wave = np.asarray(data['wave'], dtype=float).ravel()
         flux = np.asarray(data['flux'], dtype=float).ravel()

@@ -115,7 +115,7 @@ def test_pulls(profile, joint):
     pull = _pulls(profile, 200 if joint else 60, joint=joint)  # one pull per spectrum when joint
     log.info('%s%s: %d pulls, mean %.3f, std %.3f', profile, ' joint' if joint else '', len(pull), pull.mean(),
              pull.std(ddof=1))
-    assert len(pull) > 190 if joint else len(pull) > 300
+    assert len(pull) > 190 if joint else len(pull) > 240  # 5 lines per spectrum (Cs I 8946 is not for line centring)
     assert abs(pull.mean()) < 0.2
     assert 0.8 < pull.std(ddof=1) < 1.2
 
@@ -153,3 +153,59 @@ def test_j1745(caplog):
         out[mode] = m.rv
     # sky-if-needed applies the sky curve and drops the K I lines (in its unmeasured O2 A gap)
     assert out['sky-if-needed'] != pytest.approx(out['none'])
+
+
+def _blended(shift_aa: float = 0.6, ratio: float = 0.6):
+    """Anchor lines each with a weaker companion `shift_aa` redward: a line shape a single profile fits off-centre"""
+    wave, flux = _template('gaussian')
+    for c in synth.ANCHOR_LINES:
+        if 7500. < c < 9000.:
+            w = c * WIDTH['gaussian'] / C_KMS
+            flux *= 1. - 0.5 * ratio * np.exp(-0.5 * ((wave - c - shift_aa) / w) ** 2)
+    return wave, flux
+
+
+def test_default_is_model_free_and_shape_correction_opt_in(monkeypatch, caplog):
+    """
+    Blended lines bias the profile fit. The default never touches a template (model-free: shape_correction False in
+    every measurement); the opt-in subtracts the offset measured on the noise-free template and adds the spread
+    over its grid neighbours to each line's error
+    """
+    from rvfitter.methods import telluric_ref
+    from rvfitter.types import Spectrum
+    wave, flux = _blended()
+    spec, _ = synth.make_spectrum(rv=RV, snr=500., template=(wave, flux), rng=np.random.default_rng(2))
+    regs = _line_regions(spec)
+
+    def no_templates(*a, **k):
+        raise AssertionError('the default must not use templates')
+    monkeypatch.setattr(telluric_ref, 'prior_template', no_templates)
+    free = _measure(spec, regs, profile='gaussian')
+    assert all(m.diagnostics['shape_correction'] is False for m in free.measurements)
+    bias = free.rv - RV
+    assert abs(bias) > 3. * free.rv_err  # the blends shift the model-free centres
+
+    def tpl(f):
+        return C.template_from_spectrum(Spectrum(wave, f, np.full_like(f, np.nan), None, {}, 'tpl'), 2500.,
+                                        (spec.wave[0], spec.wave[-1]), label='blend')
+    alt = _blended(ratio=0.5)[1]
+    monkeypatch.setattr(telluric_ref, 'prior_template', lambda cfg, r, wr, opts=None: tpl(flux))
+    monkeypatch.setattr(telluric_ref, 'neighbour_templates', lambda cfg, r, wr, nom, opts=None: [tpl(alt)])
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    on = _measure(spec, regs, profile='gaussian', shape_correction=True)
+    assert 'template-dependent' in caplog.text
+    assert abs(on.rv - RV) < 3. * on.rv_err and abs(on.rv - RV) < abs(bias) / 3.
+    for m, m0 in zip(on.measurements, free.measurements, strict=True):
+        d = m.diagnostics
+        assert d['shape_correction'] and d['shape_spread'] > 0. and m.rv_err > m0.rv_err
+        assert m.rv == pytest.approx(m0.rv - d['shape_offset'])
+
+
+def test_blended_cs_8946_not_for_line_centring():
+    """Cs I 8946 is dropped from line centring through its catalogue caveat (not a hard-coded wavelength)"""
+    from rvfitter.features import features
+    blocked = {f.name for f in features() if f.kind == 'line' and not f.line_centring}
+    assert blocked == {'Cs I 8946'}
+    spec, _ = synth.make_spectrum(rv=RV, snr=300., wave_range=(8400., 9000.), rng=np.random.default_rng(1))
+    names = {r.name for r in regions.select(spec, teff=2000., methods=['linecentre'])['linecentre']}
+    assert 'Cs I 8523' in names and 'Cs I 8946' not in names

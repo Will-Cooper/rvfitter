@@ -59,6 +59,10 @@ class InputConfig:
     hdu: int | str | None = None
     resolution: float | None = None  # R override (applied to every spectrum)
     telluric_corrected: bool = False  # spectra are already telluric-corrected: relax the telluric masking
+    # raw frame headers (the reduction drops the slit PA, needed for the DAR across the slit): a path or glob, or
+    # a directory searched for '<frame number>*.fits' of each raw frame named in the reduced file (PypeIt FILENAME)
+    raw_header: str | None = None
+    raw_header_dir: str | None = None
 
 
 @dataclass

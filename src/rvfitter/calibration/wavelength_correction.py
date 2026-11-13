@@ -21,7 +21,7 @@ from ..constants import C_KMS
 from ..features import features
 from ..numerics import rms
 from ..types import Spectrum
-from . import sky_zeropoint, slit, telluric, telluric_zeropoint
+from . import dar, sky_zeropoint, slit, telluric, telluric_zeropoint
 
 __all__ = ['correct', 'star_sky_term', 'combine_epochs', 'arc_kms', 'valid_range', 'matching_object', 'ZP_KEYS',
            'ZP_FLAGS', 'zp_flag_names']
@@ -29,7 +29,7 @@ __all__ = ['correct', 'star_sky_term', 'combine_epochs', 'arc_kms', 'valid_range
 log = logging.getLogger(__name__)
 
 ZP_KEYS = ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'zp_tell_kms', 'zp_tell_err',
-           'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n')
+           'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n', 'zp_dar_s', 'zp_dar_s_err')
 
 #: Bits of the ``zp_flags`` results column: what the wavelength zero-point step did, and why
 ZP_FLAGS: dict[str, int] = {
@@ -45,6 +45,9 @@ ZP_FLAGS: dict[str, int] = {
     'star_sky_inconsistent': 512,  # the star − sky nodes disagree (χ² p ≤ 0.01): error Birge-inflated
     'zp_unconstrained': 1024,  # neither the star − sky constant nor the slit prior is available: not in the errors
     'slit_prior': 2048,  # sys_star_sky is the slit-centring prior (or a user value), not a measurement
+    'dar_pa_unknown': 4096,  # no slit PA (raw header): the DAR factor s is fitted (star - sky) or marginalised (prior)
+    'dar_unknown': 8192,  # no zenith distance or plate scale: the DAR across the slit is not modelled
+    'sky_window_fallback': 16384,  # a region's own sky window failed: the sky curve is used there instead
 }
 
 # sky-if-needed criteria (calibration data only; fixed a priori)
@@ -376,16 +379,20 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
                      'zero point (and so the star - sky constant) is not measured', name)
             if tsrc is not None:
                 tzp = _telluric_zeropoint(tsrc, cfg, name)
+    # inputs of the slit-centring prior and of the DAR (always reported when available): the target's own spec1d
+    # table first (the telluric match, else the sky_source object matching the input), then the input
+    cands = [tsrc, raw]
+    if tsrc is None and cal.sky_source and not raw.meta.get('trace_fwhm_pix'):
+        cands.insert(0, matching_object(cal.sky_source, raw, cfg, name, what='sky_source'))
+    info['slit'] = slit.inputs(cands)
+    info['dar'] = _dar_geometry(raw, tsrc, cfg, name, info)
     if tzp is not None:
         info.update(zp_tell_kms=tzp.zp_kms, zp_tell_err=tzp.zp_err)
         spec = replace(spec, meta={**spec.meta, 'telluric_zeropoint': tzp.as_dict()})
         if zp is not None:
-            # the sky measured directly in each telluric node's own window (inside the bands too), never the
-            # interpolated sky curve
-            windows = sky_zeropoint.measure_windows(zp.source_spectrum, telluric_zeropoint.node_windows(tzp), zp.fwhm)
-            ss = telluric_zeropoint.star_minus_sky_direct(tzp, windows)
+            ss = _star_minus_sky(tzp, zp, info, tsrc, cfg, name)
             info.update(zp_star_sky=ss['zp_star_sky'], zp_star_sky_err=ss['zp_star_sky_err'],
-                        zp_star_sky_n=ss['n_nodes'], star_sky=ss)
+                        zp_star_sky_n=ss['n_nodes'], zp_dar_s=ss['s'], zp_dar_s_err=ss['s_err'], star_sky=ss)
             if not np.isfinite(ss['zp_star_sky']):
                 info['zp_flags'] |= ZP_FLAGS['star_sky_unmeasured']
             elif not ss['consistent']:
@@ -394,10 +401,12 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     elif mode == 'telluric':
         log.warning('%s: wavelength_correction = "telluric" but the telluric zero point could not be measured; '
                     'nothing applied', name)
-    # apply
+    # apply: the sky measured in each region's own window where it can be (`_region_sky`)
+    if sky_ok:
+        zp = _region_sky(zp, regions, spec, cfg, name, info)
     if sky_ok and mode == 'auto' and np.isfinite(info['zp_star_sky']):  # opt-in until validated beyond J1745
         spec = sky_zeropoint.apply(spec, zp, constant_kms=info['zp_star_sky'], constant_err=info['zp_star_sky_err'],
-                                   source='sky+star')
+                                   dar=_dar_table(info, spec), source='sky+star')
         info['applied'] = 'sky+star'
         info['star_sky_applied'] = True
         info['zp_flags'] |= ZP_FLAGS['sky_applied'] | ZP_FLAGS['star_sky_applied']
@@ -419,8 +428,8 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
         log.info('%s: wavelength correction applied (%s): Δv %+.1f to %+.1f km/s over the spectrum%s', name,
                  info['applied'], wc['dv_min'], wc['dv_max'],
                  f"; the star - sky constant {info['zp_star_sky']:+.1f} ± {info['zp_star_sky_err']:.1f} km/s "
-                 f"({info['zp_star_sky_n']} nodes) is included and its error is sys_star_sky"
-                 if info['star_sky_applied'] else '')
+                 f"({info['zp_star_sky_n']} nodes; DAR s = {info['zp_dar_s']:+.3f}) is included and its error is "
+                 f"sys_star_sky" if info['star_sky_applied'] else '')
     else:
         log.info('%s: no wavelength correction applied (mode %s)%s', name, mode,
                  '; only the measured curve\'s uncertainty (not its value) is counted in sys_wavezp'
@@ -433,24 +442,187 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
         log.info('%s: the measured star - sky offset %+.1f ± %.1f km/s (%d nodes) is not applied (mode %s, %s): its '
                  'value is not an error; the slit-centring prior is used instead', name, info['zp_star_sky'],
                  info['zp_star_sky_err'], info['zp_star_sky_n'], mode, info['applied'])
-    # inputs of the slit-centring prior (always reported when available): the target's own spec1d table first
-    # (the telluric match, else the sky_source object matching the input), then the input
-    cands = [tsrc, raw]
-    if tsrc is None and cal.sky_source and not raw.meta.get('trace_fwhm_pix'):
-        cands.insert(0, matching_object(cal.sky_source, raw, cfg, name, what='sky_source'))
-    info['slit'] = slit.inputs(cands)
     return spec, info
+
+
+def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str, info: dict) -> Any:
+    """
+    The sky curve to apply, with one node per region: the sky Δv measured directly in a window centred on the
+    region, so each region gets its local zero point rather than the curve interpolated between 250 Å segments
+
+    The window starts at the region's width (at least `sky_zeropoint.MIN_WIDTH`) and grows by 25 per cent until
+    `measure_windows` uses it (correlation ≥ 0.7 and the synthetic bias test within 0.1 resolution elements: the
+    minimum width the bias test allows) and its error (statistical ⊕ bias) is no larger than the curve's there,
+    so the local value is never noisier than the curve; up to ``calibration.sky_segment_width``, clipped to the
+    telluric-free span holding the region, so no deep telluric band enters it. Where no window passes, the
+    curve's own value and error are used (WARNING, flag sky_window_fallback). Regions that the coverage test
+    drops (`_sky_needed`) are skipped. Without regions the curve is returned unchanged.
+    """
+    dropped = set(info.get('sky_tests', {}).get('uncovered', ()))
+    regions = [r for r in regions if r.name not in dropped]
+    if not regions:
+        return zp
+    ff = telluric_zeropoint.frame_factor(spec.meta)
+    nodes, fallback = [], []
+    for r in regions:
+        lo, hi = r.wmin / ff, r.wmax / ff
+        c = 0.5 * (lo + hi)
+        curve_err = float(zp.dv_err(c))
+        span = next(((a, b) for a, b in zp.span_bounds.values() if a <= c <= b), None)
+        width, res = max(hi - lo, sky_zeropoint.MIN_WIDTH), None
+        while span is not None:
+            a, b = max(c - width / 2., span[0]), min(c + width / 2., span[1])
+            res = sky_zeropoint.measure_windows(zp.source_spectrum, [(a, b)], zp.fwhm)[0]
+            res['used'] &= bool(res['err'] <= curve_err)
+            if res['used'] or width >= cfg.calibration.sky_segment_width or (a, b) == span:
+                break
+            width = min(1.25 * width, cfg.calibration.sky_segment_width)
+        if res is not None and res['used']:
+            nodes.append((c, res['dv'], res['err'], r.name, f"window {res['wmin']:.0f}-{res['wmax']:.0f} Å"))
+        else:
+            fallback.append(r.name)
+            nodes.append((c, float(zp.dv(c)), curve_err, r.name, 'sky curve (fallback)'))
+    nodes.sort()
+    if fallback:
+        info['zp_flags'] |= ZP_FLAGS['sky_window_fallback']
+        log.warning('%s: no usable sky window for region(s) %s (too few lines, the bias test failed or noisier than '
+                    'the curve); the sky curve is applied there instead', name, ', '.join(fallback))
+    info['sky_windows'] = {n: dict(wave=w, dv=v, err=e, source=src) for w, v, e, n, src in nodes}
+    log.info('%s: sky Δv per region: %s', name, '; '.join(f'{n} {v:+.1f} ± {e:.1f} km/s ({src})'
+                                                           for w, v, e, n, src in nodes))
+    w = np.array([n[0] for n in nodes])
+    keep = np.concatenate([[True], np.diff(w) > 0])  # regions sharing a centre share a node
+    return replace(zp, node_wave=w[keep], node_dv=np.array([n[1] for n in nodes])[keep],
+                   node_err=np.array([n[2] for n in nodes])[keep], node_span=np.zeros(int(keep.sum()), dtype=int),
+                   main_span=(float(w.min()), float(w.max())),
+                   span_bounds={0: (float(min(a for a, _ in zp.span_bounds.values())),
+                                    float(max(b for _, b in zp.span_bounds.values())))})
+
+
+def _dar_geometry(raw: Spectrum, tsrc: Spectrum | None, cfg: Any, name: str, info: dict) -> dict:
+    """
+    The DAR geometry (`dar.geometry`) from the raw headers of the input's frames; header items the input lacks (a
+    tellcorr file has almost none) come from the telluric source, the target's own spec1d table
+    """
+    meta = {**(tsrc.meta if tsrc is not None else {}),
+            **{k: v for k, v in raw.meta.items() if v is not None and v != []}}
+    geo = dar.geometry(io.raw_headers(meta, cfg.input.raw_header, cfg.input.raw_header_dir), {**meta, 'object': name})
+    if not geo['pa_known']:
+        info['zp_flags'] |= ZP_FLAGS['dar_pa_unknown']
+    if not np.isfinite(geo['zenith_deg']) or info['slit'].scale_spec is None:
+        info['zp_flags'] |= ZP_FLAGS['dar_unknown']
+        log.warning('%s: the DAR across the slit cannot be modelled (no zenith distance or plate scale): it is left '
+                    'out of the star - sky fit and the slit prior', name)
+    elif geo['pa_known']:
+        log.info('%s: DAR across the slit: s = %+.3f ± %.3f (slit PA %.1f deg east of north, parallactic angle '
+                 '%.1f-%.1f deg, zenith distance %.1f deg; %s)', name, geo['s'], geo['s_err'],
+                 geo['pa_disp_deg'][0] + 90., min(min(q) for q in geo['q_deg']), max(max(q) for q in geo['q_deg']),
+                 geo['zenith_deg'], geo['source'])
+    else:
+        log.warning('%s: the slit PA is unknown (no raw header: set input.raw_header or input.raw_header_dir): the '
+                    'DAR factor s is fitted with a uniform prior in [-1, 1] (star - sky) or marginalised over it '
+                    '(slit prior)', name)
+    return geo
+
+
+def _dar_nodes(info: dict, lam: np.ndarray) -> np.ndarray | None:
+    """
+    D(λ) [km/s per unit s] at observatory-frame `lam` relative to info['dar_ref'] (the star − sky fit's reference;
+    without it the mean of `lam`, for the prior, which only uses D − mean D); None if unknown
+    """
+    if info['zp_flags'] & ZP_FLAGS['dar_unknown']:
+        return None
+    return dar.dar_kms(info['dar'], info['slit'], lam, info.get('dar_ref', float(np.mean(lam))))
+
+
+def _star_minus_sky(tzp: Any, zp: Any, info: dict, tsrc: Spectrum, cfg: Any, name: str) -> dict:
+    """
+    The star − sky fit a + s·D(λ) on the telluric nodes, the sky measured directly in each node's window. The
+    telluric fit is repeated with the other template families (`_family_templates`), and the standard deviation of
+    a over the families (`err_family`) is added in quadrature to its error.
+    """
+    info['dar_ref'] = float(np.mean(tzp.node_wave))
+    geo = info['dar']
+    s_prior = (geo['s'], geo['s_err']) if geo['pa_known'] else None
+
+    def fit(t: Any) -> dict:
+        windows = sky_zeropoint.measure_windows(zp.source_spectrum, telluric_zeropoint.node_windows(t), zp.fwhm)
+        return telluric_zeropoint.star_minus_sky_direct(t, windows, _dar_nodes(info, t.node_wave), s_prior)
+
+    ss = fit(tzp)
+    ss['dar_ref'] = info['dar_ref']
+    if not np.isfinite(ss['zp_star_sky']):
+        return ss
+    family = {tzp.template or 'smooth star': ss['zp_star_sky']}
+    for label, template in _family_templates(tsrc, cfg, name, tzp):
+        alt = telluric_zeropoint.measure(tsrc, resolution=tzp.resolution, template=template,
+                                         teff=cfg.templates.teff_prior,
+                                         seg_width=cfg.calibration.telluric_segment_width)
+        family[label] = fit(alt)['zp_star_sky'] if alt is not None else float('nan')
+    vals = [v for v in family.values() if np.isfinite(v)]
+    spread = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.
+    log.info('%s: star - sky constant over the telluric-fit template families: %s; spread %.1f km/s added in '
+             'quadrature to its error', name, ', '.join(f'{k} {v:+.1f}' for k, v in family.items()), spread)
+    ss.update(family=family, err_family=spread, err_fit=ss['zp_star_sky_err'],
+              zp_star_sky_err=float(np.hypot(ss['zp_star_sky_err'], spread)))
+    return ss
+
+
+def _family_templates(tsrc: Spectrum, cfg: Any, name: str, tzp: Any) -> list[tuple[str, Any]]:
+    """
+    The other star models of the telluric fit: a smooth star, and the prior template of every other configured or
+    cached grid (e.g. SAND next to BT-Settl); a grid with no template near the priors is skipped (INFO)
+    """
+    import copy
+
+    from .. import templates as T
+    from ..methods.guidance import grid_names
+    from ..methods.telluric_ref import prior_template
+    out: list[tuple[str, Any]] = [('smooth star', None)] if tzp.template is not None else []
+    if not cfg.calibration.telluric_template or not np.isfinite(tzp.resolution):
+        return out
+    configured = grid_names(cfg.templates)
+    cache = T.cache_dir()
+    # a downloaded grid has its metadata file (an empty or partial directory is not a cached grid)
+    cached = sorted(d.name for d in cache.iterdir() if d.name in T.KNOWN_GRIDS
+                    and (d / 'rvfitter_grid.toml').is_file()) if cache.is_dir() else []
+    wr = (float(tsrc.wave[0]), float(tsrc.wave[-1]))
+    for grid in dict.fromkeys(configured[1:] + cached):
+        if grid == configured[0]:
+            continue
+        alt = copy.deepcopy(cfg)
+        alt.templates.grid = grid
+        if not isinstance(alt.templates.local_dir, dict):
+            alt.templates.local_dir, alt.templates.medium = None, None  # that directory was the first grid's
+        try:
+            t = prior_template(alt, tzp.resolution, wr)
+        except ValueError as exc:
+            log.info('%s: grid %s gives no telluric-fit template (%s)', name, grid, exc)
+            continue
+        out.append((t.label, t))
+    return out
+
+
+def _dar_table(info: dict, spec: Spectrum) -> dict | None:
+    """The fitted s·D(λ) tabulated over the spectrum (observatory frame), for `sky_zeropoint.apply`"""
+    ff = telluric_zeropoint.frame_factor(spec.meta)
+    wave = np.linspace(spec.wave[0] / ff, spec.wave[-1] / ff, 200)
+    d = _dar_nodes(info, wave)
+    return None if d is None else dict(wave=[float(x) for x in wave], kms=[float(x) for x in info['zp_dar_s'] * d])
 
 
 def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any, name: str) -> dict[str, Any]:
     """
     The star's absolute zero-point term (``sys_star_sky``) of one epoch
 
-    The applied star − sky constant's error; none (NaN) when the telluric curve was applied or with
+    The applied star − sky correction's error, the RMS over the measurements' wavelengths of
+    σ²(a + s·D) = σ_a² + D²σ_s² + 2D cov(a, s); none (NaN) when the telluric curve was applied or with
     ``calibration.zero_point_known``; otherwise the slit-centring prior (``calibration.slit_prior``: a number
-    [km/s], 'auto' for `slit.prior_kms` at the measurements' wavelengths, or 'none'). When it cannot be computed a
-    WARNING says the absolute zero point is unconstrained (NaN, flag zp_unconstrained). The computed prior is
-    always reported (``prior``) when its inputs exist.
+    [km/s], 'auto' for `slit.prior_kms` at the measurements' wavelengths, or 'none'). The 'auto' prior gains the
+    DAR term in quadrature: the RMS over those wavelengths of s·(D − mean D) (the constant part is inside the
+    position prior), with s² + σ_s² for a known slit PA and ⟨s²⟩ = 1/3 (s uniform in [−1, 1]) otherwise. When it
+    cannot be computed a WARNING says the absolute zero point is unconstrained (NaN, flag zp_unconstrained). The
+    computed prior is always reported (``prior``) when its inputs exist.
     """
     choice = cfg.calibration.slit_prior
     nan = float('nan')
@@ -458,14 +630,27 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
     lam = waves if waves is not None and len(waves) else np.array([float(np.median(spec.wave))])
     lam = lam / float(telluric_zeropoint.frame_factor(spec.meta))  # the slit offset is in the observatory frame
     prior = slit.prior_kms(inp, lam) if inp is not None else nan
-    out = dict(value=nan, term='', prior=prior, flags=0, slit=inp.as_dict() if inp is not None else None)
+    out = dict(value=nan, term='', prior=prior, dar=nan, flags=0, slit=inp.as_dict() if inp is not None else None)
     if np.isfinite(prior):
         log.info('%s: slit-centring prior %.1f km/s (slit %.2f arcsec from %s; seeing FWHM %.2f arcsec from %s; '
                  'σ_x = (W - F)/√12 = %.3f arcsec; %.3f arcsec per spectral pixel from %s; dispersion from the %s)',
                  name, prior, inp.width_arcsec, inp.width_source, inp.fwhm_arcsec, inp.fwhm_source,
                  inp.sigma_arcsec, inp.scale_spec, inp.scale_source, inp.disp_source)
+    dar_d = _dar_nodes(info, lam) if info.get('dar') is not None else None
+    if dar_d is not None:  # the DAR's share of the term (see dar.py and the docstring)
+        dc = dar_d - np.mean(dar_d)
+        if info.get('star_sky_applied'):
+            out['dar'] = float(np.sqrt(np.mean(info['zp_dar_s_err'] ** 2 * dar_d ** 2)))
+        elif info['dar']['pa_known']:
+            out['dar'] = float(np.hypot(info['dar']['s'], info['dar']['s_err']) * np.sqrt(np.mean(dc * dc)))
+        else:
+            out['dar'] = float(np.sqrt(np.mean(dc * dc) / 3.))  # s uniform in [-1, 1]: <s²> = 1/3
     if info.get('star_sky_applied'):
-        out.update(value=float(info['zp_star_sky_err']), term='star - sky constant (measured, applied)')
+        ss = info['star_sky']
+        var = info['zp_star_sky_err'] ** 2 + (0. if dar_d is None else
+                                              dar_d ** 2 * ss['s_err'] ** 2 + 2. * dar_d * ss['cov_as'])
+        out.update(value=float(np.sqrt(np.mean(np.broadcast_to(var, lam.shape)))),
+                   term='star - sky constant + DAR (measured, applied)')
     elif info.get('applied') == 'telluric':
         out.update(term='none: the star\'s telluric curve was applied')
     elif cfg.calibration.zero_point_known:
@@ -478,7 +663,8 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
         log.warning('%s: calibration.slit_prior = "none": the absolute wavelength zero point (slit centring) is '
                     'unconstrained and not in the errors', name)
     elif np.isfinite(prior):
-        out.update(value=prior, term='slit prior (W - F)/√12', flags=ZP_FLAGS['slit_prior'])
+        out.update(value=float(np.hypot(prior, out.get('dar', 0.))), term='slit prior (W - F)/√12 ⊕ DAR',
+                   flags=ZP_FLAGS['slit_prior'])
     else:
         if inp is None:
             why = 'no slit information'
@@ -492,7 +678,8 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
                     'and the slit-centring prior cannot be computed (%s); sys_star_sky is NaN. Set '
                     'calibration.slit_prior [km/s], or calibration.zero_point_known = true for fibre/IFU data', name,
                     why)
-    log.info('%s: sys_star_sky = %.1f km/s (%s)', name, out['value'], out['term'])
+    log.info('%s: sys_star_sky = %.1f km/s (%s; DAR share %.1f km/s)', name, out['value'], out['term'],
+             out['dar'])
     return out
 
 
