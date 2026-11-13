@@ -261,6 +261,13 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
                                                                 rng=rng.spawn(1)[0]))
     sysd['floor'] = float(cfg.combine.systematic_floor)
+    unknown = [k for k, v in (('the adopted error', adopted.get('err')), ('sys_template', sysd['template_spread']),
+                              ('sys_wavezp', sysd.get('wavelength_zero_point')),
+                              ('sys_star_sky', sysd.get('star_sky_systematic')))
+               if v is None or not np.isfinite(v)]
+    if unknown:  # results._quad never counts an unknown term as 0
+        bary_info['zp_flags'] |= wcorr.ZP_FLAGS['total_err_undefined']
+        log.warning('%s: rv_total_err is NaN: %s unknown (zp flag total_err_undefined)', name, ', '.join(unknown))
     if 'linecentre' in results:  # True only with the opt-in, template-calibrated shape correction
         sysd['linecentre_shape_correction'] = any(m.diagnostics.get('shape_correction')
                                                   for m in results['linecentre'].measurements)

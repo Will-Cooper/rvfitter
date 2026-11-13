@@ -140,6 +140,8 @@ def test_dar_geometry_numpy_meta_values():
                                                              'raw_files': [], 'exptime': None,
                                                              'extra': np.array([1., 2.])})
     tsrc = Spectrum(w, np.ones(50), np.full(50, 0.1), 2500., {'airmass': 2., 'exptime': 600.})
+    meta, heads = wcorr._raw_headers(raw, tsrc, config.Config(), 'X')
+    assert meta['exptime'] == 600. and 'raw_files' not in meta and heads == []
     info = {'zp_flags': 0, 'slit': SimpleNamespace(scale_spec=None)}
-    geo = wcorr._dar_geometry(raw, tsrc, config.Config(), 'X', info)
+    geo = wcorr._dar_geometry(meta, heads, 'X', info)
     assert geo['zenith_deg'] == pytest.approx(np.degrees(np.arccos(1. / 1.3)), abs=0.1)

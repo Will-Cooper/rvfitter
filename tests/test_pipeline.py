@@ -78,6 +78,7 @@ CFG.seed = 7
 CFG.methods.enabled = ['template_fit', 'ccf', 'telluric_ref']
 CFG.input.paths = ['p1']
 CFG.regions.overrides = {'ccf': [{'name': 'x', 'remove': True}]}
+CFG.calibration.zero_point_known = True  # the fake spectra carry no slit information: no slit-centring term
 CFG.regions.min_snr = 7.0
 CFG.combine.tau_scale = 0.3
 CFG.combine.systematic_floor = 0.2

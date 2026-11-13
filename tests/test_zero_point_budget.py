@@ -82,6 +82,30 @@ def test_slit_prior_formula_and_missing_inputs():
     assert own.scale_spec == 0.2 and own.fwhm_arcsec == pytest.approx(3.06 * 0.2)
 
 
+def test_slit_prior_from_raw_headers_with_assumed_seeing(tmp_path, caplog):
+    """A coadd without spec1d: W from the object's raw spectrum headers (not acquisition images), seeing assumed"""
+    from rvfitter.calibration import wavelength_correction as wcorr
+    for i, (w, mask) in enumerate(((1.23, 'LongSlits1.23Arcsec'), (0., 'NOMASK'), (0.6, 'LongSlits0.6Arcsec'))):
+        prim = fits.PrimaryHDU()
+        prim.header.update(OBJECT='Other Star' if i == 2 else 'My Star', SLITW=w, MASKNAME=mask, INSTRUME='OSIRIS',
+                           CCDSUM='2 2')
+        prim.writeto(tmp_path / f'000000{i}-raw.fits')
+    wave = 7300. + 1.39 * np.arange(2000)
+    spec = Spectrum(wave, np.ones(len(wave)), np.ones(len(wave)), 2500., {'raw_files': []}, 'coadd.fits')
+    cfg = config.Config()
+    cfg.input.raw_header_dir = str(tmp_path)
+    meta, heads = wcorr._raw_headers(spec, None, cfg, 'MYSTAR')
+    assert [Path(h['RVF_FILE']).name for h in heads] == ['0000000-raw.fits']
+    info = {'zp_flags': 0}
+    inp = wcorr._slit_inputs([spec], heads, cfg, 'MYSTAR', info)
+    assert inp.width_arcsec == 1.23 and inp.fwhm_arcsec == 0.8 and inp.scale_spec == pytest.approx(0.254)
+    assert info['zp_flags'] & wcorr.ZP_FLAGS['seeing_assumed'] and 'seeing FWHM of 0.80 arcsec' in caplog.text
+    assert slit.prior_kms(inp, 8500.) == pytest.approx(C * slit.centroid_rms(1.23, 0.8) / 0.254 * 1.39 / 8500.)
+    # no slit width anywhere: no prior (NaN), so rv_total_err is NaN
+    bare = wcorr._slit_inputs([spec], [], cfg, 'MYSTAR', {'zp_flags': 0})
+    assert bare.fwhm_arcsec is None and np.isnan(slit.prior_kms(bare, 8500.))
+
+
 def _sky(wave, fwhm=5.5):
     return Z.model_sky(wave, fwhm) * 100. + 5.
 

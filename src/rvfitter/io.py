@@ -635,32 +635,57 @@ def find_wvcalib(path: str | Path) -> Path | None:
     return None
 
 
-def arc_line_range(wvcalib: str | Path, extname: str | None = None) -> tuple[float, float] | None:
+def _arc_lines(wvcalib: str | Path, extname: str | None) -> tuple[np.ndarray, np.ndarray]:
     """
-    Span [Å, as stored by PypeIt: vacuum] of the arc lines fitted in a PypeIt ``wvcalib.fits``
+    The fitted arc-line wavelengths [Å] of a PypeIt ``wvcalib.fits`` (``wave_fit`` of the ``SPAT_ID-*_WAVEFIT``
+    tables), and the solution's residuals at them [Å] (``wave_soln`` at ``pixel_fit`` − ``wave_fit``; NaN where a
+    table lacks those columns or the ``SPAT_ID-*_PYPEITFIT`` gpm rejected the line)
 
-    Reads ``wave_fit`` of the ``SPAT_ID-*_WAVEFIT`` tables.
     If ``extname`` is a spec1d table name such as ``SPAT0240-SLIT0457-DET02`` and a table with that spatial ID
     exists, only that slit is used; otherwise (e.g. a long slit whose calibration has a different ID) all tables are.
     """
     spat = re.match(r'SPAT0*(\d+)', str(extname or ''))
-    lines: list[np.ndarray] = []
-    matched: list[np.ndarray] = []
+    lines: list[tuple[np.ndarray, np.ndarray]] = []
+    matched: list[tuple[np.ndarray, np.ndarray]] = []
     with fits.open(wvcalib) as hdul:
         for ext in hdul[1:]:
             m = re.fullmatch(r'SPAT_ID-(\d+)_WAVEFIT', str(ext.name))
-            if not m or 'wave_fit' not in [c.lower() for c in (ext.columns.names or [])]:
+            cols = {c.lower(): c for c in (ext.columns.names or [])} if m else {}
+            if 'wave_fit' not in cols:
                 continue
-            col = next(c for c in ext.columns.names if c.lower() == 'wave_fit')
-            w = np.asarray(ext.data[col], dtype=float).ravel()
-            w = w[np.isfinite(w) & (w > 0)]
-            lines.append(w)
+            w = np.asarray(ext.data[cols['wave_fit']], dtype=float).ravel()
+            res = np.full(len(w), np.nan)
+            if 'pixel_fit' in cols and 'wave_soln' in cols:
+                soln = np.asarray(ext.data[cols['wave_soln']], dtype=float).ravel()
+                pix = np.asarray(ext.data[cols['pixel_fit']], dtype=float).ravel()
+                res = np.interp(pix, np.arange(len(soln)), soln) - w
+                fit = f'SPAT_ID-{m.group(1)}_PYPEITFIT'
+                if fit in hdul and 'gpm' in [c.lower() for c in hdul[fit].columns.names]:
+                    gpm = np.asarray(hdul[fit].data[0]['gpm']).astype(bool).ravel()
+                    res[~gpm[:len(res)]] = np.nan
+            ok = np.isfinite(w) & (w > 0)
+            lines.append((w[ok], res[ok]))
             if spat and int(m.group(1)) == int(spat.group(1)):
-                matched.append(w)
-    pool = np.concatenate(matched or lines) if (matched or lines) else np.array([])
+                matched.append((w[ok], res[ok]))
+    use = matched or lines
+    if not use:
+        return np.array([]), np.array([])
+    return np.concatenate([u[0] for u in use]), np.concatenate([u[1] for u in use])
+
+
+def arc_line_range(wvcalib: str | Path, extname: str | None = None) -> tuple[float, float] | None:
+    """Span [Å, as stored by PypeIt: vacuum] of the arc lines fitted in a PypeIt ``wvcalib.fits`` (`_arc_lines`)"""
+    pool = _arc_lines(wvcalib, extname)[0]
     if len(pool) < 2:
         return None
     return float(pool.min()), float(pool.max())
+
+
+def arc_rms(wvcalib: str | Path, extname: str | None = None) -> float | None:
+    """RMS [Å] of the wavelength solution's residuals at its fitted arc lines (`_arc_lines`); None if unknown"""
+    res = _arc_lines(wvcalib, extname)[1]
+    res = res[np.isfinite(res)]
+    return float(np.sqrt(np.mean(res * res))) if len(res) >= 2 else None
 
 
 def _coadd_hdu(hdul: fits.HDUList, hdu: int | str | None) -> int | None:
@@ -731,13 +756,26 @@ def raw_headers(meta: Mapping[str, Any], pattern: str | None = None, directory: 
     `pattern` (a path or glob, ``input.raw_header``) names them directly: no match raises. Otherwise each raw
     frame in meta['raw_files'] (PypeIt's FILENAME, e.g. '0000809229-20150803-OSIRIS-….fits') is matched by its
     leading frame number (0000809229) against ``<frame>*.fits`` anywhere under `directory`
-    (``input.raw_header_dir``): no match logs a WARNING and returns [], several raise. Each dict holds the
-    header cards and 'RVF_FILE'.
+    (``input.raw_header_dir``): no match logs a WARNING and returns [], several raise. A spectrum that names no
+    raw frame (e.g. a coadd without its spec1d files) takes every frame under `directory` whose ``OBJECT`` is
+    meta['object'] (case and spaces ignored) and that has a slit width (spectra, not acquisition images); this may
+    include other epochs of the object. Each dict holds the header cards and 'RVF_FILE'.
     """
     if pattern:
         files = sorted(Path(p) for p in glob.glob(str(Path(pattern).expanduser())))
         if not files:
             raise FileNotFoundError(f'input.raw_header {pattern!r} matches no file')
+    elif directory and not meta.get('raw_files') and meta.get('object'):
+        key = re.sub(r'\s+', '', str(meta['object'])).lower()
+        files = []
+        for f in sorted(Path(directory).expanduser().rglob('*.fits')):
+            head = _header_dict(fits.getheader(f, 0))
+            if re.sub(r'\s+', '', str(head.get('OBJECT', ''))).lower() == key and _slit_meta(head)['slit_width_arcsec']:
+                files.append(f)
+        if not files:
+            log.warning('%s: no raw spectrum header with OBJECT %r under input.raw_header_dir %s: the slit PA is '
+                        'unknown', meta['object'], meta['object'], directory)
+            return []
     elif directory:
         files = []
         for name in meta.get('raw_files') or []:
@@ -1128,17 +1166,22 @@ def _clean_sky(sky: np.ndarray | None, name: str = '') -> np.ndarray | None:
 
 
 def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None) -> None:
-    """Set ``meta['arc_range']`` and ``arc_file`` (PypeIt arc solutions are vacuum) from a neighbouring wavecal file"""
+    """
+    Set ``meta['arc_range']``, ``arc_file`` (PypeIt arc solutions are vacuum) and ``wave_rms`` (the arc-fit RMS [Å],
+    the lower bound of sys_wavezp) from a neighbouring wavecal file
+    """
     try:
         calib = find_wvcalib(path)
         span = None if calib is None else arc_line_range(calib, extname)
+        rms = None if span is None else arc_rms(calib, extname)
     except (OSError, ValueError) as exc:
         log.warning('%s: could not read the arc-line range: %s', path.name, exc)
         return
     if span is None:
         return
-    meta.update(arc_range=span, arc_file=str(calib))
-    log.info('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, *span, calib)
+    meta.update(arc_range=span, arc_file=str(calib), wave_rms=rms)
+    log.info('%s: arc lines span %.1f-%.1f Å (vacuum), fit RMS %s Å, in %s', path.name, *span,
+             'unknown' if rms is None else f'{rms:.3f}', calib)
 
 
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',

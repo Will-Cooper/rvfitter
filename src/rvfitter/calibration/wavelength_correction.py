@@ -48,6 +48,8 @@ ZP_FLAGS: dict[str, int] = {
     'dar_pa_unknown': 4096,  # no slit PA (raw header): the DAR factor s is fitted (star - sky) or marginalised (prior)
     'dar_unknown': 8192,  # no zenith distance or plate scale: the DAR across the slit is not modelled
     'sky_window_fallback': 16384,  # a region's own sky window failed: the sky curve is used there instead
+    'seeing_assumed': 32768,  # no trace FWHM: the slit prior uses calibration.seeing_fwhm
+    'total_err_undefined': 65536,  # a term of rv_total_err is NaN (unknown), so the total is NaN (results.to_table)
 }
 
 # sky-if-needed criteria (calibration data only; fixed a priori)
@@ -384,8 +386,9 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     cands = [tsrc, raw]
     if tsrc is None and cal.sky_source and not raw.meta.get('trace_fwhm_pix'):
         cands.insert(0, matching_object(cal.sky_source, raw, cfg, name, what='sky_source'))
-    info['slit'] = slit.inputs(cands)
-    info['dar'] = _dar_geometry(raw, tsrc, cfg, name, info)
+    meta, heads = _raw_headers(raw, tsrc, cfg, name)
+    info['slit'] = _slit_inputs(cands, heads, cfg, name, info)
+    info['dar'] = _dar_geometry(meta, heads, name, info)
     if tzp is not None:
         info.update(zp_tell_kms=tzp.zp_kms, zp_tell_err=tzp.zp_err)
         spec = replace(spec, meta={**spec.meta, 'telluric_zeropoint': tzp.as_dict()})
@@ -499,16 +502,37 @@ def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str,
                                     float(max(b for _, b in zp.span_bounds.values())))})
 
 
-def _dar_geometry(raw: Spectrum, tsrc: Spectrum | None, cfg: Any, name: str, info: dict) -> dict:
+def _raw_headers(raw: Spectrum, tsrc: Spectrum | None, cfg: Any, name: str) -> tuple[dict, list[dict]]:
     """
-    The DAR geometry (`dar.geometry`) from the raw headers of the input's frames; header items the input lacks (a
-    tellcorr file has almost none) come from the telluric source, the target's own spec1d table
+    The input's meta, with the items it lacks (a tellcorr file has almost none) from the telluric source (the
+    target's own spec1d table), and the raw headers of its frames (`io.raw_headers`)
     """
     # an item the input lacks is None or an empty list (io's `raw_files`); `v != []` would compare numpy values
     # elementwise and raise
     meta = {**(tsrc.meta if tsrc is not None else {}),
             **{k: v for k, v in raw.meta.items() if v is not None and not (isinstance(v, list) and not v)}}
-    geo = dar.geometry(io.raw_headers(meta, cfg.input.raw_header, cfg.input.raw_header_dir), {**meta, 'object': name})
+    meta.setdefault('object', name)
+    return meta, io.raw_headers(meta, cfg.input.raw_header, cfg.input.raw_header_dir)
+
+
+def _slit_inputs(cands: Sequence[Spectrum | None], heads: Sequence[dict], cfg: Any, name: str,
+                 info: dict) -> slit.SlitInputs:
+    """
+    `slit.inputs` from the candidate spectra, then the raw headers; with a slit width but no trace FWHM the seeing
+    is ``calibration.seeing_fwhm`` (WARNING, zp flag seeing_assumed)
+    """
+    inp = slit.inputs(cands, [{**io._slit_meta(h), 'source': h['RVF_FILE']} for h in heads])
+    if inp.fwhm_arcsec is None and inp.width_arcsec is not None:
+        inp.fwhm_arcsec, inp.fwhm_source = float(cfg.calibration.seeing_fwhm), 'assumed (calibration.seeing_fwhm)'
+        info['zp_flags'] |= ZP_FLAGS['seeing_assumed']
+        log.warning('%s: no trace FWHM: the slit-centring prior assumes a seeing FWHM of %.2f arcsec '
+                    '(calibration.seeing_fwhm)', name, inp.fwhm_arcsec)
+    return inp
+
+
+def _dar_geometry(meta: dict, heads: list[dict], name: str, info: dict) -> dict:
+    """The DAR geometry (`dar.geometry`) from the raw headers of the input's frames"""
+    geo = dar.geometry(heads, {**meta, 'object': name})
     if not geo['pa_known']:
         info['zp_flags'] |= ZP_FLAGS['dar_pa_unknown']
     if not np.isfinite(geo['zenith_deg']) or info['slit'].scale_spec is None:
@@ -618,13 +642,15 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
     The star's absolute zero-point term (``sys_star_sky``) of one epoch
 
     The applied star − sky correction's error, the RMS over the measurements' wavelengths of
-    σ²(a + s·D) = σ_a² + D²σ_s² + 2D cov(a, s); none (NaN) when the telluric curve was applied or with
-    ``calibration.zero_point_known``; otherwise the slit-centring prior (``calibration.slit_prior``: a number
-    [km/s], 'auto' for `slit.prior_kms` at the measurements' wavelengths, or 'none'). The 'auto' prior gains the
-    DAR term in quadrature: the RMS over those wavelengths of s·(D − mean D) (the constant part is inside the
-    position prior), with s² + σ_s² for a known slit PA and ⟨s²⟩ = 1/3 (s uniform in [−1, 1]) otherwise. When it
-    cannot be computed a WARNING says the absolute zero point is unconstrained (NaN, flag zp_unconstrained). The
-    computed prior is always reported (``prior``) when its inputs exist.
+    σ²(a + s·D) = σ_a² + D²σ_s² + 2D cov(a, s); none (0) when the telluric curve was applied (its error is in
+    sys_wavezp), with ``calibration.zero_point_known`` or with slit_prior 'none' (warned); otherwise the
+    slit-centring prior (``calibration.slit_prior``: a number [km/s], or 'auto' for `slit.prior_kms` at the
+    measurements' wavelengths, with the assumed ``calibration.seeing_fwhm`` when the trace FWHM is unknown). The
+    'auto' prior gains the DAR term in quadrature: the RMS over those wavelengths of s·(D − mean D) (the constant
+    part is inside the position prior), with s² + σ_s² for a known slit PA and ⟨s²⟩ = 1/3 (s uniform in [−1, 1])
+    otherwise. When it cannot be computed (no slit width) a WARNING says the absolute zero point is unconstrained
+    (NaN, flag zp_unconstrained, so rv_total_err is NaN). The computed prior is always reported (``prior``) when
+    its inputs exist.
     """
     choice = cfg.calibration.slit_prior
     nan = float('nan')
@@ -654,18 +680,20 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
         out.update(value=float(np.sqrt(np.mean(np.broadcast_to(var, lam.shape)))),
                    term='star - sky constant + DAR (measured, applied)')
     elif info.get('applied') == 'telluric':
-        out.update(term='none: the star\'s telluric curve was applied')
+        out.update(value=0., term='none: the star\'s telluric curve was applied')
     elif cfg.calibration.zero_point_known:
-        out.update(term='none: calibration.zero_point_known')
+        out.update(value=0., term='none: calibration.zero_point_known')
         log.info('%s: calibration.zero_point_known: no slit-centring term', name)
     elif isinstance(choice, (int, float)) and not isinstance(choice, bool):
         out.update(value=float(choice), term='slit prior (calibration.slit_prior)', flags=ZP_FLAGS['slit_prior'])
     elif str(choice) == 'none':
-        out.update(term='none: calibration.slit_prior = "none"', flags=ZP_FLAGS['zp_unconstrained'])
+        out.update(value=0., term='none: calibration.slit_prior = "none"', flags=ZP_FLAGS['zp_unconstrained'])
         log.warning('%s: calibration.slit_prior = "none": the absolute wavelength zero point (slit centring) is '
                     'unconstrained and not in the errors', name)
     elif np.isfinite(prior):
-        out.update(value=float(np.hypot(prior, out.get('dar', 0.))), term='slit prior (W - F)/√12 ⊕ DAR',
+        # an unmodelled DAR (dar_unknown, warned) is left out of the prior, not NaN
+        out.update(value=float(np.hypot(prior, out['dar'] if np.isfinite(out['dar']) else 0.)),
+                   term='slit prior (W - F)/√12 ⊕ DAR',
                    flags=ZP_FLAGS['slit_prior'])
     else:
         if inp is None:
@@ -677,9 +705,9 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
                    f'{inp.width_arcsec:.2f} arcsec')
         out.update(term=f'unconstrained ({why})', flags=ZP_FLAGS['zp_unconstrained'])
         log.warning('%s: the absolute wavelength zero point is unconstrained: the star - sky constant is not applied '
-                    'and the slit-centring prior cannot be computed (%s); sys_star_sky is NaN. Set '
-                    'calibration.slit_prior [km/s], or calibration.zero_point_known = true for fibre/IFU data', name,
-                    why)
+                    'and the slit-centring prior cannot be computed (%s); sys_star_sky, and so rv_total_err, is '
+                    'NaN. Set calibration.slit_prior [km/s], or calibration.zero_point_known = true for fibre/IFU '
+                    'data', name, why)
     log.info('%s: sys_star_sky = %.1f km/s (%s; DAR share %.1f km/s)', name, out['value'], out['term'],
              out['dar'])
     return out

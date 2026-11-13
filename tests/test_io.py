@@ -434,6 +434,7 @@ def test_j1745_arc_range_and_mask():
     assert io.read_spectrum(nopipe).meta['arc_range'] == (lo, hi)  # found three levels up
     tell = io.read_spectrum(base / 'Science/DENISJ174534.6-164053_tellcorr.fits')
     assert tell.meta['arc_range'] == (lo, hi)
+    assert tell.meta['wave_rms'] == pytest.approx(0.0714, abs=1e-3)  # arc-fit residual RMS [Å], ~2.5 km/s
 
 
 def _spextool(path: Path, data: np.ndarray, header: dict) -> Path:
