@@ -125,7 +125,7 @@ rvfitter templates download --grid bt-settl-cifist --teff 1500 2500 --logg 4.5 5
 The flags are `--grid` (one of `bt-settl-agss2009`, `bt-settl-cifist`, `lowz`, `sand`, `sonora-bobcat`, `sonora-diamondback`, `sonora-elfowl`), `--teff MIN MAX` [K], `--logg MIN MAX`, `--met MIN MAX`, `--alpha MIN MAX`, `--range AXIS MIN MAX` for any other axis, `--dir DIR` (default: the cache, see `rvfitter doctor`) and `--source {auto,svo,zenodo}`.
 The defaults are `--teff 1200 3000 --logg 4.5 5.5`, `auto` meaning SVO for the BT-Settl grids and Zenodo for the others.
 Check what you have with `rvfitter templates list`.
-Zenodo grids are large single archives (the download resumes if repeated), so choose a narrow range.
+Zenodo grids are large single archives, so choose a narrow range.
 If this command fails, see the FAQ below; you can still run the `linecentre` method, which needs no templates.
 
 **2. Measure.** `my_spectra.zip` can equally be one spectrum file or a folder:
@@ -193,7 +193,7 @@ The BT-Settl grids come from the Spanish Virtual Observatory theory server (SVO,
 Sonora Bobcat, Diamondback, Elf Owl and SAND come from Zenodo as whole files (CC-BY-4.0; cite the papers in `rvfitter.templates.KNOWN_GRIDS`).
 `--source` forces one.
 Known issue in this development version: `templates download` from SVO currently stops with `ValueError: unrecognised SSAP response columns`, and `templates list --available` reports the BT-Settl grids as "NOT available", because SVO changed its reply format.
-Until that is fixed, use `--grid sonora-bobcat --source zenodo`, or copy a BT-Settl grid obtained elsewhere into `<cache>/bt-settl-cifist/` as above and set `[templates] grid` in your config accordingly.
+Until that is fixed, use `--grid sonora-bobcat --source zenodo`, or copy a BT-Settl grid obtained elsewhere into `<cache>/bt-settl-cifist/` as above, or point to any folder with `local_dir = "/path/to/grid"` under `[templates]` in your config (`rvfitter init spectrum.fits` writes one to edit).
 
 **Plots mention LaTeX / fonts.** rvfitter bundles its fonts; no LaTeX installation is needed.
 
