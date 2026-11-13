@@ -310,6 +310,7 @@ class TemplateGrid:
             raise FileNotFoundError(f'no files in {self.directory} match the pattern {meta.pattern!r}')
         self.files = files
         self.points = np.array(points, dtype=float)
+        self._axis_values = {a: np.unique(self.points[:, i]) for i, a in enumerate(meta.axes)}  # hot in corners()
         self._index = {tuple(p): f for p, f in zip(points, files, strict=True)}
         self.meta = meta
         self._verify = verify
@@ -349,7 +350,7 @@ class TemplateGrid:
 
     def axis_values(self, axis: str) -> np.ndarray:
         """The distinct values of one axis"""
-        return np.unique(self.points[:, self.axes.index(axis)])
+        return self._axis_values[axis]
 
     def bounds(self) -> dict[str, tuple[float, float]]:
         """{axis: (min, max)} over the files present"""
@@ -380,7 +381,7 @@ class TemplateGrid:
             d += ((self.points[:, i] - p[a]) / AXIS_SCALE.get(a, 1.)) ** 2
         return tuple(float(x) for x in self.points[np.argmin(d)])
 
-    def _corners(self, p: dict):
+    def corners(self, p: dict):
         """
         (corners, missing): the multilinear [(path, weight)] over every axis, and the parameter tuples of missing
         corner files. corners is None outside the grid's range on some axis (missing = []) or at a hole.
@@ -417,7 +418,7 @@ class TemplateGrid:
         with a missing corner file (a hole) → nearest point, missing lists the absent corners (flag
         template_grid_hole). Renormalising over the corners that exist is not done: it would bias the template.
         """
-        corners, missing = (None, []) if method == 'nearest' else self._corners(p)
+        corners, missing = (None, []) if method == 'nearest' else self.corners(p)
         outside = False
         if corners is None:
             point = self.nearest(**p)
