@@ -5,34 +5,24 @@ from pathlib import Path
 
 __all__ = ['configure']
 
-_TAG = '_rvfitter_handler'
 _NOISY = ('astropy', 'matplotlib', 'PIL', 'urllib3', 'numba', 'asyncio')
 
 
 def configure(verbosity: int = 0, logfile: str | Path | None = None) -> None:
-    """
-    Configure the ``rvfitter`` logger
+    """Configure the ``rvfitter`` logger, replacing earlier handlers.
 
-    Parameters
-    ----------
-    verbosity
-        0 = INFO on the console, >0 (``-v``) = DEBUG, <0 (``-q``) = WARNING
-    logfile
-        If given, a DEBUG-level file with timestamps. Calling again replaces the previous handlers
-        (so the function is idempotent).
+    Console (stdout): INFO for ``verbosity`` 0, DEBUG for >0, WARNING for <0. ``logfile`` gets DEBUG with timestamps.
     """
     root = logging.getLogger('rvfitter')
     for h in list(root.handlers):
-        if getattr(h, _TAG, False):
-            root.removeHandler(h)
-            h.close()
+        root.removeHandler(h)
+        h.close()
     level = logging.DEBUG if verbosity > 0 else logging.WARNING if verbosity < 0 else logging.INFO
     root.setLevel(logging.DEBUG)
     root.propagate = False
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(level)
     console.setFormatter(logging.Formatter('%(levelname)s %(message)s' if level <= logging.DEBUG else '%(message)s'))
-    setattr(console, _TAG, True)
     root.addHandler(console)
     if logfile is not None:
         logfile = Path(logfile)
@@ -40,7 +30,6 @@ def configure(verbosity: int = 0, logfile: str | Path | None = None) -> None:
         fh = logging.FileHandler(logfile, mode='a', encoding='utf-8')
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)-7s %(name)s: %(message)s'))
-        setattr(fh, _TAG, True)
         root.addHandler(fh)
     # Only touch loggers that already exist: creating e.g. 'astropy' here would stop astropy installing its own
     # logger class when it is imported later.

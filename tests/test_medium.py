@@ -39,3 +39,9 @@ def test_to_vacuum_and_bad_inputs():
         to_vacuum(wave, 'water')
     with pytest.raises(ValueError):
         refractive_index(wave, 'nonsense')
+
+
+def test_air_to_vac_non_convergence_raises(monkeypatch):
+    monkeypatch.setattr('rvfitter.medium._MAXITER', 1)
+    with pytest.raises(RuntimeError, match='converge'):
+        air_to_vac(np.array([7698.9646]))

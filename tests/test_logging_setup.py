@@ -32,7 +32,6 @@ def test_idempotent_and_quiet(tmp_path):
 
     for _ in range(3):
         logging_setup.configure(0, tmp_path / 'a.log')
-    own = [h for h in logging.getLogger('rvfitter').handlers if getattr(h, '_rvfitter_handler', False)]
-    assert len(own) == 2
+    assert len(logging.getLogger('rvfitter').handlers) == 2
     assert logging.getLogger('matplotlib').level >= logging.WARNING
     assert logging.getLogger('astropy').level >= logging.WARNING

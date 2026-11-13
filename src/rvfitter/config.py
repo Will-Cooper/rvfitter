@@ -1,23 +1,11 @@
 """
 Reading, validating and writing the TOML configuration that fully describes an analysis.
 
-The configuration is a tree of dataclasses (`Config`) with one section per concern:
-
-====================  ===========================================================================================
-``[input]``            paths, medium (and air→vacuum formula), HDU, resolution override, telluric-corrected flag
-``[grouping]``         optional file -> object overrides
-``[velocity_frame]``   barycentric correction mode, target frame and overrides of the header values
-``[templates]``        grid name or local directory, its medium, Teff/log g/[M/H] ranges and priors
-``[methods]``          enabled methods and per-method options
-``[regions]``          region overrides and selection thresholds
-``[combine]``          hierarchical prior scale and systematic floor
-``[parallel]``         number of processes
-``[output]``           path, formats, plots and output medium
-====================  ===========================================================================================
-
+`Config` is a tree of dataclasses with one section per concern: ``[input]``, ``[grouping]``, ``[velocity_frame]``,
+``[templates]``, ``[methods]``, ``[regions]``, ``[combine]``, ``[calibration]``, ``[parallel]`` and ``[output]``,
 plus the top-level ``seed`` and ``schema_version``.
 `load` reads and validates a TOML file, `dump` writes one, `default_for` builds the regime defaults for a spectrum
-(by resolving power and band) and `Config.hash` is a SHA-256 of the canonical content, stored with every result.
+and `Config.hash` is a SHA-256 of the canonical content, stored with every result.
 Unset optional values (``None``) are omitted from the TOML file, which has no null.
 """
 import hashlib
@@ -27,13 +15,15 @@ import math
 import tomllib
 import types
 import typing
-from dataclasses import MISSING, dataclass, field, fields, is_dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field, fields, is_dataclass
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import tomli_w
 
+from .medium import METHODS as AIR_METHODS
 from .types import Spectrum
 
 __all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
@@ -46,6 +36,7 @@ SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 METHOD_NAMES = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
+MEDIA = ('air', 'vacuum')
 
 # Regime boundaries in resolving power (low: R<~4500, e.g. GTC R2500, MagE, SpeX; mid: R~6000; high: R>20000)
 REGIME_EDGES = (4500., 20000.)
@@ -155,32 +146,21 @@ class OutputConfig:
 @dataclass
 class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
-    # 'sky-if-needed' (default): measure the OH sky zero point Δv(λ) and apply it only when the calibration data say
-    # it is safe and needed (enough measured sky segments covering the regions, a significant offset or distortion,
-    # larger than 0.05 resolution elements); the star - sky constant is measured and reported but not applied, and
-    # the slit-centring prior is its systematic. 'auto' (opt-in until validated on more than one object): the same,
-    # plus the star - sky constant when it is measured (>= 2 telluric nodes against the sky in the same windows;
-    # 'sky+star', its error is sys_star_sky). 'sky': the sky curve alone; 'telluric': the star's telluric curve; 'none': measure and
-    # report only. A measured but unapplied offset counts only through its uncertainty. What was applied is always
-    # logged and recorded (wavelength_correction_applied, zp_flags).
+    # 'sky-if-needed': apply the OH sky zero point only when it is safe and significant; 'auto' (opt-in): also
+    # apply the star - sky constant; 'sky': sky curve alone; 'telluric': the star's telluric curve; 'none': report
+    # only. See docs/methods.md. What was applied is logged and recorded (wavelength_correction_applied, zp_flags).
     wavelength_correction: str = 'sky-if-needed'
-    # the star's slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the
-    # header slit width W and the trace FWHM F, through the plate scale and the dispersion; a number [km/s]; or
-    # 'none' (unconstrained, warned)
+    # slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the slit width W and
+    # trace FWHM F; a number [km/s]; or 'none' (unconstrained, warned)
     slit_prior: str | float = 'auto'
-    # true for fibre or IFU data, or an absolute wavelength calibration: no slit-centring term
-    zero_point_known: bool = False
-    sky_source: str | None = None  # a file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
-    sky_segment_width: float = 250.  # [Å]; segments of the telluric-free spans; Δv(λ) is interpolated between them
-    # a non-telluric-corrected file sharing the input's wavelength solution (e.g. the PypeIt spec1d of a corrected
-    # coadd), whose telluric lines give the star's own zero point; the object best matching the input is used
-    telluric_source: str | None = None
+    zero_point_known: bool = False  # fibre/IFU data or absolute calibration: no slit-centring term
+    sky_source: str | None = None  # file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
+    sky_segment_width: float = 250.  # [Å]; Δv(λ) is interpolated between segments of the telluric-free spans
+    telluric_source: str | None = None  # uncorrected file with the input's wavelength solution (star's own zero point)
     telluric_segment_width: float = 250.  # [Å]; maximum width of the telluric-band segments
     telluric_template: bool = True  # model the star with the template nearest the priors in the telluric fit
-    # [min, max] vacuum Å, observatory frame, where the wavelength solution is constrained (e.g. the range of the
-    # arc lines): sky segments centred outside it are not used, so the curve is never anchored by an extrapolation
+    # [min, max] vacuum Å (observatory frame) where the wavelength solution is constrained, e.g. the arc-line range
     wave_valid_range: tuple[float, float] | None = None
-
 
 @dataclass
 class Config:
@@ -242,6 +222,11 @@ def _to_plain(obj: Any, drop_none: bool) -> Any:
     return obj
 
 
+def _suggest(key: Any, choices: Sequence[str]) -> str:
+    close = get_close_matches(str(key), choices, n=1)
+    return f" (did you mean '{close[0]}'?)" if close else ''
+
+
 def _type_name(hint: Any) -> str:
     if hint is Any:
         return 'any value'
@@ -252,9 +237,7 @@ def _type_name(hint: Any) -> str:
         return f'a list of {_type_name(args[0])}'
     if origin is tuple:
         return f'a list of {len(args)} {_type_name(args[0])}'
-    if origin is dict:
-        return 'a table'
-    if is_dataclass(hint):
+    if origin is dict or is_dataclass(hint):
         return 'a table'
     return {str: 'a string', int: 'an integer', float: 'a number', bool: 'true or false'}.get(hint, str(hint))
 
@@ -317,18 +300,13 @@ def _from_dict(cls: type, data: Any, where: str) -> Any:
     if unknown:
         msgs = []
         for key in unknown:
-            close = get_close_matches(key, list(known), n=1)
-            hint = f" (did you mean '{close[0]}'?)" if close else f' (valid keys: {", ".join(known)})'
-            msgs.append(f"'{key}'{hint}")
+            msgs.append(f"'{key}'" + (_suggest(key, list(known)) or f' (valid keys: {", ".join(known)})'))
         section = f'[{where}]' if where else 'the top level'
         raise ConfigError(f'Unknown key in {section}: ' + '; '.join(msgs))
     kwargs = {}
-    for name, f in known.items():
-        if name not in data:
-            if f.default is MISSING and f.default_factory is MISSING:
-                raise ConfigError(f'{where or "config"}: missing required key {name!r}')
-            continue
-        kwargs[name] = _coerce(data[name], hints[name], f'{where}.{name}' if where else name)
+    for name in known:
+        if name in data:
+            kwargs[name] = _coerce(data[name], hints[name], f'{where}.{name}' if where else name)
     return cls(**kwargs)
 
 
@@ -338,9 +316,7 @@ def _from_dict(cls: type, data: Any, where: str) -> Any:
 
 def _choice(problems: list[str], where: str, value: Any, choices: tuple[str, ...]) -> None:
     if value not in choices:
-        close = get_close_matches(str(value), choices, n=1)
-        hint = f" (did you mean '{close[0]}'?)" if close else ''
-        problems.append(f'{where} = {value!r} is not one of {", ".join(choices)}{hint}')
+        problems.append(f'{where} = {value!r} is not one of {", ".join(choices)}{_suggest(value, choices)}')
 
 
 def _range(problems: list[str], where: str, value: tuple[float, float] | None, positive: bool = False) -> None:
@@ -360,8 +336,8 @@ def _validate(cfg: Config) -> list[str]:
     if cfg.seed < 0:
         p.append(f'seed = {cfg.seed} must be non-negative')
     i = cfg.input
-    _choice(p, 'input.medium', i.medium, ('auto', 'air', 'vacuum'))
-    _choice(p, 'input.medium_method', i.medium_method, ('ciddor', 'edlen', 'morton'))
+    _choice(p, 'input.medium', i.medium, ('auto', *MEDIA))
+    _choice(p, 'input.medium_method', i.medium_method, tuple(AIR_METHODS))
     if i.resolution is not None and not i.resolution > 1:
         p.append(f'input.resolution = {i.resolution} must be a resolving power R > 1')
     v = cfg.velocity_frame
@@ -370,9 +346,8 @@ def _validate(cfg: Config) -> list[str]:
     allowed = ('ra', 'dec', 'mjd', 'site', 'site_lat', 'site_lon')
     for key, val in v.overrides.items():
         if key not in allowed:
-            close = get_close_matches(key, allowed, n=1)
-            hint = f" (did you mean '{close[0]}'?)" if close else ''
-            p.append(f'velocity_frame.overrides has unknown key {key!r}; allowed: {", ".join(allowed)}{hint}')
+            p.append(f'velocity_frame.overrides has unknown key {key!r}; allowed: {", ".join(allowed)}'
+                     + _suggest(key, allowed))
         elif key == 'site':
             if not isinstance(val, str):
                 p.append(f'velocity_frame.overrides.site = {val!r} must be a string')
@@ -389,7 +364,7 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f"velocity_frame.overrides.site_lat = {num['site_lat']} must be in degrees, -90 to 90")
     t = cfg.templates
     if t.medium is not None:
-        _choice(p, 'templates.medium', t.medium, ('air', 'vacuum'))
+        _choice(p, 'templates.medium', t.medium, MEDIA)
     _range(p, 'templates.teff_range', t.teff_range, positive=True)
     _range(p, 'templates.logg_range', t.logg_range)
     _range(p, 'templates.met_range', t.met_range)
@@ -468,7 +443,7 @@ def _validate(cfg: Config) -> list[str]:
         p.append('output.formats is empty')
     for k, fmt in enumerate(o.formats):
         _choice(p, f'output.formats[{k}]', fmt, OUTPUT_FORMATS)
-    _choice(p, 'output.medium', o.medium, ('vacuum', 'air'))
+    _choice(p, 'output.medium', o.medium, MEDIA)
     return p
 
 
@@ -591,17 +566,10 @@ def default_for(spectrum: Spectrum) -> Config:
                     'Set input.resolution to change this.', spectrum.source or 'the spectrum')
     log.info('Default settings for the %s-resolution regime, %s band', regime, band)
     cfg.input.resolution = None if R is None else float(R)
-    medium = spectrum.meta.get('medium_in')
-    if medium in ('air', 'vacuum'):
-        cfg.input.medium = medium
+    cfg.input.medium = spectrum.meta['medium_in']
     if regime == 'low':
-        if band == 'optical':
-            cfg.methods.enabled = ['template_fit', 'ccf', 'linecentre']
-        elif band == 'nir':
-            cfg.methods.enabled = ['template_fit', 'ccf']
-            cfg.methods.options = {'template_fit': {'telluric_model': True}}
-        else:
-            cfg.methods.enabled = ['template_fit', 'ccf', 'linecentre']
+        cfg.methods.enabled = ['template_fit', 'ccf'] + (['linecentre'] if band != 'nir' else [])
+        if band != 'optical':
             cfg.methods.options = {'template_fit': {'telluric_model': True}}
     elif regime == 'mid':
         cfg.methods.enabled = ['forward_mcmc', 'template_fit']
