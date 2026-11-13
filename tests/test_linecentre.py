@@ -115,7 +115,7 @@ def test_pulls(profile, joint):
     pull = _pulls(profile, 200 if joint else 60, joint=joint)  # one pull per spectrum when joint
     log.info('%s%s: %d pulls, mean %.3f, std %.3f', profile, ' joint' if joint else '', len(pull), pull.mean(),
              pull.std(ddof=1))
-    assert len(pull) > 190 if joint else len(pull) > 300
+    assert len(pull) > 190 if joint else len(pull) > 240  # 5 lines per spectrum (Cs I 8946 is not for line centring)
     assert abs(pull.mean()) < 0.2
     assert 0.8 < pull.std(ddof=1) < 1.2
 
