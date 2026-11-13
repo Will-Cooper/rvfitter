@@ -129,18 +129,23 @@ def test_broadened_is_cached_and_correct(tmp_path):
 
 def _fake_ssap(rows):
     t = Table(rows=[(r['url'], r['teff'], r['logg'], r['met']) for r in rows],
-              names=('Spectrum', 'teff', 'logg', 'meta'), dtype=(str, float, float, float))
-    buf = io.BytesIO()
-    t.write(buf, format='votable')
-    return buf.getvalue()
+              names=('Access.Reference', 'teff', 'logg', 'meta'), dtype=(str, float, float, float))
+    return _votable_bytes(t)
+
+
+def _fake_svo_spectrum(teff, logg):
+    """A spectrum as SVO serves it: a VOTable with WAVELENGTH [Å] and FLUX"""
+    w, f = _model(teff, logg)
+    t = Table({'WAVELENGTH': w, 'FLUX': f})
+    t['WAVELENGTH'].unit = 'Angstrom'
+    return _votable_bytes(t)
 
 
 def test_download_mocked_with_checksums(tmp_path):
     calls = []
     rows = [dict(url=f'http://svo/x?fid={i}', teff=t, logg=g, met=0.) for i, (t, g) in
             enumerate([(1800., 5.0), (1900., 5.0), (2000., 5.0), (2100., 5.0)])]
-    bodies = {r['url']: '\n'.join(f'{w} {f}' for w, f in zip(*_model(r['teff'], r['logg']), strict=True)).encode()
-              for r in rows}
+    bodies = {r['url']: _fake_svo_spectrum(r['teff'], r['logg']) for r in rows}
 
     def fetch(url):
         calls.append(url)
