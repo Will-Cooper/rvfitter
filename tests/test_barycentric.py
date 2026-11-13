@@ -99,6 +99,13 @@ def test_apply_mode_errors_and_overrides():
     lat, lon, alt = SITES['keck']
     kms3, _ = correction(_spec(), 'apply', overrides=dict(FULL, site=None, lat=lat, lon=lon, alt=alt))
     assert abs(kms3 - kms) < 1e-6
+    # the config/io override names, with and without an altitude
+    kms5, _ = correction(_spec(), 'apply', overrides=dict(FULL, site=None, site_lat=lat, site_lon=lon, site_alt=alt))
+    assert abs(kms5 - kms) < 1e-6
+    kms6, _ = correction(_spec(), 'apply', overrides=dict(FULL, site='Nowhere', site_lat=lat, site_lon=lon))
+    assert abs(kms6 - kms) < 0.01
+    kms7, _ = correction(_spec(), 'apply', overrides={**FULL, 'mjd': FULL['mjd_mid'], 'mjd_mid': None})
+    assert kms7 == kms
     # sexagesimal coordinates
     kms4, _ = correction(_spec(), 'apply', overrides=dict(FULL, ra='00:42:44.33', dec='+41:16:07.5'))
     assert abs(kms4 - kms) < 0.01

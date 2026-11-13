@@ -62,7 +62,7 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 
-from .constants import C_KMS
+from .barycentric import vel_corr_to_kms
 from .medium import to_vacuum
 from .types import Spectrum
 
@@ -390,8 +390,7 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     meta['frame_in'] = None if frame is None else str(frame).strip().lower()
     f = _as_float(header.get('VEL_CORR'))
     meta['vel_corr'] = f
-    # PypeIt's factor f = sqrt((1+β)/(1-β)) expressed as a velocity: c (f²-1)/(f²+1)
-    meta['vel_corr_kms'] = None if f is None else C_KMS * (f * f - 1.) / (f * f + 1.)
+    meta['vel_corr_kms'] = None if f is None else vel_corr_to_kms(f)
     meta['velocity_keywords'] = {k: header[k] for k in _VEL_KEYS if k in header}
     meta.update(_slit_meta(header))
     return meta
