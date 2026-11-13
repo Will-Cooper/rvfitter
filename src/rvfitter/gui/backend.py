@@ -194,9 +194,9 @@ class LazyBackend:
             return None
 
     def suggested_refits(self, result: Any) -> list[dict]:
-        """The template-edge guidance of ``result`` as actions (``pipeline.suggested_refits``)."""
-        from rvfitter import pipeline
-        return list(pipeline.suggested_refits(result))
+        """The template-edge guidance of ``result`` as actions (``refit.suggested_refits``)."""
+        from rvfitter import refit
+        return refit.suggested_refits(result)
 
     def refit(self, result: Any, cfg: Any, suggestion: Mapping[str, Any]) -> tuple[Any, Any]:
         """

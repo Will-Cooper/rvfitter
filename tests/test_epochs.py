@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 
 import synth
-from rvfitter import config, pipeline, results
+from rvfitter import combine, config, pipeline, results
 
 
 def _cfg(tpl):
@@ -51,10 +51,10 @@ def test_agreeing_epochs_are_not_flagged():
 def test_epoch_labels_unique():
     a, _ = synth.make_spectrum(rng=np.random.default_rng(1))
     s1, s2 = replace(a, source='x/obj.fits'), replace(a, source='y/obj.fits')
-    assert pipeline.epoch_labels([s1, s2]) == ['e1', 'e2']
+    assert combine.epoch_labels([s1, s2]) == ['e1', 'e2']
     s1 = replace(s1, meta={'mjd_mid': 57000.1})
     s2 = replace(s2, meta={'mjd_mid': 57001.2})
-    assert pipeline.epoch_labels([s1, s2]) == ['mjd57000.10000', 'mjd57001.20000']
+    assert combine.epoch_labels([s1, s2]) == ['mjd57000.10000', 'mjd57001.20000']
 
 
 def test_epoch_combination_does_not_shrink_with_regions():
@@ -66,5 +66,5 @@ def test_epoch_combination_does_not_shrink_with_regions():
         return MethodResult('ccf', rv, 1. / np.sqrt(n), n, meas)
 
     for n in (1, 8):
-        res = pipeline._combine_epochs('ccf', [epoch(10., n), epoch(30., n)], ['a', 'b'], 'X')
+        res = combine.method_over_epochs('ccf', [epoch(10., n), epoch(30., n)], ['a', 'b'], 'X')
         assert 15. < res.rv < 25. and res.rv_err > 5., (n, res.rv, res.rv_err)

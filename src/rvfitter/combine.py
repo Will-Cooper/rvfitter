@@ -9,21 +9,24 @@ Combination of per-region and per-method radial velocities.
   marginalised analytically (Woodbury identity) and the two scatter terms τ_line and τ_method integrated on a
   deterministic grid under half-Cauchy priors. The adopted value is the posterior median of μ and its error
   half the central 68 per cent interval.
-
-Both are ports of the Phase A legacy functions (`legacy/utils.py` `combine_rvs` and `hierarchical_combine`),
-reproducing them to ≤1e-8 km/s.
+- Epochs (several spectra of one object): `epoch_labels`, `epoch_summaries` (per-epoch RVs and a variability
+  test), `method_over_epochs` and `adopted_over_epochs` (random effects over the epochs' RVs).
 """
 import logging
 from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
 
 import numpy as np
 from scipy.optimize import brentq
 from scipy.special import ndtr
+from scipy.stats import chi2 as chi2_dist
 
 from .numerics import weighted_mean_chi2
-from .types import Measurement, MethodResult
+from .results import EXCLUDE_FLAGS, flag_names
+from .types import Measurement, MethodResult, Spectrum
 
-__all__ = ['weighted_mean', 'combine_regions', 'hierarchical', 'hierarchical_from_methods', 'mixture_pdf']
+__all__ = ['weighted_mean', 'combine_regions', 'hierarchical', 'hierarchical_from_methods', 'mixture_pdf',
+           'epoch_labels', 'epoch_summaries', 'method_over_epochs', 'adopted_over_epochs']
 
 log = logging.getLogger(__name__)
 
@@ -298,9 +301,7 @@ def hierarchical_from_methods(methods: Mapping[str, MethodResult], *, exclude_fl
         As `hierarchical`, plus 'excluded': a list of (method, region, flag, reason)
     """
     if exclude_flags is None:
-        from .results import EXCLUDE_FLAGS
         exclude_flags = EXCLUDE_FLAGS
-    from .results import flag_names
     values, errors, lines, meths, excluded = [], [], [], [], []
     for name, res in methods.items():
         for m in res.measurements:
@@ -319,3 +320,98 @@ def hierarchical_from_methods(methods: Mapping[str, MethodResult], *, exclude_fl
     out = hierarchical(values, errors, lines, meths, **kwargs)
     out['excluded'] = excluded
     return out
+
+
+def epoch_labels(spectra: Sequence[Spectrum]) -> list[str]:
+    """Epoch labels: the file stems, else the mid-exposure MJD, else e1, e2, ... (always unique)"""
+    stems = [Path(s.source).stem or f'e{k + 1}' for k, s in enumerate(spectra)]
+    if len(set(stems)) == len(stems):
+        return stems
+    mjds = [s.meta.get('mjd_mid') for s in spectra]
+    if all(m is not None for m in mjds) and len({f'{m:.5f}' for m in mjds}) == len(mjds):
+        return [f'mjd{m:.5f}' for m in mjds]
+    return [f'e{k + 1}' for k in range(len(spectra))]
+
+
+def method_over_epochs(method: str, lst: list[MethodResult], labels: list[str], name: str) -> MethodResult:
+    """A method over several epochs: random effects over the epochs' own (region-combined) RVs"""
+    per_epoch = [Measurement(method, lab, float(r.rv), float(r.rv_err), 0)
+                 for r, lab in zip(lst, labels, strict=True) if np.isfinite(r.rv) and np.isfinite(r.rv_err)]
+    meas = [x for r in lst for x in r.measurements]
+    details: dict = {}
+    rv, err = combine_regions(per_epoch, details=details)
+    for x in meas:
+        x.diagnostics.update(method_tau_epoch=details['tau_line'])
+    log.info('%s: %s over %d epochs: %.2f ± %.2f km/s (τ_epoch %.1f km/s)', name, method, len(per_epoch), rv, err,
+             details['tau_line'])
+    return MethodResult(method, rv, err, sum(r.n_regions for r in lst), meas)
+
+
+def adopted_over_epochs(epoch_info: dict, tau_scale: float | None, name: str) -> dict:
+    """The adopted RV from the epochs' adopted RVs: random effects over epochs (the second level)"""
+    rv, err = np.asarray(epoch_info['rv'], float), np.asarray(epoch_info['err'], float)
+    ok = np.isfinite(rv) & np.isfinite(err) & (err > 0)
+    if not ok.any():
+        return {}
+    labels = [lab for lab, g in zip(epoch_info['labels'], ok, strict=True) if g]
+    res = hierarchical(rv[ok], err[ok], labels, ['epoch'] * int(ok.sum()), tau_scale=tau_scale)
+    res['tau_epoch'] = res['tau_line']
+    for key in ('tau_line', 'tau_method'):
+        vals = [v for v in epoch_info[key] if np.isfinite(v)]
+        res[key] = float(np.median(vals)) if vals else float('nan')
+    res['n_lines'] = int(np.nansum(epoch_info['n_lines']))
+    res['n_methods'] = int(np.nanmax(epoch_info['n_methods']))
+    log.info('%s: adopted over %d epochs: %.2f ± %.2f km/s (τ_epoch %.1f km/s)', name, int(ok.sum()), res['median'],
+             res['err'], res['tau_epoch'])
+    return res
+
+
+def _chi2_test(v: np.ndarray, e: np.ndarray, ok: np.ndarray) -> tuple[float, float]:
+    """χ² of the values about their weighted mean and its p-value (NaN with fewer than two)"""
+    if ok.sum() < 2:
+        return np.nan, np.nan
+    w = 1. / e[ok] ** 2
+    mean = np.sum(w * v[ok]) / np.sum(w)
+    c2 = float(np.sum(w * (v[ok] - mean) ** 2))
+    return c2, float(chi2_dist.sf(c2, int(ok.sum()) - 1))
+
+
+def epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str], tau_scale: float | None,
+                    name: str, sys: Sequence[float]) -> dict:
+    """
+    Per-epoch method and adopted RVs (recorded in each measurement's diagnostics) and a variability test
+
+    The epochs' adopted RVs are compared with their weighted mean, χ² = Σ (v_e − v̄)²/σ_e² with n − 1 degrees of
+    freedom, where σ_e is the epoch's statistical error ⊕ its wavelength zero-point systematic `sys` (each epoch
+    has its own wavelength solution and slit centring); p < 0.001 flags the object as variable (a possible binary
+    or a calibration problem). The statistical-only test is reported too (`pvalue_stat`).
+    """
+    rv_e, err_e, taus_l, taus_m, n_l, n_m = [], [], [], [], [], []
+    for k, label in enumerate(labels):
+        per = {m: lst[k] for m, lst in per_method.items() if np.isfinite(lst[k].rv)}
+        ad = hierarchical_from_methods(per, tau_scale=tau_scale) if per else {}
+        rv, err = float(ad.get('median', np.nan)), float(ad.get('err', np.nan))
+        rv_e.append(rv)
+        err_e.append(err)
+        taus_l.append(float(ad.get('tau_line', np.nan)))
+        taus_m.append(float(ad.get('tau_method', np.nan)))
+        n_l.append(int(ad.get('n_lines', 0)))
+        n_m.append(int(ad.get('n_methods', 0)))
+        for lst in per_method.values():
+            for meas in lst[k].measurements:
+                meas.diagnostics.update(epoch_method_rv=float(lst[k].rv), epoch_method_err=float(lst[k].rv_err),
+                                        epoch_adopted_rv=rv, epoch_adopted_err=err)
+        log.info('%s: epoch %s: adopted %.2f ± %.2f km/s (%s)', name, label, rv, err,
+                 ', '.join(f'{m} {r.rv:.2f} ± {r.rv_err:.2f}' for m, r in per.items()))
+    v, e = np.array(rv_e), np.array(err_e)
+    s = np.array([x if x is not None and np.isfinite(x) else 0. for x in sys], dtype=float)
+    ok = np.isfinite(v) & np.isfinite(e) & (e > 0)
+    chi2_stat, p_stat = _chi2_test(v, e, ok)
+    chi2, pvalue = _chi2_test(v, np.hypot(e, s), ok)
+    variable = bool(np.isfinite(pvalue) and pvalue < 1e-3)
+    log.info('%s: epoch variability: χ² %.1f for %d epochs, p = %.3g with the zero-point systematics (statistical '
+             'errors only: χ² %.1f, p = %.3g)%s', name, chi2, int(ok.sum()), pvalue, chi2_stat, p_stat,
+             ' (variable: p < 0.001)' if variable else '')
+    return dict(n=len(labels), labels=list(labels), rv=[float(x) for x in v], err=[float(x) for x in e],
+                sys_wavezp=[float(x) for x in s], chi2=chi2, pvalue=pvalue, chi2_stat=chi2_stat, pvalue_stat=p_stat,
+                variable=variable, tau_line=taus_l, tau_method=taus_m, n_lines=n_l, n_methods=n_m)

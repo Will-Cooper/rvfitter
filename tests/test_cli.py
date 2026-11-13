@@ -105,7 +105,7 @@ def test_run_no_objects_exit_1(monkeypatch, tmp_path):
     assert cli.main(['run', 'c.toml']) == 1
 
 
-def test_run_with_failures_exit_2(monkeypatch, tmp_path, capsys):
+def test_run_with_failures_exit_2(monkeypatch, tmp_path):
     from rvfitter import config, pipeline, results
     ns = types.SimpleNamespace
     cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=[]))
@@ -114,5 +114,4 @@ def test_run_with_failures_exit_2(monkeypatch, tmp_path, capsys):
                         lambda *a, failures, **k: failures.append(('bad.fits', 'not a spectrum')) or [1])
     monkeypatch.setattr(results, 'summary_lines', lambda r: [])
     monkeypatch.setattr(results, 'write', lambda *a, **k: [])
-    assert cli.main(['run', 'c.toml']) == 2
-    assert 'bad.fits: not a spectrum' in capsys.readouterr().out
+    assert cli.main(['run', 'c.toml']) == 2  # the summary itself is logged by pipeline.run (test_pipeline)

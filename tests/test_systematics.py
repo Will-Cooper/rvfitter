@@ -1,7 +1,7 @@
 """Tests of rvfitter.systematics"""
 import numpy as np
 
-from rvfitter import regions, systematics
+from rvfitter import config, regions, systematics
 from rvfitter import templates as T
 from rvfitter.methods import _common as C
 from rvfitter.types import Spectrum
@@ -17,8 +17,8 @@ def test_template_spread_components(tmp_path):
     rng = np.random.default_rng(0)
     sigma = flux / 100.
     spec = Spectrum(wave, flux + rng.normal(0., 1., len(wave)) * sigma, sigma, 3000., {}, 'synthetic')
-    cfg = {'templates': {'local_dir': str(grid_dir), 'teff_prior': 1900.}, 'regions': {'template_windows': 'features'},
-           'input': {'telluric_corrected': False}}
+    cfg = config.Config()
+    cfg.templates.local_dir, cfg.templates.teff_prior = str(grid_dir), 1900.
     sel = regions.select(spec, teff=1900., methods=['template_fit'])
     out = systematics.template_spread_details(spec, sel, cfg, rng=np.random.default_rng(1))
     assert len(out['templates']) == 6 and all(np.isfinite(v) for v in out['templates'].values())
@@ -29,5 +29,5 @@ def test_template_spread_components(tmp_path):
 
 def test_wavelength_zero_point():
     spec = Spectrum(np.linspace(8000., 9000., 10), np.ones(10), np.ones(10), 2000., {'wave_rms': 0.085}, '')
-    assert abs(systematics.wavelength_zero_point(spec, {}) - 299792.458 * 0.085 / 8500.) < 1e-6
-    assert np.isnan(systematics.wavelength_zero_point(Spectrum(spec.wave, spec.flux, spec.sigma), {}))
+    assert abs(systematics.wavelength_zero_point(spec) - 299792.458 * 0.085 / 8500.) < 1e-6
+    assert np.isnan(systematics.wavelength_zero_point(Spectrum(spec.wave, spec.flux, spec.sigma)))

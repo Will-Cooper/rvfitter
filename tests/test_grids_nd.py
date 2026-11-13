@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from conftest import reachable
-from rvfitter import pipeline, results
+from rvfitter import pipeline, refit, results
 from rvfitter import templates as T
 from rvfitter.medium import vac_to_air
 from rvfitter.methods import _common as C
@@ -165,7 +165,7 @@ def test_template_fit_flags_edge_and_results_columns(tmp_path):
     assert np.isfinite(row['template_chi2'])
     det = results.details_table([obj])
     assert 'diag_template_teff' in det.columns
-    acts = pipeline.suggested_refits(obj)
+    acts = refit.suggested_refits(obj)
     assert acts and acts[0]['axis'] == 'teff' and acts[0]['action'] in ('download', 'none')
 
 
@@ -191,7 +191,7 @@ def test_refit_object_applies_and_records_patch(monkeypatch):
     assert new.templates.met_range is None and new.templates.grid == 'bt-settl-cifist'
     assert cfg.templates.met_range is None and cfg.refits == []  # the original is untouched
     assert new.refits == [{'object': 'J1745', 'patch': patch}]
-    assert pipeline.config_for_object(new, 'other').templates.met_range is None
+    assert refit.config_for_object(new, 'other').templates.met_range is None
     text = config.dumps(new)
     assert '[[refits]]' in text and config.loads(text).refits == new.refits
     first = seen['rng']
