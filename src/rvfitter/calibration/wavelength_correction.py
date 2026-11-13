@@ -504,8 +504,10 @@ def _dar_geometry(raw: Spectrum, tsrc: Spectrum | None, cfg: Any, name: str, inf
     The DAR geometry (`dar.geometry`) from the raw headers of the input's frames; header items the input lacks (a
     tellcorr file has almost none) come from the telluric source, the target's own spec1d table
     """
+    # an item the input lacks is None or an empty list (io's `raw_files`); `v != []` would compare numpy values
+    # elementwise and raise
     meta = {**(tsrc.meta if tsrc is not None else {}),
-            **{k: v for k, v in raw.meta.items() if v is not None and v != []}}
+            **{k: v for k, v in raw.meta.items() if v is not None and not (isinstance(v, list) and not v)}}
     geo = dar.geometry(io.raw_headers(meta, cfg.input.raw_header, cfg.input.raw_header_dir), {**meta, 'object': name})
     if not geo['pa_known']:
         info['zp_flags'] |= ZP_FLAGS['dar_pa_unknown']
