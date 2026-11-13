@@ -9,7 +9,6 @@ The synthetic spectra are built on a 100 000-resolution grid in the observed fra
 stellar lines at λ_rest·D(rv)·D(Δv(λ)) (the same distortion, as for light sharing the slit position), multiplied,
 convolved with the LSF and averaged over the pixels.
 """
-import json
 import os
 from pathlib import Path
 
@@ -90,11 +89,10 @@ def test_build_from_hitran(tmp_path, monkeypatch):
     monkeypatch.setenv('RVFITTER_TELLURIC_MODEL', str(out))
     try:
         telluric_build.build(out, line_cache=tmp_path / 'lines')
-    except RuntimeError as exc:
+    except OSError as exc:
         pytest.skip(f'HITRAN unreachable: {exc}')
     _check_vacuum_and_cited(telluric.model())
-    side = json.loads(out.with_suffix('.json').read_text())
-    assert side['sha256'] and all(v['sha256'] and v['fetched'] for v in side['molecules'].values())
+    assert all(v['sha256'] and v['fetched'] for v in telluric.model().meta['molecules'].values())
 
 
 def _record(nu: float, s: float, mol: int = 7, iso: int = 1) -> str:
@@ -125,8 +123,6 @@ def test_build_offline_with_fake_lines(tmp_path, monkeypatch):
     m = telluric.model()
     assert m.meta['citation'] == telluric_build.CITATION and 'not be redistributed' in m.meta['terms']
     assert m.meta['molecules']['O2']['n_lines_file'] == 1 and len(m.meta['molecules']['O2']['sha256']) == 64
-    side = json.loads(out.with_suffix('.json').read_text())
-    assert len(side['sha256']) == 64 and side['file'] == 'model.npz'
     w = np.linspace(7615., 7627., 400)
     t = telluric.transmission(w, 1., 2.5, resolution=20_000.)
     assert abs(w[np.argmin(t)] - 7621.) < 0.3 and t.min() < 0.99

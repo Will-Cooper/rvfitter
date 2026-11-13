@@ -22,15 +22,16 @@ Wavelengths are converted to vacuum on reading, with `rvfitter.medium`.
 """
 import functools
 import hashlib
+import http.client
 import json
 import logging
 import re
 import tomllib
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 import numpy as np
 import pandas as pd
@@ -48,7 +49,6 @@ __all__ = ['GridMeta', 'TemplateGrid', 'KNOWN_GRIDS', 'STANDARD_AXES', 'AXIS_SCA
 log = logging.getLogger(__name__)
 
 METADATA_FILE = 'rvfitter_grid.toml'
-_USER_AGENT = 'rvfitter (github.com/Will-Cooper/rvfitter)'
 SVO_SSAP_URL = 'http://svo2.cab.inta-csic.es/theory/newov2/ssap.php'
 _LYON_PATTERN = r'^lte(?P<teff>\d+(?:\.\d+)?)-(?P<logg>\d+(?:\.\d+)?)(?P<met>[-+]\d+(?:\.\d+)?)?.*\.(?:txt|dat)$'
 #: file names written by `download`: t2000_g5.0_m-0.5_a+0.2[_co0.5][_kzz7].txt (teff in K)
@@ -152,9 +152,8 @@ class GridMeta:
 
 # Known grids. `coverage` is the documented extent of the full grid (from the model papers and the SVO pages);
 # it is only used to advise which grid to download when a fit reaches the edge of the current one.
-# verified=False: the SVO model id, the medium and/or the coverage have not yet been checked against a live
-# SVO query (SVO was unreachable during development). `rvfitter templates list --available` and the
-# network-marked test check the ids; the medium is always measured on download ('auto' grids) or verified.
+# verified=False: the SVO model id, the medium and/or the coverage have not been checked against a live SVO
+# query. `rvfitter templates list --available` checks the ids; the medium is always measured or verified.
 KNOWN_GRIDS: dict[str, GridMeta] = {
     # Lyon BT-Settl-CIFIST: air above 2000 Å (verified on the local grid: alkali minima within 0.03 Å of NIST air)
     'bt-settl-cifist': GridMeta('bt-settl-cifist', 'air', svo_model='bt-settl-cifist',
@@ -205,10 +204,7 @@ def write_metadata(directory: str | Path, meta: GridMeta) -> Path:
     """Write `rvfitter_grid.toml` into a grid directory and return its path"""
     import tomli_w
     path = Path(directory) / METADATA_FILE
-    data = {k: (list(v) if isinstance(v, tuple) else {kk: list(vv) if isinstance(vv, tuple) else vv
-                                                      for kk, vv in v.items()} if isinstance(v, dict) else v)
-            for k, v in asdict(meta).items() if v is not None}
-    path.write_text(tomli_w.dumps(data))
+    path.write_text(tomli_w.dumps({k: v for k, v in asdict(meta).items() if v is not None}))
     return path
 
 
@@ -236,10 +232,8 @@ def read_two_column(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     wave, flux = df[0].to_numpy(), df[1].to_numpy()
     good = np.isfinite(wave) & np.isfinite(flux) & (wave > 0)
     wave, flux = wave[good], flux[good]
-    order = np.argsort(wave, kind='stable')
-    wave, flux = wave[order], flux[order]
-    keep = np.concatenate([[True], np.diff(wave) > 0])
-    return wave[keep], flux[keep]
+    wave, i = np.unique(wave, return_index=True)  # sorted; the first of duplicates kept
+    return wave, flux[i]
 
 
 @functools.lru_cache(maxsize=32)
@@ -247,7 +241,7 @@ def _load_vacuum(path: str, mtime_ns: int, size: int, medium: str) -> tuple[np.n
     """Cached read of one template file, converted to vacuum (the key includes mtime and size)"""
     wave, flux = read_two_column(path)
     wave = to_vacuum(wave, medium)
-    keep = np.concatenate([[True], np.diff(wave) > 0])  # the conversion is monotonic, but guard anyway
+    keep = np.concatenate([[True], np.diff(wave) > 0])  # rounding may merge neighbours: rebin needs strict order
     wave, flux = wave[keep], flux[keep]
     wave.setflags(write=False)
     flux.setflags(write=False)
@@ -709,11 +703,10 @@ def cache_dir() -> Path:
     return Path(env) if env else Path(platformdirs.user_cache_dir('rvfitter')) / 'templates'
 
 
-def _fetch(url: str, timeout: float = 60.) -> bytes:
-    """GET a URL (the single network entry point; patched in tests)"""
-    req = urllib.request.Request(url, headers={'User-Agent': _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (fixed https/http URLs)
-        return resp.read()
+def _fetch(url: str) -> bytes:
+    """GET a URL, transient errors retried"""
+    from .grid_sources import fetch
+    return fetch(url, f'GET {url}')
 
 
 def _parse_ssap(votable_bytes: bytes) -> list[dict]:
@@ -764,22 +757,12 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
              directory: str | Path | None = None, fetch: Callable[[str], bytes] | None = None, verify: bool = True,
              source: str = 'auto') -> TemplateGrid:
     """
-    Download a template grid into the cache, from SVO or from its upstream Zenodo record
+    Download a template grid into the cache (`directory`, default `cache_dir() / grid`) and open it.
 
-    Parameters
-    ----------
-    grid, teff_range, logg_range, met_range, alpha_range, ranges, directory, verify
-        As for `_download_svo` (met and alpha default to the grid default only)
-    fetch
-        URL → bytes for the SVO queries (tests, proxies)
-    source
-        'svo', 'zenodo', or 'auto' (default): SVO first, then the upstream Zenodo record if SVO fails. Grids with
-        neither (LOWZ, BT-Settl AGSS2009 when SVO is down) must be downloaded manually from `upstream`
-
-    Returns
-    -------
-    grid
-        The downloaded TemplateGrid
+    The ranges are inclusive; an unranged met/alpha (or extra axis, e.g. ``ranges={'co': (0.5, 1.)}``) is held at
+    the grid default. `source` is 'svo', 'zenodo' or 'auto' (SVO, then the upstream Zenodo record with a WARNING;
+    the manifest records the source). `fetch` (URL → bytes) replaces the SVO GET (tests, proxies); `verify`
+    verifies, or for 'auto' measures, the medium.
     """
     from . import grid_sources
     if source not in ('auto', 'svo', 'zenodo'):
@@ -787,36 +770,50 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
     meta = KNOWN_GRIDS.get(grid)
     if meta is None:
         raise ValueError(f'unknown grid {grid!r}; choose from {sorted(KNOWN_GRIDS)}')
+    defaults = meta.defaults()
+    # an unranged met/alpha is held at the grid default (solar, unenhanced), not the whole axis
+    want = {'teff': tuple(teff_range), 'logg': tuple(logg_range),
+            'met': tuple(met_range) if met_range is not None else (defaults['met'],) * 2,
+            'alpha': tuple(alpha_range) if alpha_range is not None else (defaults['alpha'],) * 2,
+            **{a: tuple(r) for a, r in (ranges or {}).items()}}
+    directory = Path(directory) if directory is not None else cache_dir() / grid
+    directory.mkdir(parents=True, exist_ok=True)
     if source in ('auto', 'svo') and meta.svo_model is not None:
         try:
-            return _download_svo(grid, teff_range, logg_range, met_range, alpha_range, ranges=ranges,
-                                 directory=directory, fetch=fetch, verify=verify)
-        except Exception as exc:  # noqa: BLE001 - network failures fall back to the upstream source
+            return _download_svo(meta, want, directory, fetch or _fetch, verify)
+        except (OSError, ValueError, ExpatError, http.client.HTTPException) as exc:
             if source == 'svo' or grid not in grid_sources.ZENODO_GRIDS:
                 raise
             log.warning('SVO download of %s failed (%s); using the upstream Zenodo record', grid, exc)
     if grid not in grid_sources.ZENODO_GRIDS:
         raise ValueError(f'grid {grid} has no automatic upstream source: download it manually from {meta.upstream} '
                          f'and open the directory with a GridMeta (templates.local_dir)')
-    return _download_zenodo(grid, teff_range, logg_range, met_range, alpha_range, ranges=ranges,
-                            directory=directory, verify=verify)
+    for axis in meta.extra_axes:
+        want.setdefault(axis, (defaults[axis],) * 2)
+    return _download_zenodo(meta, want, directory, verify)
 
 
-def _download_zenodo(grid, teff_range, logg_range, met_range, alpha_range, *, ranges=None, directory=None,
-                     verify=True) -> TemplateGrid:
+def _manifest(directory: Path) -> tuple[Path, dict]:
+    """`manifest.json` of a download directory (file → sha256, source and parameters) and its contents"""
+    path = directory / 'manifest.json'
+    return path, json.loads(path.read_text()) if path.exists() else {}
+
+
+def _finish(directory: Path, meta: GridMeta, manifest_path: Path, manifest: dict, verify: bool) -> TemplateGrid:
+    """Write the manifest and the metadata of a downloaded grid (generic file names) and open it"""
+    manifest_path.write_text(json.dumps(manifest, indent=1, sort_keys=True))
+    tg = TemplateGrid(directory, meta=replace(meta, pattern=GENERIC_PATTERN, teff_scale=1.), verify=verify)
+    if verify:
+        tg._ensure_verified()  # an 'auto' medium is measured here
+    write_metadata(directory, tg.meta)
+    return tg
+
+
+def _download_zenodo(meta: GridMeta, want: dict, directory: Path, verify: bool) -> TemplateGrid:
     """Download from the grid's Zenodo record (see `grid_sources`); files are written in the generic format"""
     from . import grid_sources
-    meta = KNOWN_GRIDS[grid]
-    directory = Path(directory) if directory is not None else cache_dir() / grid
-    directory.mkdir(parents=True, exist_ok=True)
     defaults = meta.defaults()
-    want = {'teff': tuple(teff_range), 'logg': tuple(logg_range),
-            'met': tuple(met_range) if met_range is not None else (defaults['met'],) * 2,
-            'alpha': tuple(alpha_range) if alpha_range is not None else (defaults['alpha'],) * 2}
-    for axis in meta.extra_axes:
-        want[axis] = tuple((ranges or {}).get(axis, (defaults[axis],) * 2))
-    manifest_path = directory / 'manifest.json'
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    manifest_path, manifest = _manifest(directory)
     media = set()
 
     def write(params, wave, flam, medium, prov):
@@ -830,79 +827,32 @@ def _download_zenodo(grid, teff_range, logg_range, met_range, alpha_range, *, ra
             media.add(medium)
         return path
 
-    paths = grid_sources.download_zenodo(grid, want, directory, axes=meta.axes, write=write)
-    manifest_path.write_text(json.dumps(manifest, indent=1, sort_keys=True))
-    pv = grid_sources.provenance(grid)
-    log.info('%s: %d models from Zenodo in %s', grid, len(paths), directory)
-    log.info('%s: licence %s, Zenodo record %s, DOI %s; please cite: %s', grid, pv['license'], pv['record'],
+    paths = grid_sources.download_zenodo(meta.name, want, directory, axes=meta.axes, write=write)
+    pv = grid_sources.provenance(meta.name)
+    log.info('%s: %d models from Zenodo in %s', meta.name, len(paths), directory)
+    log.info('%s: licence %s, Zenodo record %s, DOI %s; please cite: %s', meta.name, pv['license'], pv['record'],
              pv['doi'], pv['citation'])
     medium = media.pop() if len(media) == 1 else meta.medium  # a header-declared medium is still verified
-    out_meta = replace(meta, pattern=GENERIC_PATTERN, teff_scale=1., medium=medium, **pv)
-    tg = TemplateGrid(directory, meta=out_meta, verify=verify)
-    if verify:
-        tg._ensure_verified()
-    write_metadata(directory, tg.meta)
-    return tg
+    return _finish(directory, replace(meta, medium=medium, **pv), manifest_path, manifest, verify)
 
 
-def _download_svo(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1200., 3000.),
-             logg_range: tuple[float, float] = (4.5, 5.5), met_range: tuple[float, float] | None = None,
-             alpha_range: tuple[float, float] | None = None, *, ranges: Mapping[str, tuple[float, float]] | None = None,
-             directory: str | Path | None = None, fetch: Callable[[str], bytes] | None = None,
-             verify: bool = True) -> TemplateGrid:
-    """
-    Download a template grid from the SVO theory server into the cache, with SHA-256 checksums
-
-    Files already in the cache whose checksum matches the manifest are not downloaded again; a mismatch is
-    re-downloaded. The directory gets a metadata file (generic file-name pattern, the grid's axes and its
-    medium, measured if the grid's is 'auto') and a `manifest.json` (file → sha256, source URL and parameters).
-
-    Parameters
-    ----------
-    grid
-        A name in `KNOWN_GRIDS` with an SVO model
-    teff_range, logg_range, met_range, alpha_range
-        Inclusive parameter ranges (met and alpha: None = the grid default only, e.g. solar)
-    ranges
-        Ranges of extra axes (e.g. {'co': (0.5, 1.0)})
-    directory
-        Where to store the grid (default: `cache_dir() / grid`)
-    fetch
-        Function URL → bytes (default: urllib); for tests or proxies
-    verify
-        Verify (or, for 'auto', measure) the medium
-
-    Returns
-    -------
-    grid
-        The downloaded TemplateGrid
-    """
-    meta = KNOWN_GRIDS.get(grid)
-    if meta is None or meta.svo_model is None:
-        raise ValueError(f'unknown downloadable grid {grid!r}; choose from {sorted(KNOWN_GRIDS)}')
+def _download_svo(meta: GridMeta, want: dict, directory: Path, fetch: Callable[[str], bytes],
+                  verify: bool) -> TemplateGrid:
+    """Download from the SVO theory server; cached files whose SHA-256 matches the manifest are not refetched"""
     if not meta.verified:
         log.warning('Grid %s: the SVO model id %r is not yet verified; if the query fails, check '
-                    '"rvfitter templates list --available"', grid, meta.svo_model)
-    fetch = fetch or _fetch
-    directory = Path(directory) if directory is not None else cache_dir() / grid
-    directory.mkdir(parents=True, exist_ok=True)
-    defaults = meta.defaults()
-    # an unranged met/alpha is held at the grid default (solar, unenhanced), not the whole axis
-    met_range = met_range if met_range is not None else (defaults['met'], defaults['met'])
-    alpha_range = alpha_range if alpha_range is not None else (defaults['alpha'], defaults['alpha'])
-    want = {'teff': teff_range, 'logg': logg_range, 'met': met_range, 'alpha': alpha_range, **dict(ranges or {})}
+                    '"rvfitter templates list --available"', meta.name, meta.svo_model)
     params = dict(model=meta.svo_model, REQUEST='queryData')
     svo_names = {'teff': 'teff', 'logg': 'logg', 'met': 'meta', 'alpha': 'alpha'}
     for axis, (lo, hi) in want.items():
         params[f'{svo_names.get(axis, axis)}_min'] = lo
         params[f'{svo_names.get(axis, axis)}_max'] = hi
-    log.info('Querying SVO for %s (%s)', grid, ', '.join(f'{a} {lo:g} to {hi:g}' for a, (lo, hi) in want.items()))
+    log.info('Querying SVO for %s (%s)', meta.name, ', '.join(f'{a} {lo:g} to {hi:g}' for a, (lo, hi) in want.items()))
     rows = _parse_ssap(fetch(f'{SVO_SSAP_URL}?{urllib.parse.urlencode(params)}'))
     rows = [r for r in rows if all(lo - 1e-9 <= r.get(a, lo) <= hi + 1e-9 for a, (lo, hi) in want.items())]
     if not rows:
-        raise FileNotFoundError(f'SVO returned no {grid} models in the requested ranges')
-    manifest_path = directory / 'manifest.json'
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        raise FileNotFoundError(f'SVO returned no {meta.name} models in the requested ranges')
+    manifest_path, manifest = _manifest(directory)
     for i, r in enumerate(rows, 1):
         name = _generic_name(r)
         path = directory / name
@@ -914,13 +864,7 @@ def _download_svo(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float]
         data = fetch(r['url'])
         path.write_bytes(data)
         manifest[name] = dict(sha256=hashlib.sha256(data).hexdigest(), **r)
-    manifest_path.write_text(json.dumps(manifest, indent=1, sort_keys=True))
-    out_meta = replace(meta, pattern=GENERIC_PATTERN, teff_scale=1.)
-    tg = TemplateGrid(directory, meta=out_meta, verify=verify)  # an 'auto' medium is measured here
-    if verify:
-        tg._ensure_verified()
-    write_metadata(directory, tg.meta)
-    return tg
+    return _finish(directory, meta, manifest_path, manifest, verify)
 
 
 def available(fetch: Callable[[str], bytes] | None = None, grids: Sequence[str] | None = None) -> dict[str, dict]:
@@ -942,29 +886,26 @@ def available(fetch: Callable[[str], bytes] | None = None, grids: Sequence[str] 
         try:
             rows = _parse_ssap(fetch(f'{SVO_SSAP_URL}?{q}'))
             out[name] = dict(svo_model=meta.svo_model, ok=bool(rows), n=len(rows), error='')
-        except Exception as exc:  # noqa: BLE001 - reported per grid
+        except (OSError, ValueError, ExpatError, http.client.HTTPException) as exc:  # reported per grid
             out[name] = dict(svo_model=meta.svo_model, ok=False, n=0, error=str(exc)[:200])
     return out
 
 
 def _cli_telluric(args) -> int:
     """`rvfitter templates telluric [--build]`: the model's status and provenance, or build it"""
-    import os
-
     from .calibration import telluric, telluric_build
-    if args.out:
-        os.environ['RVFITTER_TELLURIC_MODEL'] = str(Path(args.out).resolve())
+    path = Path(args.out).resolve() if args.out else telluric.cache_path()
     if args.build:
         try:
-            telluric_build.build(args.out, line_cache=args.line_cache, force=args.force)
-        except Exception as exc:  # noqa: BLE001 - reported to the user
+            telluric_build.build(path, line_cache=args.line_cache, force=args.force)
+        except (OSError, http.client.HTTPException) as exc:
             log.error('Building the telluric model failed: %s', exc)
             return 1
-    if not telluric.available():
-        log.info('Telluric model: not built (%s); build it with `%s`', telluric.cache_path(), telluric.BUILD_COMMAND)
+    if not path.is_file():
+        log.info('Telluric model: not built (%s); build it with `%s`', path, telluric.BUILD_COMMAND)
         return 0
-    m = telluric.model()
-    log.info('Telluric model: %s (%.0f-%.0f Å)', telluric.cache_path(), m.wmin, m.wmax)
+    m = telluric._load(str(path))
+    log.info('Telluric model: %s (%.0f-%.0f Å)', path, m.wmin, m.wmax)
     for key in ('source', 'builder', 'built', 'citation', 'terms'):
         if m.meta.get(key):
             log.info('  %s: %s', key, m.meta[key])
