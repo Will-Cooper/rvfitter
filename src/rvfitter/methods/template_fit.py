@@ -24,6 +24,7 @@ from scipy.optimize import minimize, minimize_scalar
 
 from .. import broadening
 from ..constants import C_KMS
+from ..numerics import parabola_vertex
 from ..types import Measurement, MethodResult, Region, Spectrum
 from . import _common as C
 
@@ -359,13 +360,12 @@ def measure_resolution(spectrum: Spectrum, regions: Sequence[Region], cfg: Any =
     chi2 = np.array(chi2)
     i = int(np.argmin(chi2))
     sl = slice(max(i - 2, 0), min(i + 3, len(r_grid)))
-    x = np.log(r_grid[sl])
-    a, b, _ = np.polyfit(x, chi2[sl], 2)
+    x0, _, curv = parabola_vertex(np.log(r_grid[sl]), chi2[sl])
     npix = sum(len(d.wave) for d in datas)
     red = chi2[i] / max(npix - len(datas) * (opts['poly_degree'] + 2), 1)
-    if a > 0:
-        best = float(np.exp(-b / (2 * a)))
-        err = best * np.sqrt(red / a)  # Δχ² = χ²/ν about the minimum in ln R
+    if curv > 0:
+        best = float(np.exp(x0))
+        err = best * np.sqrt(red / (curv / 2))  # Δχ² = χ²/ν about the minimum in ln R
     else:
         best, err = float(r_grid[i]), np.nan
     return dict(resolution=best, resolution_err=float(err), r_grid=r_grid, chi2=chi2)

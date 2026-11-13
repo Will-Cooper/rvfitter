@@ -38,6 +38,7 @@ import pandas as pd
 from . import broadening
 from .constants import C_KMS
 from .medium import to_vacuum, vac_to_air
+from .numerics import parabola_vertex
 from .types import Spectrum
 
 __all__ = ['GridMeta', 'TemplateGrid', 'KNOWN_GRIDS', 'STANDARD_AXES', 'AXIS_SCALE', 'medium_check_lines',
@@ -610,12 +611,8 @@ def _line_minimum(wave: np.ndarray, flux: np.ndarray, centre: float, half: float
     i = sel[np.argmin(flux[sel])]
     if i in (sel[0], sel[-1]) or i == 0 or i == len(wave) - 1:
         return None
-    x, y = wave[i - 1:i + 2], flux[i - 1:i + 2]
-    denom = y[0] - 2 * y[1] + y[2]
-    if denom <= 0:
-        return float(x[1])
-    h = 0.5 * (x[2] - x[0])
-    return float(x[1] + 0.5 * h * (y[0] - y[2]) / denom)
+    x0, _, curv = parabola_vertex(wave[i - 1:i + 2] - wave[i], flux[i - 1:i + 2])
+    return float(wave[i] + x0) if curv > 0 else float(wave[i])
 
 
 def measure_medium(wave: np.ndarray, flux: np.ndarray) -> dict:

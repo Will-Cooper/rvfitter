@@ -37,6 +37,7 @@ from scipy.optimize import curve_fit
 
 from .. import broadening
 from ..constants import C_KMS
+from ..numerics import parabola_vertex
 from ..types import Measurement, MethodResult, Region, Spectrum
 from . import _common as C
 
@@ -239,12 +240,11 @@ def fit_peak(v: np.ndarray, c: np.ndarray, kind: str = 'parabola') -> dict:
         sl = slice(max(i - k, 0), min(i + k + 1, len(cg)))
         if sl.stop - sl.start < 3:
             return dict(rv=float(vg[i]), height=float(cg[i]), curvature=np.nan, width=width, edge=edge, ok=False)
-        a, b, cc = np.polyfit(vg[sl] - vg[i], cg[sl], 2)
-        if a >= 0:
+        x0, height, curv = parabola_vertex(vg[sl] - vg[i], cg[sl])
+        if curv >= 0:
             return dict(rv=float(vg[i]), height=float(cg[i]), curvature=np.nan, width=width, edge=edge, ok=False)
-        x0 = -b / (2 * a)
-        return dict(rv=float(vg[i] + x0), height=float(cc - b ** 2 / (4 * a)), curvature=float(2 * a),
-                    width=float(width), edge=edge, ok=bool(abs(x0) <= (k + 0.5) * step))
+        return dict(rv=float(vg[i] + x0), height=height, curvature=curv, width=float(width), edge=edge,
+                    ok=bool(abs(x0) <= (k + 0.5) * step))
     if kind != 'gaussian':
         raise ValueError(f"peak must be 'gaussian' or 'parabola', not {kind!r}")
     lo, hi = max(0, min(lo, i - 2)), min(len(cg) - 1, max(hi, i + 2))
