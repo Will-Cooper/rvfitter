@@ -105,13 +105,13 @@ def test_sand_from_zip_members(fake_zenodo, tmp_path):
     assert all(v['source'] == 'zenodo' and v['record'] == '11582126' and 'crc32' in v for v in man.values())
 
 
-def test_auto_falls_back_from_svo(fake_zenodo, tmp_path, caplog):
-    def fail(url):
-        raise OSError('HTTP Error 403: Forbidden')
-    tg = T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', fetch=fail)
-    assert len(tg.files) == 2 and 'SVO download of sand failed' in caplog.text
-    with pytest.raises(OSError):
-        T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 's2', fetch=fail, source='svo')
+def test_auto_uses_the_one_source(fake_zenodo, tmp_path):
+    def never(url):
+        raise AssertionError('SVO must not be queried for a grid it does not serve')
+    tg = T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', fetch=never)
+    assert len(tg.files) == 2
+    with pytest.raises(ValueError, match='not served by SVO'):
+        T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 's2', fetch=never, source='svo')
 
 
 def test_no_upstream_source_message(tmp_path):

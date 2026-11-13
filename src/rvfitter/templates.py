@@ -49,7 +49,7 @@ __all__ = ['GridMeta', 'TemplateGrid', 'KNOWN_GRIDS', 'STANDARD_AXES', 'AXIS_SCA
 log = logging.getLogger(__name__)
 
 METADATA_FILE = 'rvfitter_grid.toml'
-SVO_SSAP_URL = 'http://svo2.cab.inta-csic.es/theory/newov2/ssap.php'
+SVO_SSAP_URL = 'https://svo2.cab.inta-csic.es/theory/newov2/ssap.php'
 _LYON_PATTERN = r'^lte(?P<teff>\d+(?:\.\d+)?)-(?P<logg>\d+(?:\.\d+)?)(?P<met>[-+]\d+(?:\.\d+)?)?.*\.(?:txt|dat)$'
 #: file names written by `download`: t2000_g5.0_m-0.5_a+0.2[_co0.5][_kzz7].txt (teff in K)
 GENERIC_PATTERN = (r'^t(?P<teff>[\d.]+)_g(?P<logg>[-\d.]+)_m(?P<met>[-+\d.]+)_a(?P<alpha>[-+\d.]+)'
@@ -147,8 +147,9 @@ class GridMeta:
 
 # Known grids. `coverage` is the documented extent of the full grid (from the model papers and the SVO pages);
 # it is only used to advise which grid to download when a fit reaches the edge of the current one.
-# verified=False: the SVO model id, the medium and/or the coverage have not been checked against a live SVO
-# query. `rvfitter templates list --available` checks the ids; the medium is always measured or verified.
+# verified=False: the medium and/or the coverage have not been checked; the medium is always measured on first use.
+# SVO ids checked against a live SSAP query (2026-11-13): only the BT-Settl grids are served there; the Sonora,
+# SAND and LOWZ grids are not (svo_model=None: Zenodo or a manual download). `templates list --available` re-checks.
 KNOWN_GRIDS: dict[str, GridMeta] = {
     # Lyon BT-Settl-CIFIST: air above 2000 Å (verified on the local grid: alkali minima within 0.03 Å of NIST air)
     'bt-settl-cifist': GridMeta('bt-settl-cifist', 'air', svo_model='bt-settl-cifist',
@@ -165,29 +166,29 @@ KNOWN_GRIDS: dict[str, GridMeta] = {
     # SAND: metal-poor, alpha-enhanced PHOENIX-based grid for cool dwarfs
     # SAND chemistries are specific ([M/H], [alpha/M]) pairs, not a regular met x alpha grid; the defaults are the
     # near-solar chemistry with the most "recommended" models (coverage from the Zenodo file list, 2026-10-27)
-    'sand': GridMeta('sand', 'auto', svo_model='sand', met_default=0.1, alpha_default=0.15,
+    'sand': GridMeta('sand', 'auto', met_default=0.1, alpha_default=0.15,
                      coverage={'teff': (700., 4000.), 'logg': (2., 6.), 'met': (-2.4, 0.3), 'alpha': (-0.05, 0.4)},
                      verified=False, reference='Alvarado et al. 2024, RNAAS 8, 134',
                      upstream='https://doi.org/10.5281/zenodo.11582126'),
-    'sonora-bobcat': GridMeta('sonora-bobcat', 'auto', svo_model='sonora_bobcat', extra_axes=('co',),
+    'sonora-bobcat': GridMeta('sonora-bobcat', 'auto', extra_axes=('co',),
                               extra_defaults={'co': 1.},
                               coverage={'teff': (200., 2400.), 'logg': (3., 5.5), 'met': (-0.5, 0.5),
                                         'alpha': (0., 0.), 'co': (0.5, 1.5)}, verified=False,
                               reference='Marley et al. 2021', upstream='https://doi.org/10.5281/zenodo.5063476'),
-    'sonora-diamondback': GridMeta('sonora-diamondback', 'auto', svo_model='sonora_diamondback',
+    'sonora-diamondback': GridMeta('sonora-diamondback', 'auto',
                                    extra_axes=('fsed',), extra_defaults={'fsed': 2.},
                                    coverage={'teff': (900., 2400.), 'logg': (3.5, 5.5), 'met': (-0.5, 0.5),
                                              'alpha': (0., 0.), 'fsed': (0., 8.)}, verified=False,
                                    reference='Morley et al. 2024 (fsed = 0: cloud-free)',
                                    upstream='https://doi.org/10.5281/zenodo.12735103'),
-    'sonora-elfowl': GridMeta('sonora-elfowl', 'auto', svo_model='sonora_elf_owl', extra_axes=('co', 'kzz'),
+    'sonora-elfowl': GridMeta('sonora-elfowl', 'auto', extra_axes=('co', 'kzz'),
                               extra_defaults={'co': 1., 'kzz': 4.},
                               coverage={'teff': (275., 2400.), 'logg': (3.25, 5.5), 'met': (-1., 1.),
                                         'alpha': (0., 0.), 'co': (0.22, 1.14), 'kzz': (2., 9.)}, verified=False,
                               reference='Mukherjee et al. 2024; Wogan et al. 2025 (Elf Owl, Paper IV)',
                               upstream='https://doi.org/10.5281/zenodo.15150881'),
-    # LOWZ: metal-poor cool atmospheres; may not be on SVO: use a local directory with its own GridMeta
-    'lowz': GridMeta('lowz', 'auto', svo_model='lowz', extra_axes=('co', 'kzz'),
+    # LOWZ: metal-poor cool atmospheres; not on SVO or Zenodo: download manually, then open the directory
+    'lowz': GridMeta('lowz', 'auto', extra_axes=('co', 'kzz'),
                      extra_defaults={'co': 0.55, 'kzz': -1.},
                      coverage={'teff': (500., 1600.), 'logg': (3.5, 5.25), 'met': (-2.5, 1.), 'alpha': (0., 0.),
                                'co': (0.1, 0.85), 'kzz': (-1., 10.)}, verified=False,
@@ -677,9 +678,9 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
     Download a template grid into the cache (`directory`, default `cache_dir() / grid`) and open it.
 
     The ranges are inclusive; an unranged met/alpha (or extra axis, e.g. ``ranges={'co': (0.5, 1.)}``) is held at
-    the grid default. `source` is 'svo', 'zenodo' or 'auto' (SVO, then the upstream Zenodo record with a WARNING;
-    the manifest records the source). `fetch` (URL → bytes) replaces the SVO GET (tests, proxies); `verify`
-    verifies, or for 'auto' measures, the medium.
+    the grid default. `source` is 'svo', 'zenodo' or 'auto' (the grid's one source: SVO if it serves the
+    grid, else Zenodo; the manifest records the source). `fetch` (URL → bytes) replaces the SVO GET (tests,
+    proxies); `verify` verifies, or for 'auto' measures, the medium.
     """
     from . import grid_sources
     if source not in ('auto', 'svo', 'zenodo'):
@@ -695,13 +696,11 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
             **{a: tuple(r) for a, r in (ranges or {}).items()}}
     directory = Path(directory) if directory is not None else cache_dir() / grid
     directory.mkdir(parents=True, exist_ok=True)
-    if source in ('auto', 'svo') and meta.svo_model is not None:
-        try:
-            return _download_svo(meta, want, directory, fetch or _fetch, verify)
-        except (OSError, ValueError, ExpatError, http.client.HTTPException) as exc:
-            if source == 'svo' or grid not in grid_sources.ZENODO_GRIDS:
-                raise
-            log.warning('SVO download of %s failed (%s); using the upstream Zenodo record', grid, exc)
+    # each known grid has one automatic source: SVO if it serves the grid, else its Zenodo record
+    if meta.svo_model is not None and source in ('auto', 'svo'):
+        return _download_svo(meta, want, directory, fetch or _fetch, verify)
+    if source == 'svo':
+        raise ValueError(f'grid {grid} is not served by SVO; use source="zenodo" or "auto"')
     if grid not in grid_sources.ZENODO_GRIDS:
         raise ValueError(f'grid {grid} has no automatic upstream source: download it manually from {meta.upstream} '
                          f'and open the directory with a GridMeta (templates.local_dir)')
@@ -837,7 +836,7 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
                    help='range of an extra axis (e.g. --range co 0.5 1.0)')
     d.add_argument('--dir', default=None)
     d.add_argument('--source', choices=('auto', 'svo', 'zenodo'), default='auto',
-                   help='where to download from (auto: SVO, then the upstream Zenodo record)')
+                   help='where to download from (auto: SVO for the BT-Settl grids, Zenodo for the others)')
     ls = sub.add_parser('list', help='list the grids in the cache or a directory, or those available on SVO')
     ls.add_argument('--dir', default=None)
     ls.add_argument('--available', action='store_true', help='query SVO for the known grids')

@@ -417,7 +417,7 @@ Through `pipeline.run`: tellcorr input, sky from the Science spec1d, R = 2602, f
 - **End-to-end test** (`tests/test_refit_e2e.py`): two synthetic objects are run, the second is refitted with a wider `met_range`, the TOML is dumped and rerun from scratch, and the CSV tables are byte-identical. The unpatched object is unchanged, and the patched object alone gives the same row.
 - **Download defaults:** `templates.download` holds an unranged met/alpha at the grid default (SAND: the near-solar chemistry [M/H] +0.1, [α/M] +0.15, since its chemistries are specific pairs). All requests carry an rvfitter User-Agent.
 - **SVO** now answers HTTP 403 Forbidden from this host (curl too), so its model ids remain unverified. The network test skips on 403 or a timeout.
-- **Zenodo** (`grid_sources.py`; `templates.download(source="auto" | "svo" | "zenodo")` and CLI `--source`; auto tries SVO first, then Zenodo). The records were verified live on 2026-10-27; all are CC-BY-4.0:
+- **Zenodo** (`grid_sources.py`; `templates.download(source="auto" | "svo" | "zenodo")` and CLI `--source`; auto uses each grid's one source: SVO serves only the BT-Settl grids (checked 2026-11-13), the others come from Zenodo). The records were verified live on 2026-10-27; all are CC-BY-4.0:
 
   | Grid | Record(s) | Archive | Format |
   |---|---|---|---|
