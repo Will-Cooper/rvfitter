@@ -8,7 +8,6 @@ block, never at import, and its text is frozen onto the figure so that it still 
 from __future__ import annotations
 
 import logging
-import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,19 +31,18 @@ __all__ = ['style_context', 'plot_line_fits', 'plot_ccf', 'plot_adopted', 'plot_
 
 COLOURS = ('#000000', '#004488', '#DDAA33')  # black, blue, gold; then the same three dashed
 GREY = '0.45'
-_ANG = 'Å'
-
-
-def _latex_available() -> bool:
-    return shutil.which('latex') is not None and shutil.which('dvipng') is not None
+_ANG = r'$\mathrm{\AA}$'  # cmr10 has no Å glyph; mathtext draws it
+# display names of the methods
+METHOD_LABELS = {'ccf': 'CCF', 'template_fit': 'Template fit', 'linecentre': 'Line centring',
+                 'forward_mcmc': 'Forward model', 'lsd': 'LSD', 'telluric_ref': 'Telluric reference'}
 
 
 def _rc() -> dict:
-    usetex = _latex_available()
-    if not usetex:
-        log.debug('No LaTeX installation found: figure text uses matplotlib mathtext')
+    # Computer Modern without a LaTeX install: the fonts are stored on each text, so a figure draws the same
+    # wherever it is drawn (usetex would read the family from rcParams at draw time, outside this style)
     return {
-        'text.usetex': usetex, 'font.family': 'serif', 'mathtext.fontset': 'dejavuserif' if not usetex else 'cm',
+        'text.usetex': False, 'font.family': 'serif', 'font.serif': ['cmr10'], 'mathtext.fontset': 'cm',
+        'axes.formatter.use_mathtext': True, 'axes.unicode_minus': False,
         'axes.prop_cycle': cycler(color=COLOURS * 2, linestyle=['-'] * 3 + ['--'] * 3),
         'xtick.direction': 'in', 'ytick.direction': 'in', 'xtick.top': True, 'ytick.right': True,
         'xtick.minor.visible': True, 'ytick.minor.visible': True, 'image.cmap': 'viridis',
@@ -59,15 +57,15 @@ def style_context() -> Iterator[None]:
         yield
 
 
-def _t(s: str) -> str:
-    """Escape LaTeX-special characters of free text (region names) when LaTeX is in use"""
-    if not mpl.rcParams['text.usetex']:
-        return s
-    return s.replace('\\', '').replace('_', r'\_').replace('%', r'\%').replace('&', r'\&').replace('#', r'\#')
+def _break_gaps(w: np.ndarray, *ys: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Insert NaN where the pixel spacing jumps (masked intervals), so lines are not drawn across them"""
+    dw = np.diff(w)
+    at = np.flatnonzero(dw > 1.5 * np.median(dw)) + 1
+    return (np.insert(w, at, np.nan), *(np.insert(y, at, np.nan) for y in ys))
 
 
 def _ang() -> str:
-    return r'\AA' if mpl.rcParams['text.usetex'] else _ANG
+    return _ANG
 
 
 def _kms() -> str:
@@ -75,10 +73,12 @@ def _kms() -> str:
 
 
 def _freeze(fig: Figure) -> Figure:
-    """Fix the usetex choice on every text so the figure draws as built after the style context has closed"""
-    use = bool(mpl.rcParams['text.usetex'])
+    """Pin the style's fonts on every text (tick labels included), so the figure draws as built outside the style"""
+    fig.draw_without_rendering()  # creates the tick labels while the style is active
+    family, math = mpl.rcParams['font.serif'], mpl.rcParams['mathtext.fontset']
     for t in fig.findobj(Text):
-        t.set_usetex(use)
+        t.set_fontfamily(family)
+        t.set_math_fontfamily(math)
     return fig
 
 
@@ -116,7 +116,7 @@ def _top_label(ax, x: float, text: str, line: bool = True) -> None:
     """A grey feature label along the top of the axes, with a dashed line for an atomic line"""
     if line:
         ax.axvline(x, color=GREY, ls='--', lw=0.8, zorder=0)
-    ax.text(x, 1.02, _t(text), color=GREY, ha='center', va='bottom', fontsize=7,
+    ax.text(x, 1.02, text, color=GREY, ha='center', va='bottom', fontsize=7,
             transform=blended_transform_factory(ax.transData, ax.transAxes))
 
 
@@ -143,8 +143,9 @@ def plot_line_fits(result: ObjectResult) -> Figure:
         norm = np.nanmedian(y) or 1.
         for lo, hi in d.get('continuum', ()):
             ax.axvspan(lo, hi, color=COLOURS[2], alpha=0.2, lw=0)
-        ax.step(w, y / norm, where='mid', color=COLOURS[0], lw=0.8)
-        ax.plot(w, np.asarray(d['model']) / norm, color=COLOURS[1], lw=1.2)
+        wg, yg, mg = _break_gaps(w, y / norm, np.asarray(d['model']) / norm)
+        ax.step(wg, yg, where='mid', color=COLOURS[0], lw=0.8)
+        ax.plot(wg, mg, color=COLOURS[1], lw=1.2)
         for name, rest, fit in zip(d['lines'], d['rest_wave'], d['fit_wave'], strict=True):
             ax.axvline(fit, color=COLOURS[2], ls='--', lw=1)
             _top_label(ax, rest, name)
@@ -207,7 +208,7 @@ def plot_adopted(result: ObjectResult) -> Figure:
         rv, err = np.array([m.rv for m in ms]), np.array([m.rv_err for m in ms])
         used = np.array([not m.flag & EXCLUDE_FLAGS for m in ms])
         kw = dict(color=sty['color'], ecolor=sty['color'], ls='none', capsize=0, elinewidth=1.2, ms=4)
-        ax.errorbar(rv[used], y[used], xerr=err[used], fmt=mark, label=_t(name), **kw)
+        ax.errorbar(rv[used], y[used], xerr=err[used], fmt=mark, label=METHOD_LABELS.get(name, name), **kw)
         ax.errorbar(rv[~used], y[~used], xerr=err[~used], fmt=mark, mfc='none', **kw)
     ad = result.adopted
     if ad.get('median') is not None and np.isfinite(ad['median']):
@@ -215,7 +216,7 @@ def plot_adopted(result: ObjectResult) -> Figure:
                    color=GREY, alpha=0.25, lw=0)
         ax.axvline(ad['median'], color=GREY, ls='--', lw=1)
         ax.set_title(rf'Adopted RV $={ad["median"]:.2f}\pm{ad["err"]:.2f}$ {_kms()}', fontsize=9)
-    ax.set_yticks(range(len(lines)), [_t(x) for x in lines])
+    ax.set_yticks(range(len(lines)), lines)
     ax.set_ylim(-0.7, len(lines) - 0.3)
     ax.invert_yaxis()
     ax.set_xlabel(f'RV [{_kms()}]')
@@ -234,7 +235,7 @@ def plot_corner(result: ObjectResult) -> Figure:
     m = _need(result, 'forward_mcmc', 'samples')[0]
     d = m.diagnostics
     fig = Figure(figsize=(6, 6))
-    corner.corner(np.asarray(d['samples']), labels=[_t(str(n)) for n in d['sample_names']], fig=fig,
+    corner.corner(np.asarray(d['samples']), labels=[str(n) for n in d['sample_names']], fig=fig,
                   quantiles=[0.16, 0.5, 0.84], show_titles=True, color=COLOURS[0])
     return fig
 
