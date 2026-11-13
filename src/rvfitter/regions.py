@@ -645,32 +645,16 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
            overrides: Mapping[str, Sequence[Any]] | None = None,
            options: Any = None) -> dict[str, list[Region]]:
     """
-    Choose the regions each method should use on this spectrum
+    ``{method: [Region, ...]}`` for a vacuum spectrum, best (smallest photon-noise σ_RV) first.
 
-    Parameters
-    ----------
-    spectrum
-        The spectrum (vacuum wavelengths). If ``resolution`` is None it is estimated from the pixel scale
-    teff
-        Teff prior [K]; features whose useful range excludes it are dropped. None disables the prior
-    methods
-        Method names: 'linecentre' gets line windows with continuum, 'telluric_ref' gets telluric bands, and every
-        other ('ccf', 'template_fit', 'forward_mcmc', 'lsd'...) gets merged non-telluric spans
-    overrides
-        ``{method: [entry, ...]}`` applied on top of the automatic selection of that method. An entry is a
-        mapping ``{'name', 'kind', 'wmin', 'wmax'[, 'centre', 'continuum']}`` (adds a region, or replaces the one
-        of the same name), ``{'name', 'remove': True}`` (drops it), a `Region` or a ``(wmin, wmax)`` tuple.
-        Entries are clipped to the coverage (wholly uncovered ones are dropped with a warning). A 'linecentre'
-        entry without a centre takes it from the catalogue line of the same name, else a `ValueError` is raised
-    options
-        `SelectOptions`, a mapping or object with config-style names (``min_snr``, ``telluric_strictness``;
-        see `SelectOptions.from_config`), or None for the defaults
-
-    Returns
-    -------
-    regions
-        ``{method: [Region, ...]}``, best (smallest photon-noise sigma_RV) first. A method with nothing usable
-        gets an empty list (a warning is logged); this function never raises for missing bands.
+    'linecentre' gets line windows with continuum, 'telluric_ref' telluric bands, every other method non-telluric
+    spans. A spectrum without a resolution has it estimated from the pixel scale. Features whose Teff range
+    excludes `teff` [K] are dropped (None: no prior). `overrides` maps a method to entries applied on top: a
+    mapping ``{'name', 'kind', 'wmin', 'wmax'[, 'centre', 'continuum']}`` (adds, or replaces the region of that
+    name), ``{'name', 'remove': True}``, a `Region` or a ``(wmin, wmax)`` tuple, clipped to the coverage (wholly
+    uncovered ones are dropped with a warning); a 'linecentre' entry without a centre takes the catalogue line's,
+    else raises `ValueError`. `options` is a `SelectOptions` or config-style names (`SelectOptions.from_config`).
+    A method with nothing usable gets an empty list and a warning; missing bands never raise.
     """
     opts = options if isinstance(options, SelectOptions) else SelectOptions.from_config(options)
     methods = list(methods)

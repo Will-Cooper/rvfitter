@@ -413,26 +413,9 @@ def download_zenodo(grid: str, want: Mapping[str, tuple[float, float]], director
     Each model is written by `write` to the temporary name ``<path>.part`` (see `_Staging.part`) and renamed to
     ``<path>`` only once its checksum has passed (MD5 of the whole tar.gz stream, CRC-32 of each zip member). If
     anything fails (after the retries of transient errors), every file written by this call is removed and the
-    exception is re-raised.
-
-    Parameters
-    ----------
-    grid
-        A key of `ZENODO_GRIDS`
-    want
-        {axis: (min, max)} ranges (axes absent from a model's parameters are ignored)
-    directory
-        Output directory (used by `write`)
-    axes
-        The grid's axes (for range checks)
-    write
-        Callback (params, wave [Å], F_λ, medium or None, provenance) → final path; it must write the data to
-        ``<final path>.part`` and not to the final path itself
-
-    Returns
-    -------
-    paths
-        The written files
+    exception is re-raised. `want` holds {axis: (min, max)} (axes absent from a model's parameters are ignored).
+    `write(params, wave [Å], F_λ, medium or None, provenance)` returns the final path and must write the data to
+    ``<final path>.part``. Returns the written paths.
     """
     spec = ZENODO_GRIDS[grid]
     stage = _Staging()

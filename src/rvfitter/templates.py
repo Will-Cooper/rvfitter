@@ -65,15 +65,10 @@ _MEDIUM_CHECK_MIN_AKI = 2.5e7  # s^-1: only the strongest alkali transitions, wh
 @functools.lru_cache(maxsize=1)
 def medium_check_lines() -> tuple[tuple[str, float], ...]:
     """
-    The strong alkali lines used to identify the wavelength medium of a model
+    (species, vacuum λ [Å]) of the strong alkali lines that identify a model's wavelength medium, sorted by λ.
 
-    They are read from the NIST ASD reference `data/nist_lines.csv` (vacuum wavelengths): the Na I, K I, Rb I
-    and Cs I transitions with A_ki ≥ 2.5e7 s⁻¹ that have an air wavelength.
-
-    Returns
-    -------
-    lines
-        (species, vacuum wavelength [Å]) pairs, sorted by wavelength
+    From the NIST ASD reference `data/nist_lines.csv`: the Na I, K I, Rb I and Cs I transitions with
+    A_ki ≥ 2.5e7 s⁻¹ that have an air wavelength.
     """
     from importlib import resources
     with resources.files('rvfitter').joinpath('data', 'nist_lines.csv').open() as fh:
@@ -220,14 +215,7 @@ def _read_metadata(directory: Path) -> GridMeta | None:
 # reading and caching
 # ---------------------------------------------------------------------------------------------------------------
 def read_two_column(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Read a whitespace-separated two-column (wavelength, flux) text file, skipping '#' comments
-
-    Returns
-    -------
-    wave, flux
-        Strictly increasing positive wavelengths (duplicates removed) and their fluxes, in the file's medium
-    """
+    """(wave, flux) of a whitespace-separated two-column file ('#' comments): λ > 0, strictly increasing."""
     df = pd.read_csv(path, sep=r'\s+', comment='#', header=None, usecols=[0, 1], dtype=float, engine='c')
     wave, flux = df[0].to_numpy(), df[1].to_numpy()
     good = np.isfinite(wave) & np.isfinite(flux) & (wave > 0)
@@ -292,19 +280,10 @@ def clear_cache() -> None:
 # ---------------------------------------------------------------------------------------------------------------
 class TemplateGrid:
     """
-    A grid of model spectra in a local directory, over the axes of its GridMeta
+    A grid of model spectra in a local directory (not searched recursively), over the axes of its GridMeta.
 
-    Parameters
-    ----------
-    directory
-        The directory holding the template files (searched non-recursively)
-    grid
-        A name from `KNOWN_GRIDS`, used when the directory has no metadata file
-    meta
-        Explicit metadata, overriding both the file and `grid`
-    verify
-        Run `verify_medium` before the first use and refuse the grid if the declared medium is wrong (an 'auto'
-        medium is measured instead)
+    The metadata come from `meta`, else the directory's metadata file, else the known grid named `grid`. With
+    `verify`, the declared medium is checked before first use (an 'auto' medium is measured instead).
     """
 
     def __init__(self, directory: str | Path, grid: str | None = None, meta: GridMeta | None = None,
@@ -403,13 +382,8 @@ class TemplateGrid:
 
     def _corners(self, p: dict):
         """
-        Multilinear corners and weights over every axis
-
-        Returns
-        -------
-        corners, missing
-            corners: [(path, weight)], or None if the request lies outside the grid's range on some axis or a
-            corner file is missing; missing: the parameter tuples of the missing corners ([] when outside)
+        (corners, missing): the multilinear [(path, weight)] over every axis, and the parameter tuples of missing
+        corner files. corners is None outside the grid's range on some axis (missing = []) or at a hole.
         """
         per_axis = []
         for a in self.axes:
@@ -467,24 +441,11 @@ class TemplateGrid:
     def get(self, teff: float, logg: float = 5., met: float | None = None, *,
             wave_range: tuple[float, float] | None = None, method: str = 'linear', **extra: float) -> Spectrum:
         """
-        A template at the requested parameters, multilinearly interpolated in flux, or the nearest grid point
+        The template at the parameters (vacuum λ, NaN σ), multilinearly interpolated in flux or ('nearest') the
+        nearest grid point.
 
-        Parameters
-        ----------
-        teff, logg, met
-            The standard parameters; met defaults to the grid's default
-        wave_range
-            Vacuum wavelength range [Å] to return (default: everything)
-        method
-            'linear' (default), falling back to the nearest point with meta['outside_grid'] = True outside the
-            grid or where a corner is missing; or 'nearest'
-        **extra
-            Other axes (alpha and the grid's extra axes); missing ones take their defaults
-
-        Returns
-        -------
-        template
-            Vacuum wavelengths, flux and NaN σ; meta records the parameters, files, weights and flags
+        Outside the grid, or at a hole (a missing corner), 'linear' falls back to the nearest point with a WARNING
+        and meta['outside_grid'] or meta['grid_hole']. Unset axes (met, alpha, `extra`) take the grid defaults.
         """
         if method not in ('linear', 'nearest'):
             raise ValueError(f"method must be 'linear' or 'nearest', not {method!r}")
@@ -508,28 +469,11 @@ class TemplateGrid:
                   wave_range: tuple[float, float], dv: float | None = None, vsini: float = 0., epsilon: float = 0.6,
                   method: str = 'linear', **extra: float) -> Spectrum:
         """
-        A template broadened to resolving power R (and optionally vsini) on a uniform ln λ grid
+        As `get`, broadened to `resolution` (None: no LSF) and `vsini` on a uniform ln λ grid over `wave_range`.
 
-        The LSF-broadened grid points are cached (keyed on the file, R, the grid and the output grid), and
-        interpolation is done after broadening, which is equivalent because both operations are linear.
-
-        Parameters
-        ----------
-        teff, logg, met, method, **extra
-            As for `get`
-        resolution
-            Target resolving power (None: no instrumental broadening)
-        wave_range
-            Vacuum wavelength range [Å] of the output grid
-        dv
-            Output pixel step [km/s]; default c/(10 R), or 1 km/s without R
-        vsini, epsilon
-            Rotational broadening (applied after the cache)
-
-        Returns
-        -------
-        template
-            The broadened template; resolution is set to R
+        The step `dv` [km/s] defaults to c/(10 R), or 1 km/s without R. The LSF-broadened grid points are cached
+        (keyed on the file, R and the output grid) and interpolated after broadening, which is equivalent because
+        both are linear; rotation is applied after the cache.
         """
         self._ensure_verified()
         p = self.params(teff, logg, met, **extra)
@@ -560,11 +504,7 @@ class TemplateGrid:
         teff and log g without a range take every value (teff: ±300 K around `teff` if given). Every other
         axis (met, alpha, extra axes) without a range is held at the grid value nearest its prior (if given in
         `priors`) or its default, so the candidate count does not multiply over axes the user did not ask for.
-
-        Returns
-        -------
-        points
-            Sorted tuples in `axes` order
+        Returns sorted tuples in `axes` order.
         """
         if teff_range is None and teff is not None:
             teff_range = (teff - 300., teff + 300.)
@@ -614,18 +554,9 @@ def measure_medium(wave: np.ndarray, flux: np.ndarray) -> dict:
     Decide whether a model's wavelengths are in air or vacuum from the minima of the alkali resonance lines
 
     Each line minimum is located within ±(|λ_vac − λ_air| + 1 Å) of the mid-point and assigned to the closer
-    of the NIST vacuum and air wavelengths.
-
-    Parameters
-    ----------
-    wave, flux
-        The model, in its own (unconverted) wavelengths [Å]
-
-    Returns
-    -------
-    result
-        'medium' ('air', 'vacuum' or None if no line could be measured), 'n_air', 'n_vacuum', and per-line
-        'offsets_air' and 'offsets_vacuum' [Å]
+    of the NIST vacuum and air wavelengths. `wave` is the model's own (unconverted) λ [Å]. Returns 'medium'
+    ('air', 'vacuum', or None if no line could be measured), 'n_air', 'n_vacuum' and the per-line
+    'offsets_air' and 'offsets_vacuum' [Å].
     """
     n_air = n_vac = 0
     off_air, off_vac = [], []
@@ -648,24 +579,9 @@ def measure_medium(wave: np.ndarray, flux: np.ndarray) -> dict:
 
 def verify_medium(grid: TemplateGrid, teff: float | None = None, logg: float | None = None) -> dict:
     """
-    Check a grid's declared wavelength medium against its alkali line minima
+    Check a grid's declared medium against the alkali minima of one template (default: nearest the grid's middle).
 
-    Parameters
-    ----------
-    grid
-        The grid
-    teff, logg
-        The template to test (default: the grid point nearest the middle of the grid)
-
-    Returns
-    -------
-    result
-        As `measure_medium`, plus 'declared' and 'file'
-
-    Raises
-    ------
-    MediumMismatchError
-        If the measured medium disagrees with the declared one
+    Returns `measure_medium`'s result plus 'declared' and 'file'; raises `MediumMismatchError` on a disagreement.
     """
     b = grid.bounds()
     mid = {a: 0.5 * (lo + hi) for a, (lo, hi) in b.items()}
@@ -868,14 +784,7 @@ def _download_svo(meta: GridMeta, want: dict, directory: Path, fetch: Callable[[
 
 
 def available(fetch: Callable[[str], bytes] | None = None, grids: Sequence[str] | None = None) -> dict[str, dict]:
-    """
-    Check which known grids the SVO theory server serves, with a small SSAP query per grid
-
-    Returns
-    -------
-    status
-        {grid: {'svo_model', 'ok', 'n' (rows returned for 1900–2100 K), 'error'}}
-    """
+    """{grid: {'svo_model', 'ok', 'n' (rows at 1900–2100 K), 'error'}} from a small SVO SSAP query per grid."""
     fetch = fetch or _fetch
     out = {}
     for name in grids or sorted(KNOWN_GRIDS):
@@ -913,14 +822,7 @@ def _cli_telluric(args) -> int:
 
 
 def cli_main(argv: Sequence[str] | None = None) -> int:
-    """
-    `rvfitter templates download|list|verify|telluric`
-
-    Returns
-    -------
-    code
-        Process exit code
-    """
+    """`rvfitter templates download|list|verify|telluric`; returns the exit code."""
     import argparse
     parser = argparse.ArgumentParser(prog='rvfitter templates', description='Manage template grids.')
     sub = parser.add_subparsers(dest='action', required=True)

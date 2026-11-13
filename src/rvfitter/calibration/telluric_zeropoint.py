@@ -522,13 +522,8 @@ def star_minus_sky_direct(tell: TelluricZeroPoint, sky_windows: Sequence[dict]) 
     interpolation. Each usable node gives d_i = Δv_tell,i − Δv_sky,i with error √(σ_tell,i² + σ_sky,i²); the
     constant is their weighted mean. It is measured only with at least `STAR_SKY_MIN_NODES` nodes. Their χ² against
     the constant tests "the star sees the sky's distortion plus a constant": when its p-value is ≤ `STAR_SKY_P_MIN`,
-    the error is inflated by the Birge factor and `consistent` is False.
-
-    Returns
-    -------
-    info
-        {'zp_star_sky', 'zp_star_sky_err', 'n_nodes', 'chi2', 'dof', 'p', 'birge', 'consistent', 'method',
-        'reason', 'nodes': [...]}; the constant and its error are NaN when fewer than the minimum nodes are usable
+    the error is inflated by the Birge factor and `consistent` is False. With fewer nodes the constant and its
+    error are NaN (`reason` says why).
     """
     from scipy.stats import chi2 as chi2_dist
     lam = np.asarray(tell.node_wave, float)

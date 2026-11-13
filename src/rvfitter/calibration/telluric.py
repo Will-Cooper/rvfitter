@@ -110,14 +110,7 @@ def _load(path: str) -> TelluricModel:
 
 
 def model() -> TelluricModel:
-    """
-    The telluric model at `cache_path()` (loaded once per path)
-
-    Raises
-    ------
-    TelluricModelUnavailable
-        If it has not been built
-    """
+    """The telluric model at `cache_path()` (loaded once per path); `TelluricModelUnavailable` if not built."""
     path = cache_path()
     if not path.is_file():
         raise TelluricModelUnavailable(unavailable_message(path))
@@ -142,27 +135,10 @@ def lsf_sigma_pix(resolution: float, dlnlam: float) -> float:
 def transmission(wave: np.ndarray, airmass: float = 1., pwv: float = DEFAULT_PWV, *,
                  resolution: float | None = None, dv: float = 0.) -> np.ndarray:
     """
-    The telluric transmission at `wave`
+    The telluric transmission at vacuum `wave` [Å] (increasing) for airmass X and PWV [mm]; 1 outside the model.
 
-    Parameters
-    ----------
-    wave
-        Vacuum wavelengths [Å], strictly increasing
-    airmass
-        Airmass X (scales every optical depth)
-    pwv
-        Precipitable water vapour [mm]
-    resolution
-        Resolving power of a Gaussian LSF; the transmission is then convolved and averaged over each pixel of
-        `wave`. None: the model sampled at `wave` (pixel-averaged where the pixels are coarser than the grid)
-    dv
-        Velocity shift of the telluric lines [km/s]: the model is evaluated at λ / D(dv), so positive dv moves
-        the features to the red (as a wavelength scale that is too red would)
-
-    Returns
-    -------
-    t
-        Transmission (1 outside the model's 6000–25 000 Å coverage)
+    With `resolution`, the model is convolved with a Gaussian LSF before being averaged over the pixels. The model
+    is evaluated at λ / D(dv) [km/s], so a positive dv moves the features to the red.
     """
     wave = np.atleast_1d(np.asarray(wave, dtype=float))
     out = np.ones(len(wave))
