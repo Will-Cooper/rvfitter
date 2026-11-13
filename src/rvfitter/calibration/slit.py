@@ -12,8 +12,7 @@ the slit edges. The centroid of the transmitted light is
 
 and σ_x is the RMS of c(x) over the prior. For F ≪ W, c(x) = x and σ_x = (W − F)/√12; when the star
 overfills the slit (F ≥ W) the clipping damps the shift, so σ_x stays finite and small rather than undefined.
-
-which becomes a velocity through the plate scale along the dispersion (arcsec per binned pixel) and the dispersion
+σ_x becomes a velocity through the plate scale along the dispersion (arcsec per binned pixel) and the dispersion
 D(λ) [Å per pixel] of the wavelength solution:
 
     σ_v(λ) = c · (σ_x / s_spec) · D(λ) / λ.
@@ -97,7 +96,8 @@ class SlitInputs:
     @property
     def sigma_arcsec(self) -> float:
         """RMS centroid offset of the transmitted light across the slit [arcsec]; NaN if W or F is unknown"""
-        if self.width_arcsec is None or self.fwhm_arcsec is None or not self.width_arcsec > 0:
+        if self.width_arcsec is None or self.fwhm_arcsec is None or not (self.width_arcsec > 0
+                                                                         and self.fwhm_arcsec > 0):
             return float('nan')
         return centroid_rms(self.width_arcsec, self.fwhm_arcsec)
 
@@ -158,16 +158,15 @@ def inputs(spectra: Sequence[Any]) -> SlitInputs:
     return out
 
 
-def centroid_rms(width: float, fwhm: float, acquisition: float = ACQUISITION_ARCSEC, n: int = 401) -> float:
+def centroid_rms(width: float, fwhm: float) -> float:
     """
-    RMS [arcsec] of the transmitted-light centroid c(x) of a Gaussian profile (FWHM `fwhm`) clipped by a slit of
-    width `width`, for a profile centre x uniform within ±max((width − fwhm)/2, acquisition)
+    RMS [arcsec] of the transmitted-light centroid c(x) of a Gaussian profile (FWHM `fwhm` > 0) clipped by a slit
+    of width `width`, for a profile centre x uniform within ±max((width − fwhm)/2, `ACQUISITION_ARCSEC`)
     """
-    half = max((width - fwhm) / 2., acquisition)
+    n = 401
+    half = max((width - fwhm) / 2., ACQUISITION_ARCSEC)
     x = half * ((2. * np.arange(n) + 1.) / n - 1.)  # midpoints of n equal bins: an unbiased uniform average
     sig = fwhm / np.sqrt(8. * np.log(2.))
-    if sig <= 0:
-        return float(np.sqrt(np.mean(np.clip(x, -width / 2., width / 2.) ** 2)))
     a, b = (-width / 2. - x) / sig, (width / 2. - x) / sig
     pdf = np.exp(-0.5 * a * a) - np.exp(-0.5 * b * b)
     c = x + sig * pdf / np.sqrt(2. * np.pi) / np.maximum(ndtr(b) - ndtr(a), 1e-300)

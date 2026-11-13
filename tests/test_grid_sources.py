@@ -3,7 +3,6 @@ import hashlib
 import io
 import json
 import logging
-import socket
 import tarfile
 import tomllib
 import urllib.error
@@ -14,6 +13,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from conftest import reachable
 from rvfitter import grid_sources as G
 from rvfitter import templates as T
 from rvfitter.medium import vac_to_air
@@ -128,18 +128,10 @@ def test_parsers():
     assert G.parse_sand('SAND_z-0.15_a-0.05_t700_g4.0_inconclusive.fits')['alpha'] == -0.05
 
 
-def _zenodo_online() -> bool:
-    try:
-        socket.create_connection(('zenodo.org', 443), timeout=5).close()
-        return True
-    except OSError:
-        return False
-
-
 @pytest.mark.slow
 @pytest.mark.network
 def test_live_sand_from_zenodo(tmp_path):
-    if not _zenodo_online():
+    if not reachable('zenodo.org', 443):
         pytest.skip('Zenodo not reachable')
     tg = T.download('sand', (2000., 2000.), (5.0, 5.0), directory=tmp_path / 'sand', source='zenodo')
     assert len(tg.files) >= 1 and tg.meta.medium == 'vacuum'

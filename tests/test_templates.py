@@ -36,11 +36,7 @@ def _make_grid(directory: Path, medium='air', declare=None, with_meta=True):
     return directory
 
 
-@pytest.fixture(autouse=True)
-def _clear():
-    T.clear_cache()
-    yield
-    T.clear_cache()
+pytestmark = pytest.mark.usefixtures('clear_template_cache')
 
 
 def test_metadata_parse_and_roundtrip(tmp_path):

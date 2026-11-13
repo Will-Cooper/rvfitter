@@ -1,16 +1,13 @@
 """Tests for rvfitter.features and rvfitter.regions"""
 import logging
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
-from rvfitter.features import features, load_catalogue  # noqa: E402
-from rvfitter.regions import SelectOptions, der_snr, select  # noqa: E402
-from rvfitter.types import Spectrum  # noqa: E402
-from synth import make_spectrum  # noqa: E402
+from rvfitter.features import features, load_catalogue
+from rvfitter.regions import SelectOptions, der_snr, select
+from rvfitter.types import Spectrum
+from synth import make_spectrum
 
 METHODS = ['linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'telluric_ref']
 

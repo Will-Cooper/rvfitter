@@ -1,5 +1,6 @@
 """Shared fixtures: every test sees the tiny synthetic telluric model unless it asks for the real one."""
 import os
+import socket
 
 import pytest
 
@@ -20,6 +21,23 @@ def synthetic_telluric_model(tmp_path_factory):
     else:
         os.environ['RVFITTER_TELLURIC_MODEL'] = old
     telluric.reload()
+
+
+@pytest.fixture
+def clear_template_cache():
+    from rvfitter import templates
+    templates.clear_cache()
+    yield
+    templates.clear_cache()
+
+
+def reachable(host: str, port: int) -> bool:
+    """Whether a TCP connection to host:port opens within 5 s (live network tests)"""
+    try:
+        socket.create_connection((host, port), timeout=5).close()
+        return True
+    except OSError:
+        return False
 
 
 @pytest.fixture
