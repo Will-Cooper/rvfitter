@@ -15,9 +15,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from rvfitter import broadening, config, medium, pipeline
+from injection import cfg_of
+from rvfitter import broadening, config, medium
 from rvfitter.calibration import sky_zeropoint, telluric
 from rvfitter.calibration import telluric_zeropoint as TZ
+from rvfitter.calibration import wavelength_correction as wcorr
 from rvfitter.types import Region, Spectrum
 from synth import make_template
 
@@ -146,12 +148,12 @@ def test_unavailable_model_skips_cleanly(tmp_path, monkeypatch, caplog):
     assert TZ.measure(spec) is None
     assert 'templates telluric --build' in caplog.text
     from rvfitter.methods import REGISTRY
-    res = REGISTRY['telluric_ref'].measure(spec, [], {'input': {'resolution': 2500.}}, rng=np.random.default_rng(0))
+    res = REGISTRY['telluric_ref'](spec, [], cfg_of({'input': {'resolution': 2500.}}), rng=np.random.default_rng(0))
     assert not np.isfinite(res.rv) and res.measurements[0].flag & 1
     cfg = config.Config()
     cfg.calibration.wavelength_correction = 'telluric'
-    _, info = pipeline.wavelength_correction(spec, spec, cfg, 'X')
-    assert info['applied'] == 'none' and info['zp_flags'] & pipeline.ZP_FLAGS['telluric_unavailable']
+    _, info = wcorr.correct(spec, spec, cfg, 'X')
+    assert info['applied'] == 'none' and info['zp_flags'] & wcorr.ZP_FLAGS['telluric_unavailable']
 
 
 def test_transmission_scaling_and_shift():
@@ -201,13 +203,13 @@ def test_pipeline_telluric_and_auto_modes():
     cfg.input.resolution = R
     cfg.calibration.telluric_template = False
     cfg.calibration.wavelength_correction = 'none'
-    spec0, info0 = pipeline.wavelength_correction(raw, raw, cfg, 'X')  # 'none': the telluric term is not measured
+    spec0, info0 = wcorr.correct(raw, raw, cfg, 'X')  # 'none': the telluric term is not measured
     assert info0['applied'] == 'none' and np.isnan(info0['zp_tell_kms'])
     cfg.calibration.wavelength_correction = 'telluric'
-    spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X')
+    spec, info = wcorr.correct(raw, raw, cfg, 'X')
     assert info['applied'] == 'telluric' and np.isfinite(info['zp_tell_kms'])
     assert np.isfinite(info['zp_star_sky']) and abs(info['zp_star_sky']) < 3. * info['zp_star_sky_err'] + 2.
-    assert info['zp_star_sky_n'] >= 1 and info['zp_flags'] & pipeline.ZP_FLAGS['telluric_applied']
+    assert info['zp_star_sky_n'] >= 1 and info['zp_flags'] & wcorr.ZP_FLAGS['telluric_applied']
     lam = 9300.
     corrected = float(np.interp(lam, raw.wave, spec.wave))
     assert (lam / corrected - 1.) * 299792.458 == pytest.approx(_dv_true(lam), abs=5.)
@@ -217,23 +219,23 @@ def test_pipeline_telluric_and_auto_modes():
     from rvfitter import systematics
     # the default sky-if-needed applies the sky curve only; the constant is measured and reported, not applied
     cfg.calibration.wavelength_correction = 'sky-if-needed'
-    spec_d, info_d = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=regs)
+    spec_d, info_d = wcorr.correct(raw, raw, cfg, 'X', regions=regs)
     assert info_d['applied'] == 'sky' and not info_d.get('star_sky_applied')
     assert np.isfinite(info_d['zp_star_sky']) and info_d['zp_star_sky_n'] >= 2
     for mode in ('auto',):
         cfg.calibration.wavelength_correction = mode
-        spec_a, info_a = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=regs)
+        spec_a, info_a = wcorr.correct(raw, raw, cfg, 'X', regions=regs)
         assert info_a['applied'] == 'sky+star' and info_a['star_sky_applied']
-        assert info_a['zp_flags'] & pipeline.ZP_FLAGS['star_sky_applied']
+        assert info_a['zp_flags'] & wcorr.ZP_FLAGS['star_sky_applied']
         assert info_a['zp_star_sky_n'] >= 2 and info_a['star_sky']['method'] == 'direct sky'
         assert abs(info_a['zp_star_sky']) < 3. * info_a['zp_star_sky_err'] + 2.  # the star sees the sky's curve
         wc = spec_a.meta['wavelength_correction']
         assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
         # the constant's error is sys_star_sky, not part of sys_wavezp
-        assert systematics.wavelength_zero_point(spec_a, {}) == pytest.approx(info_a['zp_sky_err'])
+        assert systematics.wavelength_zero_point(spec_a) == pytest.approx(info_a['zp_sky_err'])
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, None, raw.meta, 'x')
-    _, info_t = pipeline.wavelength_correction(nosky, nosky, cfg, 'X', regions=regs)
-    assert info_t['applied'] == 'none' and info_t['zp_flags'] & pipeline.ZP_FLAGS['no_sky']
+    _, info_t = wcorr.correct(nosky, nosky, cfg, 'X', regions=regs)
+    assert info_t['applied'] == 'none' and info_t['zp_flags'] & wcorr.ZP_FLAGS['no_sky']
 
 
 def test_telluric_curve_refused_far_from_nodes():
@@ -243,10 +245,10 @@ def test_telluric_curve_refused_far_from_nodes():
     cfg.input.resolution = R
     cfg.calibration.telluric_template = False
     cfg.calibration.wavelength_correction = 'telluric'
-    _, ok = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=[Region('Na I', 'line', 8180., 8200.)])
+    _, ok = wcorr.correct(raw, raw, cfg, 'X', regions=[Region('Na I', 'line', 8180., 8200.)])
     assert ok['applied'] == 'telluric'
-    out, bad = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=[Region('X', 'line', 10700., 10720.)])
-    assert bad['applied'] == 'none' and bad['zp_flags'] & pipeline.ZP_FLAGS['telluric_refused']
+    out, bad = wcorr.correct(raw, raw, cfg, 'X', regions=[Region('X', 'line', 10700., 10720.)])
+    assert bad['applied'] == 'none' and bad['zp_flags'] & wcorr.ZP_FLAGS['telluric_refused']
     assert np.array_equal(out.wave, raw.wave)
 
 
@@ -283,7 +285,7 @@ def _expected_slit_prior(wave: np.ndarray, at: np.ndarray) -> float:
 def test_distortion_plus_constant_recovered_and_applied():
     """Sky = distortion; star = distortion + 25 km/s: 'auto' applies both, the constant's error is sys_star_sky"""
     raw = _star_and_sky(25.)
-    spec, info = pipeline.wavelength_correction(raw, raw, _budget_cfg('auto'), 'X', regions=REGS)
+    spec, info = wcorr.correct(raw, raw, _budget_cfg('auto'), 'X', regions=REGS)
     assert info['applied'] == 'sky+star' and info['star_sky_applied']
     ss = info['star_sky']
     assert ss['n_nodes'] >= 2 and ss['consistent'] and ss['p'] > 0.01
@@ -292,7 +294,7 @@ def test_distortion_plus_constant_recovered_and_applied():
     for lam in (7950., 8190., 8520.):
         applied = float(sky_zeropoint.applied_dv(spec.meta, lam))
         assert applied == pytest.approx(_dv_true(lam) + 25., abs=3. * info['zp_star_sky_err'] + 3.), lam
-    term = pipeline._star_sky_term(info, spec, np.array([8190., 8520.]), _budget_cfg(), 'X')
+    term = wcorr.star_sky_term(info, spec, np.array([8190., 8520.]), _budget_cfg(), 'X')
     assert term['value'] == pytest.approx(info['zp_star_sky_err']) and 'measured' in term['term']
     assert np.isfinite(term['prior'])  # the slit prior is reported even when the constant was measured
 
@@ -302,26 +304,26 @@ def test_unmeasured_constant_uses_slit_prior(caplog):
     raw = _star_and_sky(25.)
     cfg = _budget_cfg()
     cfg.input.telluric_corrected = True
-    spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=REGS)
+    spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=REGS)
     assert info['applied'] == 'sky' and not info['star_sky_applied'] and np.isnan(info['zp_star_sky'])
     at = np.array([8190., 7950., 8520.])
-    term = pipeline._star_sky_term(info, spec, at, cfg, 'X')
+    term = wcorr.star_sky_term(info, spec, at, cfg, 'X')
     assert term['value'] == pytest.approx(_expected_slit_prior(raw.wave, at), rel=1e-6)
-    assert term['flags'] & pipeline.ZP_FLAGS['slit_prior'] and 'slit prior' in term['term']
+    assert term['flags'] & wcorr.ZP_FLAGS['slit_prior'] and 'slit prior' in term['term']
     assert 15. < term['value'] < 40.  # ~0.5 binned pixel at 1.4 Å per pixel
     # a number overrides; zero_point_known (fibre/IFU) removes the term; missing inputs: NaN with a WARNING
     cfg.calibration.slit_prior = 7.5
-    assert pipeline._star_sky_term(info, spec, at, cfg, 'X')['value'] == 7.5
+    assert wcorr.star_sky_term(info, spec, at, cfg, 'X')['value'] == 7.5
     cfg.calibration.slit_prior = 'auto'
     cfg.calibration.zero_point_known = True
-    known = pipeline._star_sky_term(info, spec, at, cfg, 'X')
+    known = wcorr.star_sky_term(info, spec, at, cfg, 'X')
     assert np.isnan(known['value']) and known['flags'] == 0
     cfg.calibration.zero_point_known = False
     bare = _star_and_sky(25., slit_meta=False)
-    _, info2 = pipeline.wavelength_correction(bare, bare, cfg, 'X', regions=REGS)
+    _, info2 = wcorr.correct(bare, bare, cfg, 'X', regions=REGS)
     caplog.set_level('WARNING')
-    t2 = pipeline._star_sky_term(info2, bare, at, cfg, 'X')
-    assert np.isnan(t2['value']) and t2['flags'] & pipeline.ZP_FLAGS['zp_unconstrained']
+    t2 = wcorr.star_sky_term(info2, bare, at, cfg, 'X')
+    assert np.isnan(t2['value']) and t2['flags'] & wcorr.ZP_FLAGS['zp_unconstrained']
     assert 'unconstrained' in t2['term'] and 'absolute wavelength zero point is unconstrained' in caplog.text
 
 
@@ -333,14 +335,14 @@ def test_measured_offset_value_never_enters_the_error(mode, monkeypatch):
         raw = _star_and_sky(constant)
         cfg = _budget_cfg(mode)
         cfg.calibration.telluric_source = 'telluric.fits'  # measured from the input itself (patched below)
-        monkeypatch.setattr(pipeline, '_matching_object', lambda *a, _raw=raw, **k: _raw)
-        spec, info = pipeline.wavelength_correction(raw, raw, cfg, 'X', regions=REGS)
+        monkeypatch.setattr(wcorr, 'matching_object', lambda *a, _raw=raw, **k: _raw)
+        spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=REGS)
         assert not info['star_sky_applied'] and abs(info['zp_star_sky'] - constant) < 10.  # measured
         assert info['applied'] == ('sky' if mode == 'sky' else 'none')
         from rvfitter import systematics
         at = np.array([8190., 8520.])
-        term = pipeline._star_sky_term(info, spec, at, cfg, 'X')
-        terms.append((term['value'], systematics.wavelength_zero_point(spec, cfg, wave=at)))
+        term = wcorr.star_sky_term(info, spec, at, cfg, 'X')
+        terms.append((term['value'], systematics.wavelength_zero_point(spec, wave=at)))
     (s0, w0), (s60, w60) = terms
     assert s0 == pytest.approx(s60) and s0 < 40.  # the slit prior both times
     assert w0 == pytest.approx(w60, rel=1e-6)
@@ -381,8 +383,8 @@ def test_telluric_ref_recovers_rv_despite_distortion(star, monkeypatch):
     rv_true, frame = 30., -21.
     spec = _observed(rv_star=rv_true, star=star, frame_kms=frame, snr=100.)
     tmpl = Spectrum(star[0], star[1], np.full(len(star[0]), np.nan), None, {'object': 'toy'}, 'toy')
-    cfg = {'input': {'resolution': R}, 'methods': {'options': {'telluric_ref': {'template': tmpl}}}}
-    res = REGISTRY['telluric_ref'].measure(spec, [], cfg, rng=np.random.default_rng(0))
+    cfg = cfg_of({'input': {'resolution': R}, 'methods': {'options': {'telluric_ref': {'template': tmpl}}}})
+    res = REGISTRY['telluric_ref'](spec, [], cfg, rng=np.random.default_rng(0))
     assert res.n_regions >= 4
     expected = float(299792.458 * np.tanh(np.arctanh(rv_true / 299792.458) + np.arctanh(frame / 299792.458)))
     assert abs(res.rv - expected) < 3. * res.rv_err + 0.5, (res.rv, res.rv_err, expected)
@@ -440,7 +442,7 @@ def test_j1745_telluric_zero_point(real_telluric_model):
     cfg = config.Config()
     cfg.input.medium = 'vacuum'
     # the spec1d holds two objects; the one matching the (target) coadd is HDU 2, not the first
-    src = pipeline._matching_object(str(Path(root) / REL), target, cfg, 'J1745')
+    src = wcorr.matching_object(str(Path(root) / REL), target, cfg, 'J1745')
     assert src.source.endswith('.fits') and np.nanmedian(src.flux / src.sigma) > 50.
     zp = TZ.measure(src, resolution=2602.)
     assert zp is not None and zp.n_used >= 5

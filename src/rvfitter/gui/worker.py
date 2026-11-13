@@ -43,7 +43,7 @@ class RunWorker(QThread):
             self.progress.emit(n_done, total)
 
         try:
-            results = self.backend.run(self.cfg, self.groups, self.n_procs, on_result, self._cancel.is_set)
+            results = self.backend.run(self.cfg, self.groups, self.n_procs, on_result, self._cancel)
         except Exception as exc:
             log.error('Run failed: %s', exc)
             log.debug(traceback.format_exc())

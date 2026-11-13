@@ -5,8 +5,8 @@ import types
 import numpy as np
 import pytest
 
-from rvfitter import archives, barycentric, combine, pipeline, regions, results, systematics
-from rvfitter import methods as methods_pkg
+from rvfitter import archives, barycentric, combine, config, pipeline, regions, results, systematics
+from rvfitter.calibration import wavelength_correction as wcorr
 from rvfitter.types import Measurement, MethodResult, Spectrum
 
 
@@ -23,7 +23,7 @@ class FakeMethod:
     def __init__(self, name, fail=False):
         self.name, self.fail = name, fail
 
-    def measure(self, spectrum, regs, cfg, *, executor, rng):
+    def __call__(self, spectrum, regs, cfg, *, executor, rng):
         if self.fail:
             raise RuntimeError('boom')
         extra = executor.submit(_work, 3).result() if executor is not None else _work(3)
@@ -54,38 +54,44 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(regions, 'select', select, raising=False)
     monkeypatch.setattr(regions, 'SelectOptions', types.SimpleNamespace, raising=False)
-    monkeypatch.setattr(combine, 'combine_regions',
-                        lambda ms, **kw: (float(np.mean([m.rv for m in ms])), 1.0), raising=False)
+    def combine_regions(ms, details):
+        details['tau_line'] = 0.
+        return float(np.mean([m.rv for m in ms])), 1.0
+
+    monkeypatch.setattr(combine, 'combine_regions', combine_regions)
 
     def hierarchical(v, e, ln, m, *, tau_scale=None, ngrid=200):
         calls['tau'] = tau_scale
         return {'median': float(np.median(v)), 'err': 1.0, 'q16': 0.0, 'q84': 1.0, 'n_methods': len(set(m)),
-                'n_lines': len(v)}
+                'n_lines': len(v), 'tau_line': 0., 'tau_method': 0.}
 
     monkeypatch.setattr(combine, 'hierarchical', hierarchical, raising=False)
-    monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, c, **kw: 0.5, raising=False)
-    monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4, raising=False)
-    monkeypatch.setattr(methods_pkg, 'REGISTRY', {
-        'ccf': FakeMethod('ccf'), 'linecentre': FakeMethod('linecentre'), 'lsd': FakeMethod('lsd', fail=True)},
-        raising=False)
+    monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, **kw: 0.5)
+    monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4)
+    monkeypatch.setattr(pipeline, 'REGISTRY', {'ccf': FakeMethod('ccf'), 'template_fit': FakeMethod('template_fit'),
+                                               'telluric_ref': FakeMethod('telluric_ref', fail=True)})
     return types.SimpleNamespace(calls=calls)
 
 
-NS = types.SimpleNamespace
-CFG = NS(seed=7, methods=NS(enabled=['linecentre', 'ccf', 'lsd'], options={}), hash=lambda: 'h',
-         input=NS(medium='auto', hdu=None, resolution=None, paths=['p1'], telluric_corrected=False),
-         regions=NS(overrides={'ccf': [{'name': 'x', 'remove': True}]}, min_snr=7.0, telluric_strictness=None),
-         combine=NS(tau_scale=0.3, systematic_floor=0.2), grouping=NS(override=None),
-         velocity_frame=NS(correction='auto', frame='barycentric', overrides={}), templates=NS(teff_prior=None),
-         parallel=NS(n_procs=1))
+CFG = config.Config()
+CFG.seed = 7
+CFG.methods.enabled = ['template_fit', 'ccf', 'telluric_ref']
+CFG.input.paths = ['p1']
+CFG.regions.overrides = {'ccf': [{'name': 'x', 'remove': True}]}
+CFG.regions.min_snr = 7.0
+CFG.combine.tau_scale = 0.3
+CFG.combine.systematic_floor = 0.2
 INPUTS = ['p1', 'p2', 'p3', 'p4']
 
 
 def test_sequencing_and_failure(fakes, caplog):
     caplog.set_level(logging.INFO, logger='rvfitter')
     caplog.set_level(logging.INFO)
-    res = pipeline.run(CFG, INPUTS, n_procs=1)
+    failures = []
+    res = pipeline.run(CFG, INPUTS, n_procs=1, failures=failures)
     assert [r.object for r in res] == ['A', 'B', 'C']
+    assert [f[0] for f in failures] == ['A telluric_ref'] * 2 + ['B telluric_ref', 'C telluric_ref']  # A has 2 epochs
+    assert failures[0][1] == 'RuntimeError: boom'
     msgs = [r.getMessage() for r in caplog.records]
     idx = [msgs.index(f'[{i}/3] {n}') for i, n in enumerate('ABC', 1)]
     assert idx == sorted(idx)
@@ -93,11 +99,14 @@ def test_sequencing_and_failure(fakes, caplog):
     assert any('adopted RV' in m for m in msgs)
     a = res[0]
     assert len(a.files) == 2 and a.barycentric['source'] == 'computed'
-    assert np.isnan(results.to_table([a]).loc[0, 'rv_lsd'])
-    assert a.methods['lsd'].measurements[0].flag & 1
+    assert np.isnan(results.to_table([a]).loc[0, 'rv_telluric_ref'])
+    failed = a.methods['telluric_ref'].measurements[0]
+    assert failed.flag & 1 and failed.diagnostics['error'] == 'RuntimeError: boom'
     assert a.adopted['n_methods'] == 2 and a.systematics['template_spread'] == 0.4
-    assert a.config_hash == 'h'
-    assert any(r.levelno == logging.ERROR for r in caplog.records)
+    assert a.config_hash == CFG.hash()
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors[0].exc_info is not None  # the traceback is logged
+    assert any('4 failure(s)' in r.getMessage() for r in errors)  # the end-of-run summary
 
 
 def test_determinism_across_procs(fakes, monkeypatch):
@@ -119,7 +128,7 @@ def test_config_overrides_passed(fakes):
     assert fakes.calls['select']['overrides'] == CFG.regions.overrides
     assert fakes.calls['tau'] == 0.3
     opts = fakes.calls['select']['options']
-    assert opts.snr_min == 7.0 and not hasattr(opts, 'telluric')
+    assert opts.snr_min == 7.0 and opts.telluric == 1.0
     assert res[0].systematics['floor'] == 0.2
     df = results.to_table(res)
     expect = np.sqrt(df.loc[0, 'rv_adopted_err'] ** 2 + 0.5**2 + 0.4**2 + 0.2**2)
@@ -146,29 +155,25 @@ def test_cancel_between_objects(fakes):
 
 def test_cancel_between_methods(fakes, monkeypatch):
     cancel = threading.Event()
-    reg = methods_pkg.REGISTRY
-    orig = reg['linecentre'].measure
+    orig = pipeline.REGISTRY['template_fit']
 
     def measure(*a, **k):
         cancel.set()
         return orig(*a, **k)
 
-    monkeypatch.setattr(reg['linecentre'], 'measure', measure)
+    monkeypatch.setitem(pipeline.REGISTRY, 'template_fit', measure)
     seen = []
     res = pipeline.run(CFG, INPUTS, n_procs=1, on_object=seen.append, cancel=cancel)
     assert res == [] and seen == []
 
 
 def test_valid_range_config_overrides_arc_range(caplog):
-    import logging
-    from types import SimpleNamespace
-
-    from rvfitter import pipeline
-    spec = SimpleNamespace(meta={'arc_range': (7437., 9926.), 'arc_file': 'wvcalib.fits'})
-    cfg = SimpleNamespace(calibration=SimpleNamespace(wave_valid_range=None))
-    with caplog.at_level(logging.INFO, logger='rvfitter.pipeline'):
-        assert pipeline._valid_range(cfg, 'obj', None, spec) == (7437., 9926.)
+    s = spec('A')
+    s.meta.update(arc_range=(7437., 9926.), arc_file='wvcalib.fits')
+    cfg = config.Config()
+    with caplog.at_level(logging.INFO, logger='rvfitter.calibration.wavelength_correction'):
+        assert wcorr.valid_range(cfg, 'obj', None, s) == (7437., 9926.)
     assert 'arc-line range' in caplog.text
     cfg.calibration.wave_valid_range = (7600., 9000.)
-    assert pipeline._valid_range(cfg, 'obj', spec) == (7600., 9000.)
-    assert pipeline._valid_range(SimpleNamespace(), 'obj', SimpleNamespace(meta={})) is None
+    assert wcorr.valid_range(cfg, 'obj', s) == (7600., 9000.)
+    assert wcorr.valid_range(config.Config(), 'obj', spec('B')) is None

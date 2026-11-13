@@ -1,14 +1,14 @@
 # Developer notes: methods package (M)
 
-## Handoff (state at zp-budget)
+## Handoff (state at chisle-methods)
 
 **Modules (public API):**
 - `broadening`: `doppler_factor`, `shift_wave`, `doppler_shift`, `log_wave_grid`, `rebin` (flux-conserving), `resample`, `gaussian_kernel`, `rotation_kernel` (Gray), `convolve`, `broaden_loglam`, `instrumental(spec, R | R(λ) | table)`, `rotational(spec, vsini, ε)`.
-- `combine`: `weighted_mean` (Birge), `combine_regions(meas, details=)` (random effects), `hierarchical(...)` (Woodbury, half-Cauchy, grid), `hierarchical_from_methods(methods, exclude_flags=)`, `mixture_pdf`.
+- `combine`: `weighted_mean` (Birge), `combine_regions(meas, details=)` (random effects), `hierarchical(...)` (Woodbury, half-Cauchy, grid), `hierarchical_from_methods(methods, exclude_flags=)`, `mixture_pdf`; epochs: `epoch_labels`, `epoch_summaries(per_method, labels, tau_scale, name, sys)` (per-epoch RVs, variability χ²), `method_over_epochs`, `adopted_over_epochs`.
 - `templates`: `GridMeta` (axes teff/logg/met/alpha + extra; coverage, upstream, medium air/vacuum/auto), `TemplateGrid` (`get`, `broadened`, `select`, `nearest`, `bounds`; multilinear N-D), `KNOWN_GRIDS`, `verify_medium`, `measure_medium`, `medium_check_lines` (NIST), `download(source=auto|svo|zenodo)`, `available`, `cli_main` (`download | list | verify | telluric [--build]`).
 - `grid_sources`: Zenodo records for Bobcat, Diamondback, Elf Owl and SAND; zip members fetched by HTTP range, tar.gz streamed with MD5.
-- `methods/_common`: options, regions, `Prepared`/`prepare`, `Template.at` (pixel-integrated), `candidates`/`open_grid`/`build_template`, `template_summary` (best params, edges, guidance), `segment`, `finish` (random effects + outlier rejection), flags.
-- `methods/ccf`, `methods/template_fit`: `measure(spectrum, regions, cfg, *, executor, rng)`. `template_fit` also has `measure_resolution` and `estimate_resolution`. `methods.REGISTRY[name]` is callable and has `.measure`.
+- `methods/_common`: `options`, `resolution_of`, `split_regions`, `Prepared`/`prepare` (own pixels), `Template.at` (pixel-integrated), `candidates`/`open_grid`/`build_template`, `choose_template` (scoring, grid flags, summary, shared diagnostics), `run_chunks` (Monte Carlo/bootstrap tasks), `window_measurement` (fit_failed/poor_fit), `TEMPLATE_DEFAULTS`, `segment`, `finish` (random effects + outlier rejection), flags. `methods/guidance`: `template_summary` (best params, edges, refit guidance), `grid_names`.
+- `methods/ccf`, `methods/template_fit`: `measure(spectrum, regions, cfg, *, executor, rng)` with `cfg` a `Config` (tests build one with `injection.cfg_of`). `template_fit` also has `measure_resolution` (needs a known R or `r_grid`) and `estimate_resolution(spectrum, cfg, regions=None)`. `methods.REGISTRY[name]` is the measure function. A method that cannot measure raises ValueError.
 - `calibration/sky_zeropoint`: `measure(..., valid_range=, bias_test=)` (OH sky, local per-span Δv(λ); synthetic bias per segment), `measure_windows(spectrum, windows, fwhm)` (the sky in any windows, e.g. inside the telluric bands), `SkyZeroPoint.measured_fraction`/`measured_ranges`, `apply` (any curve: sky or telluric, plus a constant), `applied_dv`, `curve_at(curve_dict, λ)`, `oh_lines`, `model_sky`.
 - `calibration/telluric`: `model()` (HITRAN, vacuum, 6000–25 000 Å, τ_dry and τ_H2O; read from `cache_path()`, never shipped; raises `TelluricModelUnavailable`), `available`, `cache_path` (`$RVFITTER_TELLURIC_MODEL` overrides), `reload`, `transmission(wave, airmass, pwv, resolution=, dv=)`, `mask(wave, threshold)`.
 - `calibration/telluric_build`: `build(out=None, *, line_cache=, force=, get=)` (HITRANonline → cache; provenance, citation and terms in the metadata and a JSON sidecar). `tools/build_telluric_model.py` is a thin wrapper.
@@ -16,14 +16,14 @@
 - `calibration/slit`: `inputs(spectra)` → `SlitInputs` (W, F, plate scales, dispersion, sources, `missing`), `centroid_rms(W, F)` (clipped-Gaussian centroid RMS over the position prior), `prior_kms(inputs, wave)` = RMS of c σ_x / s_spec · D(λ)/λ, `instrument_pixscale` (`data/instruments.csv`).
 - `methods/telluric_ref`: v_star − v_tell per telluric segment (`prior_template`, `neighbour_templates`).
 - `io.read_spectrum`: multi-object PypeIt spec1d → the name-matched table, else the highest-S/N science object (logged; `input.hdu` overrides; `meta['hdu'|'extname'|'n_objects']`).
-- `systematics`: `template_spread(_details)` (templates, grids, window modes), `wavelength_zero_point(spectrum, cfg, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
-- `pipeline` (shared): `wavelength_correction(raw, spec, cfg, name, regions=)` (sky-if-needed, sky, auto, telluric, none), `ZP_FLAGS`, `zp_flag_names`, `_star_sky_term` (sys_star_sky per epoch), `epoch_labels`, `refit_object`, `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
-- `plotting`, `methods/{linecentre,forward,lsd,binary}`: not started.
+- `systematics`: `template_spread(_details)` (templates, grids, window modes; a variant that raises ValueError is NaN with a WARNING), `wavelength_zero_point(spectrum, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
+- `pipeline` (orchestration only): `run(..., failures=)`, `measure_object`, `refit_object`, `enabled_methods` (NoMethodsError, a ValueError), `region_selector`. `calibration/wavelength_correction`: `correct(raw, spec, cfg, name, regions=)` (sky-if-needed, sky, auto, telluric, none), `ZP_FLAGS`, `zp_flag_names`, `star_sky_term` (sys_star_sky per epoch), `combine_epochs`, `arc_kms`, `valid_range`, `matching_object`. `refit`: `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
+- `plotting`, line centring, forward modelling, LSD and binaries: not written (the empty stubs were deleted; `config.METHOD_NAMES` lists implemented methods only).
 
 **Decisions in force:**
 - Per method, regions are combined by random effects (`hierarchical` with one method; Birge is kept in the diagnostics). Across methods, the hierarchical line × method model gives the adopted RV.
 - Several epochs: regions → epoch (each epoch measured and combined on its own), then random effects over the epochs, for each method and for the adopted RV (`tau_epoch`). Regions are still labelled `<epoch>:<region>`. The χ² variability test uses each epoch's statistical error ⊕ its sys_wavezp (`rv_epoch_pvalue`; variable when p < 0.001; the statistical-only p is `adopted['epochs']['pvalue_stat']`). Zero-point terms over epochs: offsets averaged, errors and systematics as RMS, flags OR-ed, per-epoch values in `barycentric['wavelength_correction_epochs']`.
-- `results.FLAGS`: fit_failed 1, few_regions 2, error_floor 4, template_grid_edge 8, telluric_contaminated 16, not_converged 32, poor_fit 64, outlier 128, template_param_edge 256, template_grid_hole 512. `EXCLUDE_FLAGS` = 1 | 2 | 32 | 128. Object-level `zp_flags` (`pipeline.ZP_FLAGS`): sky_applied 1, telluric_applied 2, star_sky_applied 4, sky_not_needed 8, sky_unsafe 16, telluric_unavailable 32, telluric_refused 64, star_sky_unmeasured 128, no_sky 256, star_sky_inconsistent 512, zp_unconstrained 1024, slit_prior 2048.
+- `results.FLAGS`: fit_failed 1, few_regions 2, error_floor 4, template_grid_edge 8, telluric_contaminated 16, not_converged 32, poor_fit 64, outlier 128, template_param_edge 256, template_grid_hole 512. `EXCLUDE_FLAGS` = 1 | 2 | 32 | 128. Object-level `zp_flags` (`calibration.wavelength_correction.ZP_FLAGS`): sky_applied 1, telluric_applied 2, star_sky_applied 4, sky_not_needed 8, sky_unsafe 16, telluric_unavailable 32, telluric_refused 64, star_sky_unmeasured 128, no_sky 256, star_sky_inconsistent 512, zp_unconstrained 1024, slit_prior 2048.
 - Template-method windows come from the catalogue's `model_fidelity` (`regions.template_windows = "features"` by default at R ≤ 5000; "full" for every span). H2O stays masked for spans even when telluric-corrected.
 - **Zero-point budget (orchestrator decisions A–C, zp-budget):** an offset is either applied (its error a systematic) or unknown (a prior width); a measured offset's value never enters the errors.
   - `calibration.wavelength_correction` defaults to "sky-if-needed"; "auto" is now the same. The sky curve is applied when (a) ≥ 3 sky segments are measured and every region (before correction) is > 50 per cent inside measured segments, (b) |weighted mean Δv| > 3σ (curve ⊕ model spread ⊕ arc RMS) or the segment χ² gives p < 0.001, and (c) the largest correction at the regions exceeds 0.05 resolution elements. When it is applied, the tellurics are measured (if the model is built and a non-corrected source exists) and the star − sky constant is applied too ("sky+star") when ≥ 2 nodes have the sky measured directly in the same window. "sky" applies the sky alone; "telluric" the telluric curve (refused > 250 Å from every node or O2-only); "none" nothing.
@@ -59,8 +59,8 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
    - `io` does not apply PypeIt's `OPT_MASK` (J1745 HDU 2 has a pixel at flux/σ = −24 745; the telluric fit clips it);
    - `docs/architecture.md` (shared) should list `wavelength_zero_point(spectrum, cfg, *, wave=None)` and `telluric_zeropoint.measure(..., teff=, spread_templates=)`;
    - the arc-line range is not read automatically from `wvcalib.fits` (set `calibration.wave_valid_range`);
-   - `template_fit`'s `telluric_model` option could use `calibration.telluric`.
-3. Unit 4: `methods/linecentre.py`.
+   - a telluric model inside `template_fit` (the unimplemented `telluric_model` option was deleted).
+3. Unit 4: line centring (add it to `methods.REGISTRY` and `config.METHOD_NAMES`).
 4. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
 5. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
 
@@ -284,6 +284,24 @@ The full − features differences (−6 km/s for the CCF and −24 km/s for the 
 - With the same feature windows, the hierarchical adopted RV will weight the lines more equally through τ_line.
 - The remaining offset of the atomic lines from 26.2 km/s was attributed to a wavelength zero-point offset. The OH sky lines measured it (reviewer, then `calibration.sky_zeropoint`; unit 3c): +0.54 ± 0.14 Å (≈+19 km/s) at 8500 Å in the observatory frame, varying with wavelength (+5 to +30 km/s within 7700–8960 Å, and ≈−73 km/s at the red edge). It is therefore not the uniform ≈0.3 Å first guessed.
 - The reviewer's independent check gave ≈30 km/s with the same idea. It differed in including the K I lines (24 km/s; masked here, because the O2 A band stays masked for template spans) and Cs I 8946.
+
+## Chisle refactor (methods, pipeline, GUI; branch chisle-methods)
+
+Behaviour-neutral: the J1745 JSON outputs of `none`, `sky-if-needed` and `auto` are byte-identical before and after (adopted 37.73 ± 5.03, 18.95 ± 3.32, 42.86 ± 3.25 km/s; zp_sky +20.03 ± 8.49; zp_star_sky −23.76 ± 3.63 km/s).
+
+- **Failures.** The only broad catch in methods/pipeline is the (object, method) guard: ERROR with the traceback, a `fit_failed` measurement whose diagnostics hold `error`, and an entry in the run's failure list. `pipeline.run` logs the summary at ERROR; the CLI exits 2. Template-spread variants and missing neighbour templates log WARNINGs; everything else raises. An unhashable config (an in-memory template in the options) gives an empty `config_hash` with a WARNING.
+- **Methods.** `config.METHOD_NAMES` = ccf, template_fit, telluric_ref (= `methods.REGISTRY`, tested); the default `methods.enabled` is template_fit, ccf, so a default run no longer records a linecentre failure; an unknown method raises ConfigError at load. `default_for` uses template_fit (free vsini) with ccf (R 4500–20 000) or telluric_ref (above).
+- **Removed options:** ccf `peak` (Gaussian peak), `region_kinds`, template_fit `telluric_model`. Setting them now raises "unknown options".
+- **GUI.** `cfgutil.py` and the plot tabs are gone; the Diagnostics tab shows the barycentric box. The region editor now uses `pipeline.region_selector`, i.e. exactly the pipeline's selection. Before, the GUI also passed `regions.max_regions` and `continuum_fwhm`, which the pipeline ignores: those two config fields have no effect on a run (open item).
+- **Found, not fixed (forms):** a real `Config` does not round-trip through the settings form: `input.hdu` and `templates.local_dir` (`X | dict | None` types) come back as `{}`.
+- **Audit findings rejected:**
+  - moving `prior_template`/`neighbour_templates` to calibration/ (they build templates with `methods._common`; calibration would import methods);
+  - dropping the `Backend` Protocol (it is the seam the GUI test fake implements);
+  - `scipy.differentiate.hessian` for the 2-D χ² Hessian (numerics would change);
+  - inlining `ccf._ccf_on_grid` (used four times);
+  - raising when `run` reads no spectra (the CLI already exits 1 with "No objects were measured");
+  - the shared test builder for test_ccf/test_template_fit injection pairs and the `hierarchical` knobs (exercised by tests, cheap);
+  - `teff_window` stays 300 K in `systematics` (independent of a method's options).
 
 ## Unit 3b: grid parameters, edges and extensible grids
 

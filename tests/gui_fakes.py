@@ -29,12 +29,7 @@ class BaryCfg:
 
 @dataclass
 class MethodsCfg:
-    linecentre: bool = True
-    ccf: bool = True
-    template_fit: bool = False
-    forward_mcmc: bool = False
-    lsd: bool = False
-    telluric_ref: bool = False
+    enabled: list[str] = field(default_factory=lambda: ['ccf'])
 
 
 @dataclass
@@ -132,7 +127,7 @@ class FakeBackend:
         return spec
 
     def select_regions(self, spectrum, cfg, with_overrides=False):
-        regs = {'linecentre': [Region('K I 7701', 'line', 7695., 7707., 7701.084, (), 'test'),
+        regs = {'ccf': [Region('K I 7701', 'line', 7695., 7707., 7701.084, (), 'test'),
                                Region('K I 7667', 'line', 7660., 7672., 7667.009, (), 'test')]}
         if with_overrides:
             for method, edits in cfg.regions.overrides.items():
@@ -145,14 +140,14 @@ class FakeBackend:
                 regs[method] = list(cur.values())
         return regs
 
-    def run(self, cfg, groups, n_procs, on_result, should_cancel):
+    def run(self, cfg, groups, n_procs, on_result, cancel):
         self.runs.append({'cfg': cfg, 'groups': dict(groups), 'n_procs': n_procs})
         self.started.set()
         out = []
         for i, name in enumerate(groups):
             if i == 1 and self.gate is not None:
                 self.gate.wait(10)
-            if should_cancel():
+            if cancel.is_set():
                 break
             res = make_result(name, 10.0 + i)
             out.append(res)
@@ -165,14 +160,6 @@ class FakeBackend:
 
     def write_results(self, results, path, formats):
         self.written.append((Path(path), tuple(formats), len(results)))
-
-    def plot(self, kind, result):
-        if kind == 'ccf':
-            return None  # exercises the placeholder
-        from matplotlib.figure import Figure
-        fig = Figure()
-        fig.add_subplot(111).plot([0, 1], [0, 1])
-        return fig
 
     def suggested_refits(self, result):
         if result.object not in self.edge_objects:

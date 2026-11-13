@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .backend import FORMATS, METHODS
+from ..config import METHOD_NAMES
+from .backend import FORMATS
 
 TIPS = {
     'medium': 'Wavelength medium of the input files. "auto" reads the header; otherwise air or vacuum is forced.',
@@ -39,11 +40,9 @@ TIPS = {
     'mode': 'Barycentric correction: auto (use the header, else compute, else skip), apply (force) or skip.',
     'frame': 'Velocity frame of the reported RVs: barycentric or heliocentric.',
     'methods': 'Which RV techniques to run. Each is a separate, independent measurement.',
-    'linecentre': 'Fit line profiles and measure their centres.',
+    'enabled': 'Which RV techniques to run. Each is a separate, independent measurement.',
     'ccf': 'Cross-correlate with a template or mask.',
     'template_fit': 'Chi-squared fit of a (broadened, shifted) model-atmosphere template.',
-    'forward_mcmc': 'Forward-model the spectrum with emcee (needs the [mcmc] extra). Slow but gives full posteriors.',
-    'lsd': 'Least-squares deconvolution line profile.',
     'telluric_ref': 'Use telluric lines as a wavelength reference (zero-point check).',
     'grid': 'Template grid name (e.g. bt-settl-cifist). Templates are downloaded and cached on first use.',
     'template_grid': 'Template grid name (e.g. bt-settl-cifist). Templates are downloaded and cached on first use.',
@@ -61,7 +60,7 @@ TIPS = {
 }
 
 _PATH_NAMES = {'output_dir', 'out_dir', 'local_dir', 'template_dir', 'cache_dir', 'logfile'}
-_CHOICE_LISTS = {'methods': METHODS, 'formats': FORMATS}
+_CHOICE_LISTS = {'methods': METHOD_NAMES, 'enabled': METHOD_NAMES, 'formats': FORMATS}
 
 
 def _unwrap_optional(tp: Any) -> tuple[Any, bool]:

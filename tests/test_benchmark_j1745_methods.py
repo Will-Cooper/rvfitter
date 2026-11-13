@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from rvfitter import config
+
 pytestmark = pytest.mark.data
 
 BENCH_RV, BENCH_ERR = 26.2, 2.3
@@ -85,7 +87,7 @@ def test_method_on_j1745(j1745, resolution, name, mode):
     from rvfitter.methods import REGISTRY
     cfg = _cfg(mode)
     cfg.input.resolution = round(resolution['resolution'])
-    res = REGISTRY[name].measure(j1745, _select(j1745, mode, [name])[name], cfg, rng=np.random.default_rng(42))
+    res = REGISTRY[name](j1745, _select(j1745, mode, [name])[name], cfg, rng=np.random.default_rng(42))
     assert res.n_regions >= 3
     assert np.isfinite(res.rv) and np.isfinite(res.rv_err)
     assert _z(res.rv, res.rv_err) < 4., (res.rv, res.rv_err)  # regression guard; see the module docstring
@@ -118,19 +120,35 @@ TRUTH = (2000., 5.0)
 R_INJ = 2300.
 
 
+def _smooth(wave: np.ndarray, flux: np.ndarray, fwhm_kms: float) -> np.ndarray:
+    """Normalised Gaussian convolution (FWHM [km/s], ±3σ kernel) of flux on a uniform ln λ grid"""
+    from scipy.signal import fftconvolve
+
+    from rvfitter import broadening
+    from rvfitter.constants import C_KMS
+    dv = float(np.log(wave[1] / wave[0])) * C_KMS
+    kernel = broadening.gaussian_kernel(fwhm_kms * broadening.FWHM_TO_SIGMA / dv, nsigma=3.)
+    m = np.isfinite(flux)
+    num = fftconvolve(np.where(m, flux, 0.), kernel, mode='same')
+    den = fftconvolve(m.astype(float), kernel, mode='same')
+    with np.errstate(invalid='ignore', divide='ignore'):
+        out = num / den
+    out[den < 1e-3] = np.nan
+    return out
+
+
 def make_j1745_like(spec, rng, v_true=BENCH_RV, cont_kms=20000.):
     """BT-Settl 2000/5.0 at R 2300, shifted by v_true, on J1745's pixels with its σ and broad flux shape"""
     from rvfitter.methods import _common as C
     from rvfitter.types import Spectrum
-    grid = C.open_grid({'local_dir': str(_root() / 'templates' / 'bt-settl-cifist' / 'useful'),
-                        'grid': 'bt-settl-cifist'})
+    grid = C.open_grid(config.TemplatesConfig(local_dir=str(_root() / 'templates' / 'bt-settl-cifist' / 'useful')))
     tpl = C.build_template(C.Candidate('truth', grid=grid, params=(*TRUTH, 0.)), R_INJ, (spec.wmin, spec.wmax))
     model = tpl.at(spec.wave, v_true)
     good = np.isfinite(spec.flux) & np.isfinite(spec.sigma) & (spec.sigma > 0) & np.isfinite(model)
     lnw = np.log(spec.wave)
     u = np.linspace(lnw[0], lnw[-1], len(lnw))
     ratio = np.interp(u, lnw[good], (spec.flux / model)[good])
-    cont = np.interp(lnw, u, C.highpass(np.exp(u), ratio, np.ones(len(u), bool), cont_kms))
+    cont = np.interp(lnw, u, _smooth(np.exp(u), ratio, cont_kms))
     if cont_kms is None or os.environ.get('RVFITTER_FLAT_CONTINUUM'):  # diagnostic: flat continuum
         cont = np.full_like(model, np.nanmedian(spec.flux[good] / model[good]))
     noisy = model * cont + rng.normal(0., 1., len(model)) * np.where(good, spec.sigma, 0.)
@@ -178,7 +196,7 @@ def j1745_like_pulls(spec, measure, name, n=20, seed=0):
 @pytest.mark.parametrize('name', ['ccf', 'template_fit'])
 def test_j1745_like_injection(j1745, name):
     from rvfitter.methods import REGISTRY
-    method, windows = j1745_like_pulls(j1745, REGISTRY[name].measure, name, n=80)
+    method, windows = j1745_like_pulls(j1745, REGISTRY[name], name, n=80)
     # per-window statistical errors: calibrated (N ~ 320 pooled windows)
     assert abs(windows['bias_sigma']) < 0.2, windows
     assert 0.8 < windows['pull_std'] < 1.2, windows

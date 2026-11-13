@@ -11,7 +11,7 @@ from rvfitter.methods import _common as C
 
 
 def _cfg(tpl, **kw):
-    return {'methods': {'options': {'template_fit': {'template': tpl, **kw}}}}
+    return injection.cfg_of({'methods': {'options': {'template_fit': {'template': tpl, **kw}}}})
 
 
 def test_registry_and_diagnostics():

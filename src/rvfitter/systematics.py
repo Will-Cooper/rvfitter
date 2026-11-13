@@ -6,8 +6,9 @@ template-spread and wavelength zero-point terms are reported separately, plus th
   each enabled grid, and the other template-window mode (features vs full spans), measured with a template
   method (template_fit by default; it is fast). The components are logged and returned by
   `template_spread_details`.
-- `wavelength_zero_point`: the velocity equivalent of the wavelength-solution RMS, if known.
+- `wavelength_zero_point`: the uncertainty of the wavelength zero point at the measurements' wavelengths.
 """
+import copy
 import logging
 from collections.abc import Sequence
 from concurrent.futures import Executor
@@ -15,7 +16,14 @@ from typing import Any
 
 import numpy as np
 
-from .constants import C_KMS
+from . import regions as _regions
+from .calibration.sky_zeropoint import curve_at
+from .calibration.telluric_zeropoint import frame_factor
+from .calibration.wavelength_correction import arc_kms
+from .methods import REGISTRY
+from .methods import _common as C
+from .methods.guidance import TEMPLATE_COLUMNS, grid_names
+from .numerics import rms
 from .types import Region, Spectrum
 
 __all__ = ['template_spread', 'template_spread_details', 'wavelength_zero_point']
@@ -23,194 +31,120 @@ __all__ = ['template_spread', 'template_spread_details', 'wavelength_zero_point'
 log = logging.getLogger(__name__)
 
 
-def _cfg_get(cfg: Any, section: str, key: str, default=None):
-    sec = cfg.get(section, {}) if isinstance(cfg, dict) else getattr(cfg, section, None)
-    if sec is None:
-        return default
-    val = sec.get(key, default) if isinstance(sec, dict) else getattr(sec, key, default)
-    return default if val is None else val
-
-
-def _with(cfg: Any, section: str, **values) -> Any:
-    """A copy of cfg with some fields of one section replaced (dataclass Config or mapping)"""
-    import copy
+def _pinned(cfg: Any, **templates) -> Any:
+    """A copy of cfg with some ``templates`` fields replaced"""
     new = copy.deepcopy(cfg)
-    sec = new.setdefault(section, {}) if isinstance(new, dict) else getattr(new, section)
-    for k, v in values.items():
-        if isinstance(sec, dict):
-            sec[k] = v
-        else:
-            setattr(sec, k, v)
+    for k, v in templates.items():
+        setattr(new.templates, k, v)
     return new
 
 
-def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]] | list[Region], cfg: Any, *,
+def _sd(vals) -> float:
+    v = np.array([x for x in vals if np.isfinite(x)])
+    return float(np.std(v, ddof=1)) if len(v) > 1 else np.nan
+
+
+def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]], cfg: Any, *,
                             executor: Executor | None = None, rng: np.random.Generator,
                             method: str = 'template_fit') -> dict:
     """
     RVs of one template method under every plausible template choice, and their spread
 
-    Parameters
-    ----------
-    spectrum
-        The (barycentric-corrected) spectrum
-    regions
-        The regions selected for the object ({method: [Region]} or the method's list)
-    cfg
-        Config (or mapping)
-    executor, rng
-        As for the methods
-    method
-        The template method used (default template_fit)
-
-    Returns
-    -------
-    details
-        'templates': {label: rv} for each grid candidate (pinned) in the configured window mode;
-        'grids': {grid: rv} for each enabled grid; 'window_modes': {mode: rv} for 'features' and 'full';
-        'sd_templates', 'sd_grids', 'delta_modes' and 'total' [km/s], where total is the standard deviation
-        (ddof = 1) of every RV above; NaN when fewer than two variants exist
+    Returns 'templates' {label: rv} for each grid candidate (pinned) in the configured window mode, 'grids'
+    {grid: rv} for each enabled grid (when several), 'window_modes' {mode: rv} for 'features' and 'full', and
+    'sd_templates', 'sd_grids', 'delta_modes' and 'total' [km/s], the standard deviation (ddof = 1) of every RV
+    above. A variant that cannot be measured (ValueError) is NaN with a WARNING; NaN with fewer than two variants.
     """
-    from . import regions as _regions
-    from .methods import REGISTRY
-    from .methods import _common as C
     measure = REGISTRY[method]
-    regs = regions.get(method, []) if isinstance(regions, dict) else list(regions)
+    regs = regions.get(method, [])
     out: dict[str, Any] = dict(templates={}, grids={}, window_modes={}, sd_templates=np.nan, sd_grids=np.nan,
                                delta_modes=np.nan, total=np.nan)
     if not regs:
         return out
     seeds = rng.spawn(3)
-    grids = _cfg_get(cfg, 'templates', 'grid', 'bt-settl-cifist')
-    grids = list(grids) if isinstance(grids, (list, tuple)) else [grids]
 
-    def run(c, rgs, seed):
+    def run(c, rgs, seed) -> float:
         try:
             return float(measure(spectrum, rgs, c, executor=executor, rng=np.random.default_rng(seed)).rv)
-        except Exception as exc:  # noqa: BLE001 - a variant that cannot run is logged, not fatal
-            log.debug('template spread variant failed: %s', exc)
+        except ValueError as exc:
+            log.warning('template spread: a variant could not be measured (%s); it is left out', exc)
             return np.nan
 
+    try:
+        cands = C.candidates(cfg, {'teff_window': 300.})
+    except ValueError as exc:
+        log.warning('template spread not measured (sys_template is NaN): %s', exc)
+        return out
     # (1) every candidate of every configured grid, pinned (grid and all axes)
-    tcfg = C.section(cfg, 'templates')
-    cands = C.candidates(cfg, {'teff_window': 300.})
-    for k, cand in enumerate(cands):
+    cand_seeds = seeds[0].spawn(len(cands))
+    for cand, seed in zip(cands, cand_seeds, strict=True):
         if cand.params is None:
             continue
         p = cand.param_dict
-        std = {f'{a}_range': (p[a], p[a]) for a in ('teff', 'logg', 'met', 'alpha')}
-        pinned = _with(cfg, 'templates', grid=cand.grid.name, **std,
-                       ranges={a: (v, v) for a, v in p.items() if a not in ('teff', 'logg', 'met', 'alpha')})
-        out['templates'][cand.label] = run(pinned, regs, seeds[0].spawn(len(cands))[k])
+        std = {f'{a}_range': (p[a], p[a]) for a in TEMPLATE_COLUMNS}
+        pinned = _pinned(cfg, grid=cand.grid.name, **std,
+                         ranges={a: (v, v) for a, v in p.items() if a not in TEMPLATE_COLUMNS})
+        out['templates'][cand.label] = run(pinned, regs, seed)
     # (2) each enabled grid (when several are configured)
+    grids = grid_names(cfg.templates)
     if len(grids) > 1:
-        for j, grid in enumerate(grids):
-            out['grids'][str(grid)] = run(_with(cfg, 'templates', grid=grid), regs, seeds[1].spawn(len(grids))[j])
+        for grid, seed in zip(grids, seeds[1].spawn(len(grids)), strict=True):
+            out['grids'][grid] = run(_pinned(cfg, grid=grid), regs, seed)
     # (3) the other window mode
-    mode = _cfg_get(cfg, 'regions', 'template_windows', 'features')
+    mode = cfg.regions.template_windows
     other = 'full' if mode == 'features' else 'features'
     out['window_modes'][mode] = run(cfg, regs, seeds[2])
-    try:
-        sel = _regions.select(spectrum, teff=tcfg.get('teff_prior'), methods=[method],
-                              options=_regions.SelectOptions(
-                                  telluric_corrected=bool(_cfg_get(cfg, 'input', 'telluric_corrected', False)),
-                                  template_windows=other))
-        out['window_modes'][other] = run(cfg, sel.get(method, []), seeds[2])
-    except Exception as exc:  # noqa: BLE001
-        log.debug('template spread: %s windows unavailable: %s', other, exc)
-
-    def sd(vals):
-        vals = np.array([v for v in vals if np.isfinite(v)])
-        return float(np.std(vals, ddof=1)) if len(vals) > 1 else np.nan
-
-    out['sd_templates'] = sd(out['templates'].values())
-    out['sd_grids'] = sd(out['grids'].values())
+    sel = _regions.select(spectrum, teff=cfg.templates.teff_prior, methods=[method],
+                          options=_regions.SelectOptions(telluric_corrected=bool(cfg.input.telluric_corrected),
+                                                         template_windows=other))
+    out['window_modes'][other] = run(cfg, sel.get(method, []), seeds[2])
+    out['sd_templates'] = _sd(out['templates'].values())
+    out['sd_grids'] = _sd(out['grids'].values())
     modes = list(out['window_modes'].values())
-    out['delta_modes'] = float(modes[1] - modes[0]) if len(modes) == 2 else np.nan
-    out['total'] = sd([*out['templates'].values(), *out['grids'].values(), *modes])
+    out['delta_modes'] = float(modes[1] - modes[0])
+    out['total'] = _sd([*out['templates'].values(), *out['grids'].values(), *modes])
     log.info('template spread (%s): %.2f km/s; templates SD %.2f km/s over %d, grids SD %.2f km/s, '
              '%s − %s windows %.2f km/s', method, out['total'], out['sd_templates'], len(out['templates']),
              out['sd_grids'], other, mode, out['delta_modes'])
     return out
 
 
-def template_spread(spectrum: Spectrum, regions: dict[str, list[Region]] | list[Region], cfg: Any, *,
+def template_spread(spectrum: Spectrum, regions: dict[str, list[Region]], cfg: Any, *,
                     executor: Executor | None = None, rng: np.random.Generator) -> float:
-    """
-    The template-spread systematic [km/s]: the 'total' of `template_spread_details`
-
-    Returns
-    -------
-    spread
-        km/s, NaN if fewer than two template variants could be measured
-    """
+    """The template-spread systematic [km/s]: the 'total' of `template_spread_details`"""
     return float(template_spread_details(spectrum, regions, cfg, executor=executor, rng=rng)['total'])
 
 
-def wavelength_zero_point(spectrum: Spectrum, cfg: Any, *, wave: np.ndarray | Sequence[float] | None = None
-                          ) -> float:
+def wavelength_zero_point(spectrum: Spectrum, *, wave: np.ndarray | Sequence[float] | None = None) -> float:
     """
     The wavelength zero-point systematic [km/s]: the larger of the arc-RMS term and the zero-point term
 
-    - Arc RMS: c × rms / λ_mid, with the RMS [Å] from cfg.input.wave_rms or spectrum.meta['wave_rms']. This is a
-      lower bound: an internally consistent arc fit can hide a distortion of the whole solution (J1745: arc RMS
-      ≈3 km/s against a +10 to +25 km/s sky-line distortion).
-    - Zero point, evaluated at the measurements' wavelengths `wave` (the RMS over them; the curves vary by tens
-      of km/s across a spectrum, so a single mean offset would misstate it):
-      - a correction applied (meta['wavelength_correction']): its own uncertainty, i.e. the sky curve's error
-        σ_sky(λ) with the spread over reasonable curve models (`zp_sky_model_spread`) in quadrature; or the
-        telluric curve's error σ_tell(λ). The error of an applied star − sky constant is `sys_star_sky`;
-      - nothing applied: the measured curve's uncertainty σ(λ) only (sky, else telluric). A measured offset's value
-        is never counted as an error: it is either applied or unknown (the pipeline warns when a significant
-        offset is left unapplied, and the star's own constant gets the slit-centring prior, `sys_star_sky`).
-      Without `wave`, the curves' summary errors (`zp_sky_err`, `zp_tell_err`) are used.
-
-    Returns
-    -------
-    sys
-        km/s; NaN if neither is known
+    - Arc RMS (`wavelength_correction.arc_kms`): a lower bound, since an internally consistent arc fit can hide a
+      distortion of the whole solution (J1745: arc RMS ≈3 km/s against a +10 to +25 km/s sky-line distortion).
+    - Zero point: the RMS, over the measurements' wavelengths `wave`, of the uncertainty σ(λ) of the applied curve
+      (meta['wavelength_correction']), else of the measured but unapplied one (sky, else telluric); for a sky curve
+      the model spread is added in quadrature. A measured offset's value is never an error (it is applied, or the
+      slit-centring prior covers it). Without `wave`, the curve's summary error. NaN if neither term is known.
     """
-    from .calibration.sky_zeropoint import curve_at
-    meta = spectrum.meta if hasattr(spectrum.meta, 'get') else {}
-    rms = _cfg_get(cfg, 'input', 'wave_rms', None)
-    if rms is None:
-        rms = meta.get('wave_rms')
-    arc = float(C_KMS * rms / np.median(spectrum.wave)) if rms is not None and np.isfinite(rms) else np.nan
+    meta = spectrum.meta
+    arc = arc_kms(spectrum)
     lam = None if wave is None else np.asarray(wave, dtype=float)
     if lam is not None:
         lam = lam[np.isfinite(lam)]
         lam = lam if len(lam) else None
-
-    def rms_of(x: np.ndarray) -> float:
-        x = np.asarray(x, dtype=float)
-        x = x[np.isfinite(x)]
-        return float(np.sqrt(np.mean(x * x))) if len(x) else np.nan
-
-    def observatory(curve: dict) -> np.ndarray:  # the curves are in the observatory frame
-        from .calibration.telluric_zeropoint import frame_factor
-        return lam / frame_factor(meta)
-
-    def spread_of(curve: dict) -> float:
-        v = curve.get('zp_sky_model_spread', np.nan)
-        return float(v) if v is not None and np.isfinite(v) else 0.
-
-    zp = np.nan
     wc = meta.get('wavelength_correction') or {}
-    if wc.get('sky'):  # applied: its uncertainty remains (a star − sky constant's error is sys_star_sky)
-        c = wc['sky']
-        zp = (float(np.hypot(rms_of(curve_at(c, observatory(c))[1]), spread_of(c))) if lam is not None
-              else float(c.get('zp_sky_err', np.nan)))
-    elif wc.get('telluric'):  # the star's telluric curve applied
-        c = wc['telluric']
-        zp = (rms_of(curve_at(c, observatory(c))[1]) if lam is not None
-              else float(c.get('zp_tell_err', np.nan)))
-    else:  # measured but not applied: only its uncertainty (a measured offset's value is never an error)
-        c = meta.get('sky_zeropoint') or meta.get('telluric_zeropoint')
-        if c:
-            sky = bool(meta.get('sky_zeropoint'))
-            if lam is not None:
-                zp = float(np.hypot(rms_of(curve_at(c, observatory(c))[1]), spread_of(c) if sky else 0.))
-            else:
-                zp = float(c.get('zp_sky_err' if sky else 'zp_tell_err', np.nan))
+    if wc.get('sky') or wc.get('telluric'):  # applied (a star − sky constant's error is sys_star_sky)
+        sky = bool(wc.get('sky'))
+        curve = wc['sky' if sky else 'telluric']
+    else:  # measured but not applied
+        sky = bool(meta.get('sky_zeropoint'))
+        curve = meta.get('sky_zeropoint') or meta.get('telluric_zeropoint')
+    zp = np.nan
+    if curve and lam is None:
+        zp = float(curve.get('zp_sky_err' if sky else 'zp_tell_err', np.nan))
+    elif curve:
+        spread = curve.get('zp_sky_model_spread', np.nan) if sky else 0.
+        spread = float(spread) if spread is not None and np.isfinite(spread) else 0.
+        zp = float(np.hypot(rms(curve_at(curve, lam / frame_factor(meta))[1]), spread))  # observatory frame
     vals = [v for v in (arc, zp) if np.isfinite(v)]
     return float(max(vals)) if vals else np.nan

@@ -73,13 +73,9 @@ def _verbosity(args) -> int:
 
 
 def _finish(res, failures: list[tuple[str, str]], out: Path, formats, cfg) -> int:
-    """Log the failure summary and the results, write them, and return the exit code (2 if anything failed)"""
+    """Log and write the results, and return the exit code (2 if anything failed; `pipeline.run` logs which)"""
     from . import results
 
-    if failures:
-        log.error('%d failure(s) during the run:', len(failures))
-        for what, why in failures:
-            log.error('  %s: %s', what, why)
     if not res:
         log.error('No objects were measured')
         return 1

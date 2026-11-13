@@ -1,29 +1,15 @@
-"""Thin adapter between the GUI and the rvfitter core.
-
-The GUI never imports ``config``, ``archives``, ``pipeline``, ``results`` or ``plotting`` directly.
-Everything goes through a :class:`Backend`, so that tests can substitute a fake and so that a missing or
-unfinished core module only disables the feature that needs it.
-"""
+"""Thin adapter between the GUI and the rvfitter core; tests substitute a fake :class:`Backend`."""
 from __future__ import annotations
 
-import inspect
 import logging
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from .cfgutil import get_path
-
 log = logging.getLogger(__name__)
 
-METHODS = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
 FORMATS = ('csv', 'json', 'tsv', 'html')
-PLOT_KINDS = {
-    'line_fits': 'plot_line_fits',
-    'ccf': 'plot_ccf',
-    'corner': 'plot_corner',
-    'adopted': 'plot_adopted',
-}
 
 
 class Backend(Protocol):
@@ -46,13 +32,11 @@ class Backend(Protocol):
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
-            on_result: Callable[[Any], None], should_cancel: Callable[[], bool]) -> list[Any]: ...
+            on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]: ...
 
     def to_table(self, results: Sequence[Any]) -> Any: ...
 
     def write_results(self, results: Sequence[Any], path: Path, formats: Sequence[str]) -> None: ...
-
-    def plot(self, kind: str, result: Any) -> Any | None: ...
 
     def suggested_refits(self, result: Any) -> list[dict]: ...
 
@@ -85,11 +69,9 @@ class LazyBackend:
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any:
         """Read one spectrum honouring ``cfg.input`` (medium, medium_method, hdu, resolution)."""
         from rvfitter import io
-        wanted = {'medium': get_path(cfg, 'input.medium'), 'medium_method': get_path(cfg, 'input.medium_method'),
-                  'hdu': get_path(cfg, 'input.hdu'), 'resolution': get_path(cfg, 'input.resolution')}
-        params = inspect.signature(io.read_spectrum).parameters
-        kwargs = {k: v for k, v in wanted.items() if k in params and v is not None}
-        return io.read_spectrum(path, **kwargs)
+        i = cfg.input
+        return io.read_spectrum(path, medium=i.medium, medium_method=i.medium_method, hdu=i.hdu,
+                                resolution=i.resolution)
 
     def group_objects(self, files: Sequence[Path], cfg: Any) -> dict[str, list[str]]:
         from rvfitter import archives
@@ -97,76 +79,21 @@ class LazyBackend:
         for f in files:
             try:
                 spectra.append(self.read_spectrum(f, cfg))
-            except Exception as exc:  # unreadable files are skipped, never fatal
+            except (OSError, ValueError) as exc:  # an unreadable file is skipped, never fatal
                 log.warning('Skipping %s: %s', f, exc)
-        override = get_path(cfg, 'grouping.override')
-        groups = archives.group_by_object(spectra, override or None)
+        groups = archives.group_by_object(spectra, cfg.grouping.override)
         return {name: [s.source for s in specs] for name, specs in groups.items()}
 
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]:
-        """Regions per method (as the pipeline selects them), with or without ``cfg.regions.overrides``."""
-        from rvfitter import regions
-
-        from .cfgutil import enabled_methods
-        overrides = get_path(cfg, 'regions.overrides') if with_overrides else None
-        prior = get_path(cfg, 'templates.teff_prior')
-        teff = (float(prior[0]) if isinstance(prior, list | tuple) else float(prior)) if prior else None
-        kwargs: dict[str, Any] = {'teff': teff, 'overrides': overrides or None}
-        options = self._select_options(cfg, regions)
-        if options is not None:
-            kwargs['options'] = options
-        return regions.select(spectrum, methods=enabled_methods(cfg) or list(METHODS), **kwargs)
-
-    @staticmethod
-    def _select_options(cfg: Any, regions: Any) -> Any | None:
-        """Build ``regions.SelectOptions`` from the matching ``cfg.regions`` fields."""
-        import dataclasses
-        cls = getattr(regions, 'SelectOptions', None)
-        sect = getattr(cfg, 'regions', None)
-        if cls is None or sect is None:
-            return None
-        alias = {'snr_min': 'min_snr', 'max_lines': 'max_regions', 'cont_fwhm': 'continuum_fwhm'}
-        vals = {}
-        for f in dataclasses.fields(cls):
-            for name in (f.name, alias.get(f.name)):
-                if name and hasattr(sect, name):
-                    vals[f.name] = getattr(sect, name)
-                    break
-        return cls(**vals)
+        """Regions per method, as the pipeline selects them, with or without ``cfg.regions.overrides``."""
+        from rvfitter import pipeline
+        return pipeline.region_selector(cfg, list(cfg.methods.enabled), with_overrides)(spectrum)
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
-            on_result: Callable[[Any], None], should_cancel: Callable[[], bool]) -> list[Any]:
-        """Run ``pipeline.run`` with ``on_object``/``cancel`` if it has them, else one object at a time."""
-        import threading
-
+            on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]:
         from rvfitter import pipeline
         files = [Path(f) for fs in groups.values() for f in fs]
-        params = inspect.signature(pipeline.run).parameters
-        if 'on_object' in params and 'cancel' in params:
-            event = threading.Event()
-            stop = threading.Event()
-
-            def watch() -> None:
-                while not stop.wait(0.1):
-                    if should_cancel():
-                        event.set()
-                        return
-
-            threading.Thread(target=watch, daemon=True).start()
-            try:
-                return list(pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, cancel=event))
-            finally:
-                stop.set()
-        out: list[Any] = []
-        for name, fs in groups.items():
-            if should_cancel():
-                log.info('Cancelled before %s', name)
-                break
-            log.info('Measuring %s (%d file%s)', name, len(fs), '' if len(fs) == 1 else 's')
-            for res in pipeline.run(cfg, [Path(f) for f in fs], n_procs=n_procs):
-                out.append(res)
-                on_result(res)
-        return out
+        return pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, cancel=cancel)
 
     def to_table(self, results: Sequence[Any]) -> Any:
         from rvfitter import results as res_mod
@@ -176,28 +103,10 @@ class LazyBackend:
         from rvfitter import results as res_mod
         res_mod.write(list(results), path, list(formats))
 
-    def plot(self, kind: str, result: Any) -> Any | None:
-        """Return a matplotlib Figure from ``plotting``, or ``None`` if the function is missing or fails."""
-        try:
-            from rvfitter import plotting
-        except Exception as exc:
-            log.debug('plotting unavailable: %s', exc)
-            return None
-        func = getattr(plotting, PLOT_KINDS[kind], None)
-        if func is None:
-            return None
-        try:
-            params = inspect.signature(func).parameters
-            kwargs = {'show': False} if 'show' in params else {}
-            return func(result, **kwargs)
-        except Exception as exc:
-            log.warning('Could not draw %s for %s: %s', kind, getattr(result, 'object', '?'), exc)
-            return None
-
     def suggested_refits(self, result: Any) -> list[dict]:
-        """The template-edge guidance of ``result`` as actions (``pipeline.suggested_refits``)."""
-        from rvfitter import pipeline
-        return list(pipeline.suggested_refits(result))
+        """The template-edge guidance of ``result`` as actions (``refit.suggested_refits``)."""
+        from rvfitter import refit
+        return refit.suggested_refits(result)
 
     def refit(self, result: Any, cfg: Any, suggestion: Mapping[str, Any]) -> tuple[Any, Any]:
         """
@@ -210,5 +119,4 @@ class LazyBackend:
             log.info('Downloading template grid: %s', suggestion['download'])
             templates.download(**suggestion['download'])
             log.info('Download finished.')
-        n_procs = get_path(cfg, 'parallel.n_procs') or 1
-        return pipeline.refit_object(result, cfg, suggestion['cfg_patch'], n_procs=int(n_procs))
+        return pipeline.refit_object(result, cfg, suggestion['cfg_patch'], n_procs=cfg.parallel.n_procs)

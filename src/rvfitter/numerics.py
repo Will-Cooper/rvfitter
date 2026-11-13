@@ -1,7 +1,7 @@
 """Small numerical helpers shared by the calibration and the methods."""
 import numpy as np
 
-__all__ = ['parabola_vertex', 'weighted_mean_chi2']
+__all__ = ['parabola_vertex', 'rms', 'weighted_mean_chi2']
 
 
 def parabola_vertex(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
@@ -23,3 +23,10 @@ def weighted_mean_chi2(v: np.ndarray, err: np.ndarray) -> tuple[float, float, fl
     v = np.asarray(v, float)
     mean = float(np.sum(w * v) / np.sum(w))
     return mean, float(1. / np.sqrt(np.sum(w))), float(np.sum(w * (v - mean) ** 2))
+
+
+def rms(x) -> float:
+    """Root mean square of the finite values; NaN if there are none."""
+    v = np.asarray(x, dtype=float)
+    v = v[np.isfinite(v)]
+    return float(np.sqrt(np.mean(v * v))) if len(v) else float('nan')

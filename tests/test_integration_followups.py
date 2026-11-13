@@ -1,11 +1,9 @@
 import os
-import types
 from pathlib import Path
 
 import pytest
 
 from rvfitter import cli, config, io, pipeline, regions
-from rvfitter import methods as methods_pkg
 
 TESTDATA = os.environ.get('RVFITTER_TESTDATA')
 J1745 = Path(TESTDATA or '.') / 'pypeit/R2500I/GTC54-15A0/OB0055/Science/DENISJ174534.6-164053_tellcorr.fits'
@@ -27,7 +25,7 @@ def test_telluric_corrected_makes_k_lines_eligible():
 
 @data
 def test_cli_measure_without_methods_exits_1(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(methods_pkg, 'REGISTRY', {}, raising=False)
+    monkeypatch.setattr(pipeline, 'REGISTRY', {})
     out = tmp_path / 'r.csv'
     code = cli.main(['measure', str(J1745), '--out', str(out), '--bary', 'skip', '--no-plots', '--telluric-corrected'])
     text = capsys.readouterr().out
@@ -36,17 +34,13 @@ def test_cli_measure_without_methods_exits_1(tmp_path, monkeypatch, capsys):
     assert not out.exists()
 
 
-def test_method_problem_messages(monkeypatch):
-    cfg = types.SimpleNamespace(methods=types.SimpleNamespace(enabled=['ccf', 'lsd']))
-    monkeypatch.setattr(methods_pkg, 'REGISTRY', {}, raising=False)
-    assert 'no registered methods' in pipeline.method_problem(cfg)
-    monkeypatch.setattr(methods_pkg, 'REGISTRY', {'other': object()}, raising=False)
-    assert 'none of the enabled methods' in pipeline.method_problem(cfg)
-    monkeypatch.setattr(methods_pkg, 'REGISTRY', {'ccf': object()}, raising=False)
-    assert pipeline.method_problem(cfg) is None
-    assert pipeline.method_problem(cfg, ['zzz']) is not None
-    monkeypatch.delattr(methods_pkg, 'REGISTRY', raising=False)
-    with pytest.raises(pipeline.NoMethodsError):
+def test_unknown_or_no_methods_raise():
+    cfg = config.Config()
+    assert pipeline.enabled_methods(cfg) == ['template_fit', 'ccf']
+    with pytest.raises(ValueError, match='unknown lsd'):
+        pipeline.enabled_methods(cfg, ['ccf', 'lsd'])
+    cfg.methods.enabled = []
+    with pytest.raises(pipeline.NoMethodsError, match='none is enabled'):
         pipeline.run(cfg)
 
 

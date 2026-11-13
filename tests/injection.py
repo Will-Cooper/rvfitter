@@ -12,7 +12,17 @@ separately with a looser pull criterion.
 import numpy as np
 
 import synth
+from rvfitter import config
 from rvfitter.types import Region
+
+
+def cfg_of(sections: dict) -> config.Config:
+    """A Config with some fields set, unvalidated (so method options may hold in-memory template spectra)"""
+    cfg = config.Config()
+    for name, values in sections.items():
+        for key, value in values.items():
+            setattr(getattr(cfg, name), key, value)
+    return cfg
 
 
 def full_region(spec, margin=20.):
@@ -44,7 +54,7 @@ def run(measure, opts_for, *, n, rv=23.4, resolution=2500., snr=30., vsini=0., s
         opts = opts_for(tpl)
         if segment_res is not None:
             opts.setdefault('segment_res', segment_res)
-        cfg = {'methods': {'options': {method: opts}}}
+        cfg = cfg_of({'methods': {'options': {method: opts}}})
         res = measure(spec, regions(spec), cfg, rng=np.random.default_rng(method_seed))
         rvs.append(res.rv)
         errs.append(res.rv_err)
