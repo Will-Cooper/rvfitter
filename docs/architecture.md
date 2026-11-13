@@ -48,7 +48,7 @@ class Region:
 
 @dataclass
 class Measurement:              # one method on one region/order
-    method: str                 # a key of methods.REGISTRY: "linecentre" | "ccf" | "template_fit" | "telluric_ref"
+    method: str                 # a key of methods.REGISTRY: "linecentre" | "ccf" | "template_fit" | "telluric_ref" | "forward_mcmc"
     region: str
     rv: float; rv_err: float    # km/s, statistical
     flag: int                   # 0 = ok; bit flags defined in results.FLAGS
@@ -92,7 +92,7 @@ class ObjectResult:
 | `features` | `load_catalogue() -> Table`; `features()`: `Feature` records with vacuum λ, species, kind, teff_min/teff_max, r_min, caveat, rest_ref, depth, model_fidelity | P3 |
 | `regions` | `select(spectrum, *, teff=None, methods, overrides=None) -> dict[method, list[Region]]` | P3 |
 | `gui.app` | `main()`; calls only `config`, `archives`, `io`, `pipeline`, `refit`, `results` and `templates` (through `gui.backend`) | P4 |
-| `templates` | `TemplateGrid` (`.get(teff, logg, met, ...) -> Spectrum`, N-D multilinear), `KNOWN_GRIDS`, `download(grid, teff_range, logg_range, met_range, alpha_range, *, ranges, directory, fetch, verify, source="auto") -> TemplateGrid`, `verify_medium(grid)`, `cli_main(argv)`; cache via platformdirs | M |
+| `templates` | `TemplateGrid` (`.get(teff, logg, met, ...) -> Spectrum`, N-D multilinear; `.corners(params)` the interpolation weights), `KNOWN_GRIDS`, `download(grid, teff_range, logg_range, met_range, alpha_range, *, ranges, directory, fetch, verify, source="auto") -> TemplateGrid`, `verify_medium(grid)`, `cli_main(argv)`; cache via platformdirs | M |
 | `grid_sources` | Zenodo grids (Sonora Bobcat, Diamondback, Elf Owl; SAND): `ZENODO_GRIDS`, `download_zenodo(grid, want, directory, *, axes, write)`, `provenance(grid)`, `record_files(record)`; the shared network helpers `urlopen(url, *, headers, timeout)` and `fetch(url, what)` (User-Agent, transient errors retried), also used by `templates` and `calibration.telluric_build` | M |
 | `broadening` | `doppler_factor(v)`, `log_wave_grid`, `rebin` (flux-conserving), `gaussian_kernel`, `rotation_kernel` (Gray), `convolve`, `broaden_loglam(flux, dv, resolution, vsini, epsilon, resolution_native)` | M |
 | `calibration.telluric` | `model()`, `available()`, `cache_path()`, `transmission(wave, airmass=1., pwv=, *, resolution=None, dv=0.) -> ndarray`; the HITRAN-derived model is built into the user cache (`templates telluric --build`), never shipped; raises `TelluricModelUnavailable` without it | M |
@@ -100,6 +100,7 @@ class ObjectResult:
 | `numerics` | `parabola_vertex(x, y) -> (x0, y0, y'')`, `weighted_mean_chi2(v, err) -> (mean, formal_err, chi2)`, `rms(x)` (finite values; NaN if none) | M |
 | `calibration.telluric_zeropoint` | `measure(spectrum, regions=None, *, resolution=None, seg_width=250., degree=2, min_depth=0.05, max_lag_kms=150., template=None, star_rv_range=(-400., 400.), teff=None, spread_templates=()) -> TelluricZeroPoint \| None` (unpacks as `(zp, err)`; `.dv(λ)`); `node_windows(tell)`, `star_minus_sky_direct(tell, sky_windows) -> dict` | M |
 | `methods.telluric_ref` | `measure(spectrum, regions, cfg, *, executor, rng)`: v_star − v_tell per telluric segment; `prior_template`, `neighbour_templates` | M |
+| `methods.forward` | `measure(spectrum, regions, cfg, *, executor, rng)` (`forward_mcmc`; opt-in, needs emcee) and `fit_epochs(spectra, regions_per_epoch, cfg, *, executor, rng) -> list[MethodResult]` (shared atmosphere and vsini, one RV per epoch; used by `pipeline.measure_object` for several epochs) | M |
 | `methods.linecentre` | `measure(spectrum, regions, cfg, *, executor, rng)`: a profile fit per 'line' region (options `profile`, `joint`); `PROFILES` | M |
 | `methods.*` | `REGISTRY[name](spectrum, regions, cfg, *, executor, rng) -> MethodResult` (`cfg` a `Config`); a method that cannot measure raises ValueError. `methods._common`: `choose_template`, `run_chunks`, `window_measurement`, `TEMPLATE_DEFAULTS`; `methods.guidance`: `template_summary` (best template and edge guidance) | M |
 | `combine` | `combine_regions(measurements) -> (rv, err)` (random effects), `hierarchical(values, errors, line_ids, method_ids, ...) -> dict` (Woodbury); epochs: `epoch_labels`, `epoch_summaries(per_method, labels, tau_scale, name, sys)`, `method_over_epochs`, `adopted_over_epochs` | M |

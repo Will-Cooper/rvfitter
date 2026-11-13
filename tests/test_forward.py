@@ -1,4 +1,5 @@
 """Tests of rvfitter.methods.forward (forward-model MCMC): flags, executor invariance, epochs and injection–recovery."""
+import logging
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -14,6 +15,7 @@ from rvfitter.methods import REGISTRY, forward
 from rvfitter.types import Region
 
 pytestmark = pytest.mark.usefixtures('clear_template_cache')
+log = logging.getLogger(__name__)
 TEFFS = (1900., 2000., 2100.)
 FAST = dict(n_walkers=12, n_burn=30, n_steps=60, segment_res=0.)
 
@@ -123,5 +125,38 @@ def test_injection_recovery_bt_settl():
     with ProcessPoolExecutor(min(os.cpu_count() or 1, 20), mp_context=multiprocessing.get_context('spawn')) as ex:
         rvs, errs, conv = map(np.array, zip(*ex.map(_bt_settl_trial, range(40)), strict=True))
     pull = (rvs - 23.4) / errs
+    log.info('pull width %.2f, mean %.2f; converged %d/40', np.std(pull, ddof=1), np.mean(pull), conv.sum())
     assert conv.mean() >= 0.9, conv
     assert 0.8 < np.std(pull, ddof=1) < 1.2 and abs(np.mean(pull)) < 0.5, pull
+
+
+@pytest.mark.data
+@pytest.mark.slow
+def test_j1745(caplog):
+    """J1745−1640 with and without the default sky correction: RV, vsini and Teff are reported, not tuned"""
+    from rvfitter import pipeline
+    root = os.environ.get('RVFITTER_TESTDATA')
+    if not root:
+        pytest.skip('RVFITTER_TESTDATA not set')
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    sci = Path(root) / 'pypeit/R2500I/GTC54-15A0/OB0055/Science'
+    for mode in ('none', 'sky-if-needed'):
+        c = injection.cfg_of({'templates': {'local_dir': str(Path(root) / 'templates/bt-settl-cifist/useful'),
+                                            'teff_prior': 2100.}})
+        c.input.telluric_corrected = True
+        c.input.resolution = 2602.
+        c.velocity_frame.correction = 'skip'
+        c.velocity_frame.frame = 'heliocentric'
+        c.methods.enabled = ['forward_mcmc']
+        c.calibration.wavelength_correction = mode
+        c.calibration.sky_source = str(next(sci.glob('spec1d_*.fits')))
+        obj = pipeline.run(c, [str(sci / 'DENISJ174534.6-164053_tellcorr.fits')], n_procs=min(os.cpu_count(), 20))[0]
+        res = obj.methods['forward_mcmc']
+        for m in res.measurements:
+            d = m.diagnostics
+            log.info('%s %s: %.2f ± %.2f km/s, vsini %.1f ± %.1f, teff %.0f ± %.0f, logg %.2f (flag %d, τ %.0f)',
+                     mode, m.region, m.rv, m.rv_err, d['vsini'], d['vsini_err'], d['teff_post'], d['teff_post_err'],
+                     d['logg_post'], m.flag, np.max(d['tau']))
+        log.info('%s: forward_mcmc %.2f ± %.2f km/s (%d windows; z %.2f)', mode, res.rv, res.rv_err, res.n_regions,
+                 abs(res.rv - 26.2) / np.hypot(2.3, res.rv_err))
+        assert res.n_regions >= 3 and np.isfinite(res.rv)
