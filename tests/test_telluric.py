@@ -373,8 +373,15 @@ def star():
     return make_template((7000., 10500.), n_random=400, rng=np.random.default_rng(3))
 
 
-def test_telluric_ref_recovers_rv_despite_distortion(star):
-    from rvfitter.methods import REGISTRY
+def test_telluric_ref_recovers_rv_despite_distortion(star, monkeypatch):
+    from rvfitter.methods import REGISTRY, _common, telluric_ref
+    prior = telluric_ref.prior_template
+
+    def in_hole(*a, **k):  # a template from a grid hole (nearest point used) must be flagged
+        t = prior(*a, **k)
+        t.params['grid_hole'] = True
+        return t
+    monkeypatch.setattr(telluric_ref, 'prior_template', in_hole)
     rv_true, frame = 30., -21.
     spec = _observed(rv_star=rv_true, star=star, frame_kms=frame, snr=100.)
     tmpl = Spectrum(star[0], star[1], np.full(len(star[0]), np.nan), None, {'object': 'toy'}, 'toy')
@@ -384,6 +391,7 @@ def test_telluric_ref_recovers_rv_despite_distortion(star):
     expected = float(299792.458 * np.tanh(np.arctanh(rv_true / 299792.458) + np.arctanh(frame / 299792.458)))
     assert abs(res.rv - expected) < 3. * res.rv_err + 0.5, (res.rv, res.rv_err, expected)
     m = [x for x in res.measurements if np.isfinite(x.rv)]
+    assert all(x.flag & _common.FLAG_GRID_HOLE for x in m)
     # each segment's telluric zero point is the injected distortion (observatory frame)
     assert all(abs(x.diagnostics['dv'] - _dv_true(x.diagnostics['wave_centre'])) < 4. * x.diagnostics['err'] + 1.
                for x in m)
