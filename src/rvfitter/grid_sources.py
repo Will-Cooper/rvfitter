@@ -24,6 +24,7 @@ medium is measured from the alkali lines when the grid is opened ('auto').
 All four records are licensed CC-BY-4.0; cite the model papers (`templates.KNOWN_GRIDS[...].reference`). The
 licence, record id(s), DOI and a citation string are returned by `provenance` and stored with the downloaded grid.
 """
+import gzip
 import hashlib
 import http.client
 import io
@@ -183,7 +184,10 @@ def _sorted(w: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def read_bobcat(data: bytes) -> tuple[np.ndarray, np.ndarray, str | None]:
-    """Sonora Bobcat: two header lines; wavelength [μm] (descending), F_ν [erg/cm²/s/Hz]"""
+    """Sonora Bobcat: two header lines; wavelength [μm] (descending), F_ν [erg/cm²/s/Hz]; the record's members are
+    gzip-compressed"""
+    if data[:2] == b'\x1f\x8b':
+        data = gzip.decompress(data)
     um, fnu = _text_columns(data, 2)
     w = um * 1e4
     return (*_sorted(w, fnu * _C_ANGSTROM / w ** 2), None)
@@ -224,7 +228,9 @@ def _logg_from_mks(g: str) -> float:
 
 
 def parse_bobcat(name: str) -> dict | None:
-    m = re.match(r'^sp_t(?P<teff>\d+)g(?P<g>\d+)nc_m(?P<met>[-+]?\d+\.\d+)(?:_co(?P<co>[\d.]+))?$', name)
+    # the members are 'spectra/sp_t1000g316nc_m0.0.gz' (gzip-compressed; checked against record 5063476)
+    m = re.match(r'^sp_t(?P<teff>\d+)g(?P<g>\d+)nc_m(?P<met>[-+]?\d+\.\d+)(?:_co(?P<co>\d+(?:\.\d+)?))?(?:\.gz)?$',
+                 name)
     if m is None:
         return None
     return dict(teff=float(m['teff']), logg=_logg_from_mks(m['g']), met=float(m['met']), alpha=0.,
