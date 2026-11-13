@@ -90,6 +90,28 @@ def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any], *, esti
     return _ESTIMATED_R[key]
 
 
+def min_resolution(method: str) -> float:
+    """
+    The lowest resolving power a method accepts: the smallest catalogue ``r_min`` of the features it measures
+    (linecentre: the atomic lines; the template methods: the model_fidelity 'good' features their windows are built
+    on, i.e. atomic lines and CO bandheads). Below it every such feature is unresolved by the catalogue's own
+    criterion (Kirkpatrick et al. 1999; McLean et al. 2003): R 1000 is an instrumental FWHM of 300 km/s, already
+    wider than the alkali line cores, so an RV would come from blends and the broad molecular shape
+    """
+    from ..features import features
+    use = [f.r_min for f in features() if (f.kind == 'line' if method == 'linecentre' else f.model_fidelity == 'good')
+           and np.isfinite(f.r_min)]
+    return float(min(use))
+
+
+def check_resolution(method: str, resolution: float) -> None:
+    """ValueError when `resolution` is below the method's `min_resolution`"""
+    r_min = min_resolution(method)
+    if resolution < r_min:
+        raise ValueError(f'{method}: R = {resolution:.0f} is below the minimum R {r_min:.0f} for this method (the '
+                         'smallest catalogue r_min of the features it measures): refused')
+
+
 def split_regions(regions: Sequence[Region]) -> tuple[list[Region], list[Region]]:
     """The fitting windows (all but telluric and continuum regions) and the telluric regions masked out of them"""
     return [r for r in regions if r.kind not in SKIP_KINDS], [r for r in regions if r.kind in MASK_KINDS]

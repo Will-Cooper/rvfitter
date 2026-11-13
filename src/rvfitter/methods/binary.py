@@ -92,6 +92,7 @@ def test(spectrum: Spectrum, regions: Sequence[Region], cfg: Any) -> dict:
     """
     opts = C.options(cfg, 'template_fit', TF.DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
+    C.check_resolution('binary', resolution)
     cands = C.candidates(cfg, opts)
     datas, _ = TF._prepare(spectrum, C.covered_regions('binary', regions, cands), opts, resolution)
     if not datas:

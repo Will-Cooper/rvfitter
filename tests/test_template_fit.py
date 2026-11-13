@@ -95,6 +95,17 @@ def test_segments_and_outlier_rejection():
     assert ms[-1].flag & C.FLAG_OUTLIER and res.n_regions == 4 and abs(res.rv - 22.) < 2.
 
 
+@pytest.mark.parametrize('method', ['template_fit', 'ccf', 'linecentre', 'lsd'])
+def test_low_resolution_refused(method):
+    """Below the smallest catalogue r_min of a method's features (1000) the method refuses with a clear ValueError"""
+    spec, truth = synth.make_spectrum(rv=10., resolution=500., snr=50., rng=np.random.default_rng(1))
+    assert C.min_resolution(method) == 1000.
+    opts = {} if method == 'linecentre' else {'template': truth['template']}
+    cfg = injection.cfg_of({'methods': {'options': {method: opts}}})
+    with pytest.raises(ValueError, match='R = 500 is below the minimum R 1000'):
+        REGISTRY[method](spec, injection.full_region(spec), cfg, rng=np.random.default_rng(0))
+
+
 @pytest.mark.parametrize('method', ['template_fit', 'ccf'])
 def test_windows_outside_the_template_are_dropped(method, caplog):
     """A window the template does not cover is dropped with a WARNING naming it; none covered: a clear ValueError"""

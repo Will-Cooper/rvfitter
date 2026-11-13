@@ -222,6 +222,7 @@ def fit_epochs(spectra: Sequence[Spectrum], regions: Sequence[Sequence[Region]],
     if len(res) != 1:
         raise ValueError(f'forward_mcmc: the epochs have different resolving powers {sorted(res)}')
     resolution = res.pop()
+    C.check_resolution(METHOD, resolution)
     cands = C.candidates(cfg, opts)
     grid, points = _box(cands)
     regions = [C.covered_regions(METHOD, r, cands) for r in regions]

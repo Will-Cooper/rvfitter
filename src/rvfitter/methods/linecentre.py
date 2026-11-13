@@ -12,6 +12,9 @@ shape: the template nearest the priors, at the spectrum's R on its pixels, noise
 exactly like the data, its RV (truth 0) is subtracted, and the standard deviation of that offset over the
 template and its ±1 Teff-step grid neighbours is added in quadrature to the error. The method then depends on
 the template models (logged at INFO).
+
+A resolving power below `_common.min_resolution` (the smallest catalogue r_min of the lines) is refused; an unknown
+R is estimated by the template fit first (WARNING), as for the template methods.
 """
 import logging
 from collections.abc import Sequence
@@ -209,6 +212,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     (a few fast, deterministic fits); they keep the method signature.
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
+    C.check_resolution(METHOD, C.resolution_of(spectrum, cfg, opts))  # an unknown R is estimated (WARNING)
     profile = opts['profile']
     if profile not in PROFILES:
         raise ValueError(f'linecentre profile must be one of {sorted(PROFILES)}, not {profile!r}')

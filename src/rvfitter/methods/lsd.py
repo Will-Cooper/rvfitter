@@ -218,6 +218,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     if opts['mask'] not in ('template', 'catalogue'):
         raise ValueError(f'lsd option mask must be "template" or "catalogue", not {opts["mask"]!r}')
     resolution = C.resolution_of(spectrum, cfg, opts)
+    C.check_resolution(METHOD, resolution)
     cands = C.candidates(cfg, opts)
     regions = C.covered_regions(METHOD, regions, cands)
     windows, masks = C.split_regions(regions)

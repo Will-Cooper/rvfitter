@@ -216,6 +216,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
+    C.check_resolution(METHOD, resolution)
     cands = C.candidates(cfg, opts)
     datas, kept = _prepare(spectrum, C.covered_regions(METHOD, regions, cands), opts, resolution)
     if not datas:
