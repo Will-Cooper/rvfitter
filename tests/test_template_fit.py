@@ -95,6 +95,16 @@ def test_segments_and_outlier_rejection():
     assert ms[-1].flag & C.FLAG_OUTLIER and res.n_regions == 4 and abs(res.rv - 22.) < 2.
 
 
+def test_outlier_cannot_mask_itself():
+    """Leave-one-out: a displaced line among few (J1331 line centres; Rb I 7802 at -253) inflates the MAD of all
+    five RVs (s = 42 km/s, not rejected) but not the MAD of the other four (s = 21 km/s)"""
+    from rvfitter.types import Measurement
+    rvs, errs = [-73.6, -70.7, -252.9, -45.0, -108.2], [5.1, 7.2, 8.7, 17.8, 44.4]
+    ms = [Measurement('linecentre', str(i), v, e) for i, (v, e) in enumerate(zip(rvs, errs, strict=True))]
+    C.reject_outliers(ms, 5.)
+    assert [bool(m.flag & C.FLAG_OUTLIER) for m in ms] == [False, False, True, False, False]
+
+
 @pytest.mark.parametrize('method', ['template_fit', 'ccf', 'linecentre', 'lsd'])
 def test_low_resolution_refused(method):
     """Below the smallest catalogue r_min of a method's features (1000) the method refuses with a clear ValueError"""

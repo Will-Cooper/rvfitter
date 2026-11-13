@@ -458,17 +458,21 @@ def reject_outliers(measurements: list[Measurement], k: float = 5.) -> list[Meas
     """
     Flag gross outliers among a method's usable measurements (at least three)
 
-    A measurement is an outlier if |rv − median| > k √(s² + σ²), with s = 1.4826 × MAD of the RVs. With k = 5
-    this only catches failures (e.g. a fit locked on a wrong optimum), not ordinary scatter, which the Birge
-    and hierarchical combinations handle. Outliers get the `FLAG_OUTLIER` bit (excluded from the combination).
+    A measurement is an outlier if |rv − median| > k √(s² + σ²), with the median and s = 1.4826 × MAD of the
+    other measurements' RVs (leave-one-out: with few regions, an outlier inflates the MAD it would be judged
+    against and masks itself; task 14, Rb I 7802 on distorted blue ends). With k = 5 this only catches failures
+    (e.g. a fit locked on a wrong optimum or a feature displaced by a bad wavelength solution), not ordinary
+    scatter, which the Birge and hierarchical combinations handle. Outliers get the `FLAG_OUTLIER` bit (excluded
+    from the combination).
     """
     usable = [m for m in measurements if not (m.flag & SERIOUS) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
     if len(usable) < 3:
         return measurements
     rvs = np.array([m.rv for m in usable])
-    med = float(np.median(rvs))
-    s = 1.4826 * float(np.median(np.abs(rvs - med)))
-    for m in usable:
+    for j, m in enumerate(usable):
+        others = np.delete(rvs, j)
+        med = float(np.median(others))
+        s = 1.4826 * float(np.median(np.abs(others - med)))
         if abs(m.rv - med) > k * np.hypot(s, m.rv_err):
             m.flag |= FLAG_OUTLIER
             log.warning('%s %s: %.1f km/s is a gross outlier (median %.1f, robust scatter %.1f); excluded',
