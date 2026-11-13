@@ -23,6 +23,9 @@ class FakeMethod:
     def __init__(self, name, fail=False):
         self.name, self.fail = name, fail
 
+    def __call__(self, *args, **kwargs):
+        return self.measure(*args, **kwargs)
+
     def measure(self, spectrum, regs, cfg, *, executor, rng):
         if self.fail:
             raise RuntimeError('boom')
@@ -65,14 +68,13 @@ def fakes(monkeypatch):
     monkeypatch.setattr(combine, 'hierarchical', hierarchical, raising=False)
     monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, c, **kw: 0.5, raising=False)
     monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4, raising=False)
-    monkeypatch.setattr(methods_pkg, 'REGISTRY', {
-        'ccf': FakeMethod('ccf'), 'linecentre': FakeMethod('linecentre'), 'lsd': FakeMethod('lsd', fail=True)},
-        raising=False)
+    monkeypatch.setattr(methods_pkg, 'REGISTRY', {'ccf': FakeMethod('ccf'), 'template_fit': FakeMethod('template_fit'),
+                                                  'telluric_ref': FakeMethod('telluric_ref', fail=True)}, raising=False)
     return types.SimpleNamespace(calls=calls)
 
 
 NS = types.SimpleNamespace
-CFG = NS(seed=7, methods=NS(enabled=['linecentre', 'ccf', 'lsd'], options={}), hash=lambda: 'h',
+CFG = NS(seed=7, methods=NS(enabled=['template_fit', 'ccf', 'telluric_ref'], options={}), hash=lambda: 'h',
          input=NS(medium='auto', hdu=None, resolution=None, paths=['p1'], telluric_corrected=False),
          regions=NS(overrides={'ccf': [{'name': 'x', 'remove': True}]}, min_snr=7.0, telluric_strictness=None),
          combine=NS(tau_scale=0.3, systematic_floor=0.2), grouping=NS(override=None),
@@ -93,8 +95,8 @@ def test_sequencing_and_failure(fakes, caplog):
     assert any('adopted RV' in m for m in msgs)
     a = res[0]
     assert len(a.files) == 2 and a.barycentric['source'] == 'computed'
-    assert np.isnan(results.to_table([a]).loc[0, 'rv_lsd'])
-    assert a.methods['lsd'].measurements[0].flag & 1
+    assert np.isnan(results.to_table([a]).loc[0, 'rv_telluric_ref'])
+    assert a.methods['telluric_ref'].measurements[0].flag & 1
     assert a.adopted['n_methods'] == 2 and a.systematics['template_spread'] == 0.4
     assert a.config_hash == 'h'
     assert any(r.levelno == logging.ERROR for r in caplog.records)
@@ -147,13 +149,13 @@ def test_cancel_between_objects(fakes):
 def test_cancel_between_methods(fakes, monkeypatch):
     cancel = threading.Event()
     reg = methods_pkg.REGISTRY
-    orig = reg['linecentre'].measure
+    orig = reg['template_fit'].measure
 
     def measure(*a, **k):
         cancel.set()
         return orig(*a, **k)
 
-    monkeypatch.setattr(reg['linecentre'], 'measure', measure)
+    monkeypatch.setattr(reg['template_fit'], 'measure', measure)
     seen = []
     res = pipeline.run(CFG, INPUTS, n_procs=1, on_object=seen.append, cancel=cancel)
     assert res == [] and seen == []

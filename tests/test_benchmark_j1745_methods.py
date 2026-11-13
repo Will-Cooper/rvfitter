@@ -85,7 +85,7 @@ def test_method_on_j1745(j1745, resolution, name, mode):
     from rvfitter.methods import REGISTRY
     cfg = _cfg(mode)
     cfg.input.resolution = round(resolution['resolution'])
-    res = REGISTRY[name].measure(j1745, _select(j1745, mode, [name])[name], cfg, rng=np.random.default_rng(42))
+    res = REGISTRY[name](j1745, _select(j1745, mode, [name])[name], cfg, rng=np.random.default_rng(42))
     assert res.n_regions >= 3
     assert np.isfinite(res.rv) and np.isfinite(res.rv_err)
     assert _z(res.rv, res.rv_err) < 4., (res.rv, res.rv_err)  # regression guard; see the module docstring
@@ -178,7 +178,7 @@ def j1745_like_pulls(spec, measure, name, n=20, seed=0):
 @pytest.mark.parametrize('name', ['ccf', 'template_fit'])
 def test_j1745_like_injection(j1745, name):
     from rvfitter.methods import REGISTRY
-    method, windows = j1745_like_pulls(j1745, REGISTRY[name].measure, name, n=80)
+    method, windows = j1745_like_pulls(j1745, REGISTRY[name], name, n=80)
     # per-window statistical errors: calibrated (N ~ 320 pooled windows)
     assert abs(windows['bias_sigma']) < 0.2, windows
     assert 0.8 < windows['pull_std'] < 1.2, windows

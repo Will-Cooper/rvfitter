@@ -35,7 +35,6 @@ def test_ccf_curve_is_one_for_identical():
 
 
 def test_registry():
-    assert REGISTRY['ccf'].__call__  # lazy wrapper
     spec, truth = synth.make_spectrum(rv=-40., snr=50., rng=np.random.default_rng(3))
     cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}}
     res = REGISTRY['ccf'](spec, injection.full_region(spec), cfg, rng=np.random.default_rng(0))

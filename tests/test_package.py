@@ -44,9 +44,9 @@ def test_module_imports(name):
 def test_expected_modules_present():
     names = set(_stub_modules())
     for mod in ('io', 'archives', 'config', 'features', 'regions', 'barycentric', 'broadening', 'templates',
-                'combine', 'systematics', 'results', 'pipeline', 'logging_setup', 'plotting', 'cli',
-                'calibration.telluric', 'calibration.telluric_zeropoint', 'methods.linecentre', 'methods.ccf',
-                'methods.template_fit', 'methods.forward', 'methods.lsd', 'methods.binary', 'gui.app'):
+                'combine', 'systematics', 'results', 'pipeline', 'logging_setup', 'cli',
+                'calibration.telluric', 'calibration.telluric_zeropoint', 'methods.ccf',
+                'methods.template_fit', 'methods.telluric_ref', 'gui.app'):
         assert f'rvfitter.{mod}' in names
 
 

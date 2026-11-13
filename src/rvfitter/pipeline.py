@@ -148,7 +148,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                 per_method[m].append(_failed(m))
                 continue
             try:
-                res = registry[m].measure(spec, sel.get(m, []), cfg, executor=executor, rng=method_rngs[m])
+                res = registry[m](spec, sel.get(m, []), cfg, executor=executor, rng=method_rngs[m])
             except Exception as exc:  # noqa: BLE001
                 log.error('%s: method %s failed: %s', name, m, exc)
                 log.debug('traceback', exc_info=True)

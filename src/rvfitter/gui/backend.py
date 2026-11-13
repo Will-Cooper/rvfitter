@@ -16,7 +16,6 @@ from .cfgutil import get_path
 
 log = logging.getLogger(__name__)
 
-METHODS = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
 FORMATS = ('csv', 'json', 'tsv', 'html')
 PLOT_KINDS = {
     'line_fits': 'plot_line_fits',
@@ -115,7 +114,7 @@ class LazyBackend:
         options = self._select_options(cfg, regions)
         if options is not None:
             kwargs['options'] = options
-        return regions.select(spectrum, methods=enabled_methods(cfg) or list(METHODS), **kwargs)
+        return regions.select(spectrum, methods=enabled_methods(cfg), **kwargs)
 
     @staticmethod
     def _select_options(cfg: Any, regions: Any) -> Any | None:

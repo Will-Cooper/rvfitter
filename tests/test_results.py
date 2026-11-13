@@ -10,14 +10,14 @@ from rvfitter.config import METHOD_NAMES, Config
 from rvfitter.types import Measurement, MethodResult, ObjectResult
 
 
-def make_result(name='J1745', rv=27.4, with_lsd=False):
+def make_result(name='J1745', rv=27.4, with_tref=False):
     ms = {}
-    for m, off in (('linecentre', 0.5), ('ccf', -0.3)):
+    for m, off in (('ccf', 0.5), ('template_fit', -0.3)):
         meas = [Measurement(m, 'K I 7701', rv + off, 2.0, 0, {'chi2': 1.1, 'note': 'x', 'arr': [1, 2]}),
                 Measurement(m, 'Na I 8200', rv + off + 0.2, 3.0, 4)]
         ms[m] = MethodResult(m, rv + off, 1.7, 2, meas)
-    if with_lsd:
-        ms['lsd'] = MethodResult('lsd', rv, 1.0, 1, [Measurement('lsd', 'all', rv, 1.0, 32)])
+    if with_tref:
+        ms['telluric_ref'] = MethodResult('telluric_ref', rv, 1.0, 1, [Measurement('telluric_ref', 'all', rv, 1.0, 32)])
     return ObjectResult(
         object=name, files=['a.fits', 'b.fits'], methods=ms,
         adopted={'median': rv, 'err': 1.5, 'q16': rv - 1.5, 'q84': rv + 1.5, 'tau_line': 0.4, 'tau_method': 0.2,
@@ -28,17 +28,17 @@ def make_result(name='J1745', rv=27.4, with_lsd=False):
 
 
 def test_schema():
-    df = results.to_table([make_result(), make_result('B', with_lsd=True)])
+    df = results.to_table([make_result(), make_result('B', with_tref=True)])
     cols = list(df.columns)
     assert cols[:3] == ['object', 'n_spectra', 'files']
-    assert cols[3:7] == ['rv_linecentre', 'rv_linecentre_err', 'rv_linecentre_flag', 'n_linecentre']
+    assert cols[3:7] == ['rv_ccf', 'rv_ccf_err', 'rv_ccf_flag', 'n_ccf']
     assert cols[-2:] == ['config_hash', 'version']
     order = [cols.index(f'rv_{m}') for m in METHOD_NAMES]
     assert order == sorted(order)
     assert len(df) == 2
-    assert np.isnan(df.loc[0, 'rv_template_fit']) and pd.isna(df.loc[0, 'rv_lsd_flag'])
-    assert df.loc[0, 'rv_linecentre_flag'] == 4
-    assert df.loc[1, 'rv_lsd_flag'] == 32
+    assert np.isnan(df.loc[0, 'rv_telluric_ref']) and pd.isna(df.loc[0, 'rv_telluric_ref_flag'])
+    assert df.loc[0, 'rv_ccf_flag'] == 4
+    assert df.loc[1, 'rv_telluric_ref_flag'] == 32
     assert df.loc[0, 'rv_total_err'] == pytest.approx(np.sqrt(1.5**2 + 0.8**2 + 0.6**2))
     assert df.loc[0, 'rv_spread'] == pytest.approx(np.std([27.9, 27.1], ddof=1))
     assert df.loc[0, 'rv_mean'] == pytest.approx(27.5)
@@ -58,7 +58,7 @@ def test_flags():
 
 @pytest.mark.parametrize('ext', ['csv', 'tsv', 'json', 'html'])
 def test_write_roundtrip(tmp_path, ext):
-    res = [make_result(), make_result('B', with_lsd=True)]
+    res = [make_result(), make_result('B', with_tref=True)]
     written = results.write(res, tmp_path / f'out.{ext}', config=Config())
     assert tmp_path / f'out.{ext}' in written
     assert (tmp_path / 'out_details.csv').exists() and (tmp_path / 'out_config.toml').exists()
@@ -76,9 +76,9 @@ def test_write_roundtrip(tmp_path, ext):
         return
     assert list(back.columns) == list(ref.columns)
     assert back['object'].tolist() == ref['object'].tolist()
-    for c in ('rv_adopted', 'rv_ccf', 'rv_lsd', 'rv_total_err'):
+    for c in ('rv_adopted', 'rv_ccf', 'rv_telluric_ref', 'rv_total_err'):
         np.testing.assert_allclose(back[c].astype(float), ref[c].astype(float), equal_nan=True)
-    assert back['rv_lsd_flag'].isna().tolist() == [True, False]
+    assert back['rv_telluric_ref_flag'].isna().tolist() == [True, False]
 
 
 def test_multiple_formats(tmp_path):

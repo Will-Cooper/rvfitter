@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
-METHOD_NAMES = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
+METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref')  # the keys of methods.REGISTRY (tested)
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 MEDIA = ('air', 'vacuum')
 
@@ -98,7 +98,7 @@ class TemplatesConfig:
 @dataclass
 class MethodsConfig:
     """Which RV methods run, and their options"""
-    enabled: list[str] = field(default_factory=lambda: ['template_fit', 'ccf', 'linecentre'])
+    enabled: list[str] = field(default_factory=lambda: ['template_fit', 'ccf'])
     options: dict[str, dict[str, Any]] = field(default_factory=dict)  # method name → keyword options
 
 
@@ -116,7 +116,7 @@ class RegionsConfig:
     telluric_strictness: float = 1.  # scales the airmass-dependent telluric threshold (larger masks more)
     max_regions: int = 12  # keep at most this many, ranked by forecast information content
     continuum_fwhm: float = 5.  # continuum windows extend this many resolution elements around a feature
-    # windows for ccf/template_fit/forward at R <= 5000: 'features' (around well-modelled atomic/CO features; the
+    # windows for ccf/template_fit at R <= 5000: 'features' (around well-modelled atomic/CO features; the
     # default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric span)
     template_windows: str = 'features'
 
@@ -541,18 +541,8 @@ def regime_for(resolution: float | None, wave_range: tuple[float, float]) -> tup
 
 def default_for(spectrum: Spectrum) -> Config:
     """
-    Regime defaults for a spectrum, by resolving power and band (the plan's "default method per regime" table).
-
-    ========================  ==========================================================  ==========================
-    Regime                    Methods                                                     Other settings
-    ========================  ==========================================================  ==========================
-    low R, optical            template_fit, ccf, linecentre (secondary)                   O2-A telluric mask
-    low R, NIR                template_fit, ccf                                           telluric model
-    low R, optical + NIR      template_fit, ccf, linecentre                               telluric model
-    R~6000 (4500 to 20000)    forward_mcmc (free RV and vsini), template_fit
-    R>20000                   forward_mcmc (telluric and wavelength-offset terms),
-                              telluric_ref                                                per-order combination
-    ========================  ==========================================================  ==========================
+    Regime defaults for a spectrum, by resolving power: template_fit and ccf at low R (R < 4500); template_fit
+    (free vsini) and ccf at R 4500-20000; template_fit (free vsini) and telluric_ref above.
 
     The spectrum's measured medium and resolution are written into the config, so that re-running it does not
     depend on header sniffing.
@@ -567,16 +557,8 @@ def default_for(spectrum: Spectrum) -> Config:
     log.info('Default settings for the %s-resolution regime, %s band', regime, band)
     cfg.input.resolution = None if R is None else float(R)
     cfg.input.medium = spectrum.meta['medium_in']
-    if regime == 'low':
-        cfg.methods.enabled = ['template_fit', 'ccf'] + (['linecentre'] if band != 'nir' else [])
-        if band != 'optical':
-            cfg.methods.options = {'template_fit': {'telluric_model': True}}
-    elif regime == 'mid':
-        cfg.methods.enabled = ['forward_mcmc', 'template_fit']
-        cfg.methods.options = {'forward_mcmc': {'fit_vsini': True}}
-    else:
-        cfg.methods.enabled = ['forward_mcmc', 'telluric_ref']
-        cfg.methods.options = {'forward_mcmc': {'fit_vsini': True, 'telluric_model': True, 'fit_wave_offset': True,
-                                                'per_order': True}}
+    if regime != 'low':
+        cfg.methods.enabled = ['template_fit', 'ccf' if regime == 'mid' else 'telluric_ref']
+        cfg.methods.options = {'template_fit': {'fit_vsini': True}}
     cfg.validate()
     return cfg
