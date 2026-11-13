@@ -99,7 +99,7 @@ def test_measure_defaults_do_not_override_config():
 def test_run_no_objects_exit_1(monkeypatch, tmp_path):
     from rvfitter import config, pipeline
     ns = types.SimpleNamespace
-    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=[]))
+    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=[], plots=False))
     monkeypatch.setattr(config, 'load', lambda p: cfg, raising=False)
     monkeypatch.setattr(pipeline, 'run', lambda *a, **k: [])
     assert cli.main(['run', 'c.toml']) == 1
@@ -108,10 +108,25 @@ def test_run_no_objects_exit_1(monkeypatch, tmp_path):
 def test_run_with_failures_exit_2(monkeypatch, tmp_path):
     from rvfitter import config, pipeline, results
     ns = types.SimpleNamespace
-    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=[]))
+    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=[], plots=False))
     monkeypatch.setattr(config, 'load', lambda p: cfg, raising=False)
     monkeypatch.setattr(pipeline, 'run',
                         lambda *a, failures, **k: failures.append(('bad.fits', 'not a spectrum')) or [1])
     monkeypatch.setattr(results, 'summary_lines', lambda r: [])
     monkeypatch.setattr(results, 'write', lambda *a, **k: [])
     assert cli.main(['run', 'c.toml']) == 2  # the summary itself is logged by pipeline.run (test_pipeline)
+
+
+def test_run_writes_pdfs_unless_no_plots(monkeypatch, tmp_path):
+    from plotting_synth import synthetic_result
+    from rvfitter import config, pipeline, results
+    ns = types.SimpleNamespace
+    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=['csv'], plots=True))
+    monkeypatch.setattr(config, 'load', lambda p: cfg, raising=False)
+    monkeypatch.setattr(pipeline, 'run', lambda *a, **k: [synthetic_result()])
+    monkeypatch.setattr(results, 'write', lambda *a, **k: [])
+    assert cli.main(['run', 'c.toml', '--no-plots']) == 0
+    assert not list(tmp_path.glob('*.pdf'))
+    cfg.output.plots = True
+    assert cli.main(['run', 'c.toml']) == 0
+    assert {p.name for p in tmp_path.glob('*.pdf')} >= {'J0000_ccf.pdf', 'J0000_adopted.pdf'}

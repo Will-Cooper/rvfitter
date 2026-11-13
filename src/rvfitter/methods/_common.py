@@ -365,7 +365,7 @@ def window_measurement(method: str, window: Region, rv: float, err: float, flag:
         flag |= FLAG_FIT_FAILED
     if np.isfinite(chi2_red) and chi2_red > 3. and sigma_known:
         flag |= FLAG_POOR_FIT
-    m = Measurement(method, window.name, float(rv), float(err), int(flag), diag)
+    m = Measurement(method, window.name, float(rv), float(err), int(flag), {'continuum': window.continuum, **diag})
     log.debug('%s %s: %.2f ± %.2f km/s (χ²/ν %.2f, flag %d)', method, window.name, m.rv, m.rv_err, chi2_red, flag)
     return m
 
