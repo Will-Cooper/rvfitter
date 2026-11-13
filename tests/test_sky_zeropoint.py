@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from rvfitter import broadening, config, io
+from rvfitter import broadening, config, io, pipeline
 from rvfitter.calibration import sky_zeropoint as Z
 from rvfitter.calibration import wavelength_correction as wcorr
 from rvfitter.types import Region, Spectrum
@@ -140,15 +140,26 @@ def test_sky_if_needed_skips_a_negligible_offset(caplog):
     assert info1['applied'] == 'none' and not info1['sky_tests']['above_floor']
 
 
-def test_sky_if_needed_refuses_unmeasured_regions(caplog):
-    """A region in an unmeasured part of the curve (here inside the O2 A gap) blocks the correction (WARNING)"""
+def test_sky_if_needed_unmeasured_regions(caplog):
+    """A minority of regions on unmeasured parts of the curve (here the O2 A gap) are dropped (WARNING); a majority
+    blocks the correction (WARNING, sky_unsafe)"""
     raw = _sky_spectrum()
     cfg = config.Config()
+    k1 = Region('K I', 'line', 7660., 7675.)
     with caplog.at_level(logging.INFO, logger='rvfitter'):
-        spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=[*ALKALI, Region('K I', 'line', 7660., 7675.)])
-    assert info['applied'] == 'none' and info['zp_flags'] & wcorr.ZP_FLAGS['sky_unsafe']
+        _, info = wcorr.correct(raw, raw, cfg, 'X', regions=[*ALKALI, k1])
+    assert info['applied'] == 'sky' and info['sky_tests']['uncovered'] == ['K I']
+    assert info['sky_tests']['region_measured']['K I'] == 0.
+    assert any(r.levelno == logging.WARNING and 'dropping region(s) K I' in r.message for r in caplog.records)
+    sel = pipeline._drop_uncovered({'ccf': [*ALKALI, k1]}, info)
+    assert [r.name for r in sel['ccf']] == [r.name for r in ALKALI]
+    gap = [Region(f'K I {i}', 'line', 7660. + i, 7670. + i) for i in range(len(ALKALI) + 1)]
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger='rvfitter'):
+        _, worst = wcorr.correct(raw, raw, cfg, 'X', regions=[*ALKALI, *gap])
+    assert worst['applied'] == 'none' and worst['zp_flags'] & wcorr.ZP_FLAGS['sky_unsafe']
+    assert not worst['sky_tests']['coverage_ok']
     assert any(r.levelno == logging.WARNING and 'unsafe' in r.message for r in caplog.records)
-    assert info['sky_tests']['region_measured']['K I'] == 0. and not info['sky_tests']['coverage_ok']
     _, none = wcorr.correct(raw, raw, cfg, 'X')  # no regions: nothing to vouch for
     assert none['applied'] == 'none'
 

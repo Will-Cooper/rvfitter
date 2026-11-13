@@ -94,7 +94,10 @@ def _sky_needed(zp: Any, spec: Spectrum, cfg: Any, regions: Sequence, name: str)
     t['region_measured'] = {r.name: round(f, 3) for r, f in zip(regions, fracs, strict=True)}
     t['min_measured_fraction'] = float(min(fracs)) if fracs else float('nan')
     poor = [r.name for r, f in zip(regions, fracs, strict=True) if f <= 1. - SKY_MAX_UNMEASURED]
-    ok_a = zp.n_used >= SKY_MIN_SEGMENTS and bool(regions) and any(f > 0 for f in fracs) and not poor
+    # regions on unmeasured parts of the curve are dropped if the correction is applied (see `uncovered`), so they
+    # veto it only when they are the majority
+    t['uncovered'] = sorted(set(poor))
+    ok_a = zp.n_used >= SKY_MIN_SEGMENTS and bool(regions) and 2 * len(poor) < len(regions)
     # (b) significance: weighted mean of the segment values, σ from the curve (with its model spread) and the arc
     v, e = np.asarray(zp.node_dv, float), np.asarray(zp.node_err, float)
     w = 1. / e ** 2
@@ -120,14 +123,17 @@ def _sky_needed(zp: Any, spec: Spectrum, cfg: Any, regions: Sequence, name: str)
     apply = ok_a and ok_b and ok_c
     if apply:
         verdict = 'applying'
+        if poor:
+            verdict += (f'; dropping region(s) {", ".join(t["uncovered"])}, which rely on unmeasured parts of the '
+                        f'sky curve for more than {SKY_MAX_UNMEASURED:.0%} of their width')
     elif not ok_a:
         if zp.n_used < SKY_MIN_SEGMENTS:
             why = f'only {zp.n_used} measured sky segments (< {SKY_MIN_SEGMENTS})'
         elif not regions:
             why = 'no regions to check the coverage against'
         else:
-            why = (f'region(s) {", ".join(poor) or "all"} rely on unmeasured (held-flat, ramped or extrapolated) '
-                   f'parts of the sky curve for more than {SKY_MAX_UNMEASURED:.0%} of their width')
+            why = (f'most regions ({", ".join(t["uncovered"])}) rely on unmeasured (held-flat, ramped or '
+                   f'extrapolated) parts of the sky curve for more than {SKY_MAX_UNMEASURED:.0%} of their width')
         verdict = f'not applied because unsafe: {why}'
     elif not ok_b:
         verdict = (f'not applied: neither the offset (≤ {SKY_SIGNIFICANCE:g}σ) nor the variation '
@@ -136,7 +142,7 @@ def _sky_needed(zp: Any, spec: Spectrum, cfg: Any, regions: Sequence, name: str)
         verdict = f'not applied: the correction is below {SKY_FLOOR_RESEL:g} resolution elements'
     t['verdict'] = verdict
     # unsafe is a fallback the user should see (WARNING); "not needed" is ordinary (INFO)
-    (log.info if ok_a else log.warning)(
+    (log.info if ok_a and not (apply and poor) else log.warning)(
         '%s: sky zero point %+.1f ± %.1f km/s (%.1fσ incl. arc RMS %.1f km/s; segment variation χ² %.1f for %d dof, '
         'p = %.2g; %d segments; regions measured ≥ %.0f per cent; max |Δv| at the regions %.1f km/s, floor %.1f '
         'km/s): %s', name, mean, sigma, t['n_sigma'], arc if np.isfinite(arc) else 0., chi2, len(v) - 1, p,

@@ -151,5 +151,5 @@ def test_j1745(caplog):
                  abs(m.rv - 26.2) / np.hypot(2.3, total))
         assert m.n_regions >= 3 and np.isfinite(m.rv) and np.isfinite(total)
         out[mode] = m.rv
-    # sky-if-needed refuses the sky curve here (the K I lines lie in its unmeasured O2 A gap): no change
-    assert out['sky-if-needed'] == pytest.approx(out['none'])
+    # sky-if-needed applies the sky curve and drops the K I lines (in its unmeasured O2 A gap)
+    assert out['sky-if-needed'] != pytest.approx(out['none'])

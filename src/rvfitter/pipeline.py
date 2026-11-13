@@ -83,6 +83,12 @@ def region_selector(cfg: Any, names: list[str], overrides: bool = True) -> Calla
     return lambda spec: regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=ov, options=opts)
 
 
+def _drop_uncovered(sel: dict, info: dict) -> dict:
+    """Without the regions the applied sky correction does not cover (logged by `wavelength_correction`)"""
+    gone = set(info.get('sky_tests', {}).get('uncovered', ())) if info.get('applied', 'none') != 'none' else set()
+    return {m: [r for r in regs if r.name not in gone] for m, regs in sel.items()} if gone else sel
+
+
 def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor: Executor | None,
                  rngs: dict[str, np.random.Generator], name: str, cancel: threading.Event | None,
                  failures: Failures) -> dict[str, MethodResult]:
@@ -172,7 +178,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         cal_infos.append(info)
 
     method_rngs = dict(zip(names, rng.spawn(len(names)), strict=True))
-    sels = [select(spec) for spec in corrected]
+    sels = [_drop_uncovered(select(spec), info) for spec, info in zip(corrected, cal_infos, strict=True)]
     per_epoch = [_run_methods(spec, sel, names, cfg, executor, method_rngs, name, cancel, failures)
                  for spec, sel in zip(corrected, sels, strict=True)]
     zp_epochs = _zero_point_terms(corrected, cal_infos, _uncorrect(per_epoch, corrected), cfg, name)
