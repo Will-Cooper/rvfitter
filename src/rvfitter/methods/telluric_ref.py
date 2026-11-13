@@ -1,24 +1,12 @@
 """
 Telluric-referenced RVs: the star's velocity relative to the telluric lines in the same stretch of spectrum.
 
-Telluric absorption is imprinted on the starlight, so within one telluric band the stellar and telluric features
-share the same wavelength-solution error and the same offset from slit centring. Each telluric segment is fitted
-with P(λ) · S(λ / D(v_star)) · [T(λ / D(v_tell)) ⊗ LSF] (`calibration.telluric_zeropoint`, with a stellar
-template S at the data's resolution and the HITRAN transmission T), and
-
-    RV = (v_star − v_tell) ⊕ v_frame
-
-is independent of the wavelength solution and of the star's position in the slit; v_frame is the velocity
-correction already applied to the wavelengths (header, e.g. PypeIt VEL_CORR, and the pipeline's barycentric step),
-so the RV is in the spectrum's frame, like the other methods'. Its error is that of v_star − v_tell from the χ²
-curvature surface (their covariance included), scaled by the segment's Birge factor √max(1, χ²/ν). The segments
-are combined by random effects (`_common.finish`).
-
-The input must not be telluric-corrected; set `calibration.telluric_source` for a corrected input (e.g. a PypeIt
-spec1d sharing its wavelength solution). Regions are the `telluric` regions from `regions.select` (telluric bands
-at R ≥ their r_min); without any, the catalogue's telluric bands within the coverage are used and this is logged.
-The template is the grid point nearest the configured priors (templates.teff_prior, logg_prior; 5.0 dex if unset),
-or the method option `template`; it is fixed a priori, not chosen by χ², so the method stays cheap.
+Within one telluric band the stellar and telluric features share the wavelength-solution error and the
+slit-centring offset. Each segment is fitted with P(λ) · S(λ / D(v_star)) · [T(λ / D(v_tell)) ⊗ LSF]
+(`calibration.telluric_zeropoint`; S the stellar template nearest the priors, T the HITRAN transmission), and
+RV = (v_star − v_tell) ⊕ v_frame, with v_frame the velocity correction already applied to the wavelengths, so the
+RV is in the spectrum's frame. Its error (covariance included) is scaled by √max(1, χ²/ν); segments are combined
+by random effects. The input must not be telluric-corrected (set `calibration.telluric_source` otherwise).
 """
 import logging
 from collections.abc import Sequence
@@ -49,23 +37,14 @@ DEFAULTS: dict[str, Any] = dict(
 )
 
 
-def prior_template(cfg: Any, resolution: float, wave_range: tuple[float, float], opts: dict | None = None):
+def prior_template(cfg: Any, resolution: float, wave_range: tuple[float, float], opts: dict | None = None
+                   ) -> C.Template:
     """
-    The template nearest the configured priors (teff_prior, logg_prior; 5.0 dex if unset), at `resolution`
-
-    Returns
-    -------
-    template
-        A `_common.Template` covering wave_range (± 1500 km/s), or None if no template is configured
+    The template nearest the configured priors (teff_prior, logg_prior; 5.0 dex if unset) at `resolution`,
+    covering wave_range ± 1500 km/s; ValueError if none is available
     """
-    opts = dict(opts or {})
-    try:
-        cands = C.candidates(cfg, opts)
-    except ValueError as exc:
-        log.info('telluric_ref: no stellar template available (%s)', exc)
-        return None
-    tcfg = C.section(cfg, 'templates')
-    teff, logg = tcfg.get('teff_prior'), tcfg.get('logg_prior') or 5.
+    cands = C.candidates(cfg, opts or DEFAULTS)
+    teff, logg = cfg.templates.teff_prior, cfg.templates.logg_prior or 5.
 
     def distance(c):
         p = c.param_dict
@@ -76,17 +55,14 @@ def prior_template(cfg: Any, resolution: float, wave_range: tuple[float, float],
     return C.build_template(best, resolution, wave_range)
 
 
-def neighbour_templates(cfg: Any, resolution: float, wave_range: tuple[float, float], nominal: Any,
+def neighbour_templates(cfg: Any, resolution: float, wave_range: tuple[float, float], nominal: C.Template,
                         opts: dict | None = None) -> list:
     """
     The grid points one step below and above the nominal template's Teff (other parameters equal), at
     `resolution`: the alternatives whose spread is a node's template systematic. Empty for a given template.
     """
-    try:
-        cands = C.candidates(cfg, dict(opts or {}))
-    except ValueError:
-        return []
-    nom = next((c for c in cands if c.label == getattr(nominal, 'label', None)), None)
+    cands = C.candidates(cfg, opts or DEFAULTS)
+    nom = next((c for c in cands if c.label == nominal.label), None)
     if nom is None or not nom.param_dict or 'teff' not in nom.param_dict:
         return []
     p0 = nom.param_dict
@@ -99,8 +75,9 @@ def neighbour_templates(cfg: Any, resolution: float, wave_range: tuple[float, fl
             c = pick(group, key=lambda c: c.param_dict['teff'])
             try:
                 out.append(C.build_template(c, resolution, wave_range))
-            except Exception as exc:  # noqa: BLE001 - a missing neighbour only narrows the spread estimate
-                log.debug('neighbour template %s unavailable: %s', c.label, exc)
+            except (ValueError, OSError) as exc:  # a missing neighbour narrows the spread estimate
+                log.warning('neighbour template %s unavailable (%s): the template spread uses fewer templates',
+                            c.label, exc)
     return out
 
 
@@ -110,27 +87,13 @@ def _frame_kms(meta: Any) -> float:
     return float(C_KMS * (f * f - 1.) / (f * f + 1.))
 
 
-def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, executor: Executor | None = None,
+def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor: Executor | None = None,
             rng: np.random.Generator | None = None) -> MethodResult:
     """
-    Telluric-referenced RVs, one per telluric segment, combined with a random-effects model
-
-    Parameters
-    ----------
-    spectrum
-        Observed spectrum (vacuum), not telluric-corrected
-    regions
-        Telluric regions (kind 'telluric'); others are ignored
-    cfg
-        Config or mapping; options under cfg.methods.options['telluric_ref'] (see `DEFAULTS`)
-    executor, rng
-        Unused (the fits are deterministic); accepted for the common method interface
-
-    Returns
-    -------
-    result
-        The combined RV; each measurement's diagnostics hold v_star, v_tell (the local telluric zero point), their
-        errors and correlation, χ²/ν and the τ scalings
+    Telluric-referenced RVs, one per telluric segment (the 'telluric' regions, else the catalogue bands in the
+    coverage), combined by random effects; options in cfg.methods.options['telluric_ref'] (`DEFAULTS`). The fits
+    are deterministic: `executor` and `rng` are accepted for the common interface only. Diagnostics hold v_star,
+    v_tell (the local telluric zero point), their errors and correlation, χ²/ν and the τ scalings.
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     from ..calibration import telluric
@@ -139,23 +102,20 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         diag = {'reason': 'telluric model unavailable'}
         meas = Measurement(METHOD, 'telluric model unavailable', np.nan, np.nan, C.FLAG_FIT_FAILED, diag)
         return MethodResult(METHOD, np.nan, np.nan, 0, [meas])
-    if C.section(cfg, 'input').get('telluric_corrected'):
+    if cfg.input.telluric_corrected:
         log.warning('telluric_ref: the input is telluric-corrected; the telluric lines it relies on may be gone')
     resolution = C.resolution_of(spectrum, cfg, opts)
     tell = [r for r in regions if r.kind == 'telluric']
     if not tell:
         log.info('telluric_ref: no telluric regions selected; using the catalogue telluric bands in the coverage')
     template = prior_template(cfg, resolution, (float(spectrum.wave[0]), float(spectrum.wave[-1])), opts)
-    if template is None:
-        log.warning('telluric_ref: needs a stellar template (templates config or the option "template")')
-        return MethodResult(METHOD, np.nan, np.nan, 0, [])
     zp = telluric_zeropoint.measure(spectrum, tell or None, resolution=resolution, template=template,
                                     seg_width=opts['seg_width'], degree=opts['degree'], min_depth=opts['min_depth'],
                                     max_lag_kms=opts['max_lag_kms'],
                                     star_rv_range=(opts['star_rv_min'], opts['star_rv_max']),
-                                    teff=C.section(cfg, 'templates').get('teff_prior'))
+                                    teff=cfg.templates.teff_prior)
     if zp is None:
-        return MethodResult(METHOD, np.nan, np.nan, 0, [])
+        raise ValueError('no usable telluric segment')
     v_frame = _frame_kms(spectrum.meta)
     measurements = []
     for s in zp.segments:

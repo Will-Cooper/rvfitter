@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from injection import cfg_of
 from rvfitter import broadening, config, medium
 from rvfitter.calibration import sky_zeropoint, telluric
 from rvfitter.calibration import telluric_zeropoint as TZ
@@ -147,7 +148,7 @@ def test_unavailable_model_skips_cleanly(tmp_path, monkeypatch, caplog):
     assert TZ.measure(spec) is None
     assert 'templates telluric --build' in caplog.text
     from rvfitter.methods import REGISTRY
-    res = REGISTRY['telluric_ref'](spec, [], {'input': {'resolution': 2500.}}, rng=np.random.default_rng(0))
+    res = REGISTRY['telluric_ref'](spec, [], cfg_of({'input': {'resolution': 2500.}}), rng=np.random.default_rng(0))
     assert not np.isfinite(res.rv) and res.measurements[0].flag & 1
     cfg = config.Config()
     cfg.calibration.wavelength_correction = 'telluric'
@@ -382,7 +383,7 @@ def test_telluric_ref_recovers_rv_despite_distortion(star, monkeypatch):
     rv_true, frame = 30., -21.
     spec = _observed(rv_star=rv_true, star=star, frame_kms=frame, snr=100.)
     tmpl = Spectrum(star[0], star[1], np.full(len(star[0]), np.nan), None, {'object': 'toy'}, 'toy')
-    cfg = {'input': {'resolution': R}, 'methods': {'options': {'telluric_ref': {'template': tmpl}}}}
+    cfg = cfg_of({'input': {'resolution': R}, 'methods': {'options': {'telluric_ref': {'template': tmpl}}}})
     res = REGISTRY['telluric_ref'](spec, [], cfg, rng=np.random.default_rng(0))
     assert res.n_regions >= 4
     expected = float(299792.458 * np.tanh(np.arctanh(rv_true / 299792.458) + np.arctanh(frame / 299792.458)))

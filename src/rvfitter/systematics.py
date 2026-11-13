@@ -22,6 +22,7 @@ from .calibration.telluric_zeropoint import frame_factor
 from .calibration.wavelength_correction import arc_kms
 from .methods import REGISTRY
 from .methods import _common as C
+from .methods.guidance import TEMPLATE_COLUMNS, grid_names
 from .numerics import rms
 from .types import Region, Spectrum
 
@@ -80,12 +81,12 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
         if cand.params is None:
             continue
         p = cand.param_dict
-        std = {f'{a}_range': (p[a], p[a]) for a in C.TEMPLATE_COLUMNS}
+        std = {f'{a}_range': (p[a], p[a]) for a in TEMPLATE_COLUMNS}
         pinned = _pinned(cfg, grid=cand.grid.name, **std,
-                         ranges={a: (v, v) for a, v in p.items() if a not in C.TEMPLATE_COLUMNS})
+                         ranges={a: (v, v) for a, v in p.items() if a not in TEMPLATE_COLUMNS})
         out['templates'][cand.label] = run(pinned, regs, seed)
     # (2) each enabled grid (when several are configured)
-    grids = C.grid_names(C.section(cfg, 'templates'))
+    grids = grid_names(cfg.templates)
     if len(grids) > 1:
         for grid, seed in zip(grids, seeds[1].spawn(len(grids)), strict=True):
             out['grids'][grid] = run(_pinned(cfg, grid=grid), regs, seed)

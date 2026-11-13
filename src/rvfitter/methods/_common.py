@@ -1,24 +1,28 @@
 """
-Helpers shared by the template-based methods: configuration access, region handling, log-λ data preparation,
-template candidates and deterministic parallel maps.
+Helpers shared by the template-based methods: options, regions, window data, template candidates and their
+selection, deterministic parallel maps, and the per-window and per-method results.
 """
+import copy
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Executor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .. import broadening
+from .. import templates as T
+from ..combine import combine_regions
 from ..constants import C_KMS
+from ..results import FLAGS as _FLAGS
 from ..types import Measurement, MethodResult, Region, Spectrum
+from .guidance import grid_names, template_summary
 
 log = logging.getLogger(__name__)
 
 # measurement flag bits, from results.FLAGS
-from ..results import FLAGS as _FLAGS  # noqa: E402
-
 FLAG_FIT_FAILED = _FLAGS['fit_failed']  # the fit failed or gave a non-finite error
 FLAG_FEW_PIXELS = _FLAGS['few_regions']  # too few usable pixels/regions
 FLAG_OUTSIDE_GRID = _FLAGS['template_grid_edge']  # template requested outside the grid: nearest point used
@@ -32,35 +36,27 @@ SERIOUS = FLAG_EDGE | FLAG_FIT_FAILED | FLAG_FEW_PIXELS
 MASK_KINDS = ('telluric',)
 SKIP_KINDS = ('telluric', 'continuum')
 
-
-# ---------------------------------------------------------------------------------------------------------------
-# configuration
-# ---------------------------------------------------------------------------------------------------------------
-def section(cfg: Any, name: str) -> dict:
-    """A config section as a dict, from a Config dataclass tree, a mapping or None"""
-    if cfg is None:
-        return {}
-    sec = cfg.get(name) if isinstance(cfg, Mapping) else getattr(cfg, name, None)
-    if sec is None:
-        return {}
-    if isinstance(sec, Mapping):
-        return dict(sec)
-    return {k: getattr(sec, k) for k in dir(sec) if not k.startswith('_') and not callable(getattr(sec, k))}
+#: options shared by the template methods (ccf, template_fit)
+TEMPLATE_DEFAULTS: dict[str, Any] = dict(
+    resolution=None,  # override the data's R
+    rv_min=-500., rv_max=500.,  # search range [km/s]
+    rv_step=None,  # RV grid step [km/s]; the default is the method's
+    n_chunks=8,  # parallel tasks (fixed, so results do not depend on the executor)
+    template=None, templates=None,  # a rest-frame Spectrum or (wave, flux), or a list of them, instead of the grid
+    teff_window=300.,  # grid candidates within teff_prior ± this [K] when templates.teff_range is unset
+    segment_res=150.,  # split windows longer than this many resolution elements (0: never)
+    outlier_k=5.,  # gross-outlier rejection among regions (0: off)
+    pad_kms=1500.,  # template coverage beyond the data [km/s]
+)
 
 
 def options(cfg: Any, method: str, defaults: Mapping[str, Any]) -> dict:
-    """
-    The method's options: `defaults` updated by cfg.methods.options[method]
-
-    Unknown keys raise, so typos in a config are not silently ignored.
-    """
-    given = dict(section(cfg, 'methods').get('options', {}) or {}).get(method, {}) or {}
+    """The method's options: `defaults` updated by cfg.methods.options[method]; unknown keys raise"""
+    given = cfg.methods.options.get(method) or {}
     unknown = set(given) - set(defaults)
     if unknown:
         raise ValueError(f'unknown {method} options {sorted(unknown)}; valid: {sorted(defaults)}')
-    out = dict(defaults)
-    out.update(given)
-    return out
+    return {**defaults, **given}
 
 
 _ESTIMATED_R: dict[tuple, float] = {}
@@ -71,7 +67,7 @@ def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any], *, esti
     The data's resolving power: the method option, else cfg.input.resolution, else spectrum.resolution, else
     (if `estimate`) `template_fit.estimate_resolution`, cached per spectrum and logged as a warning
     """
-    for r in (opts.get('resolution'), section(cfg, 'input').get('resolution'), spectrum.resolution):
+    for r in (opts.get('resolution'), cfg.input.resolution, spectrum.resolution):
         if r is not None and np.isfinite(r) and r > 0:
             return float(r)
     if not estimate:
@@ -83,7 +79,8 @@ def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any], *, esti
         est_cfg = cfg
         given = {k: opts[k] for k in ('template', 'templates') if opts.get(k) is not None}
         if given:  # estimate with the calling method's own template
-            est_cfg = {'templates': section(cfg, 'templates'), 'methods': {'options': {'template_fit': given}}}
+            est_cfg = copy.deepcopy(cfg)
+            est_cfg.methods.options = {'template_fit': given}
         out = estimate_resolution(spectrum, cfg=est_cfg)
         if not np.isfinite(out['resolution']):
             raise ValueError('the spectral resolution is unknown and could not be estimated: set input.resolution')
@@ -93,29 +90,9 @@ def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any], *, esti
     return _ESTIMATED_R[key]
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# regions
-# ---------------------------------------------------------------------------------------------------------------
-def split_regions(regions: Sequence[Region], kinds: Iterable[str] | None = None) -> tuple[list[Region], list[Region]]:
-    """
-    Fitting windows and masked intervals
-
-    Parameters
-    ----------
-    regions
-        The regions selected for this method
-    kinds
-        Region kinds used as windows (default: everything except telluric and continuum regions)
-
-    Returns
-    -------
-    windows, masks
-        The windows, and the telluric regions to exclude from them
-    """
-    kinds = None if kinds is None else tuple(kinds)
-    windows = [r for r in regions if (r.kind in kinds if kinds else r.kind not in SKIP_KINDS)]
-    masks = [r for r in regions if r.kind in MASK_KINDS]
-    return windows, masks
+def split_regions(regions: Sequence[Region]) -> tuple[list[Region], list[Region]]:
+    """The fitting windows (all but telluric and continuum regions) and the telluric regions masked out of them"""
+    return [r for r in regions if r.kind not in SKIP_KINDS], [r for r in regions if r.kind in MASK_KINDS]
 
 
 def in_any(wave: np.ndarray, intervals: Iterable[tuple[float, float]]) -> np.ndarray:
@@ -126,12 +103,9 @@ def in_any(wave: np.ndarray, intervals: Iterable[tuple[float, float]]) -> np.nda
     return out
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# data on a log-λ grid
-# ---------------------------------------------------------------------------------------------------------------
 @dataclass
 class Prepared:
-    """Data resampled onto a uniform ln λ grid, with a usable-pixel mask"""
+    """A window's data on its own pixels, with a usable-pixel mask and the median velocity step `dv` [km/s]"""
     wave: np.ndarray
     flux: np.ndarray
     sigma: np.ndarray
@@ -139,43 +113,20 @@ class Prepared:
     dv: float
     sigma_known: bool
     region: Region
-    source_pixels: int = 0
-    extra: dict = field(default_factory=dict)
 
     @property
     def n(self) -> int:
         return int(self.mask.sum())
 
 
-def prepare(spectrum: Spectrum, window: Region, masks: Sequence[Region], dv: float | None = None,
-            flux: np.ndarray | None = None, *, resample: bool = False) -> Prepared:
+def prepare(spectrum: Spectrum, window: Region, masks: Sequence[Region], flux: np.ndarray | None = None
+            ) -> Prepared:
     """
-    The part of a spectrum in `window`, on its own pixels (default) or resampled onto a uniform ln λ grid
+    The part of a spectrum in `window`, on its own pixels; masked or non-finite pixels are masked out
 
-    Working on the observed pixels keeps the noise independent and avoids the extra smoothing of a resampling,
-    which the template rows would not share (on J1745-like BT-Settl injections the resampling biased the CCF by
-    −0.1 to −0.55 km/s per feature window, noiseless). Within a window the velocity step is near-constant, and
-    the CCF filters data and template rows identically, so a uniform ln λ grid is not needed.
-
-    Parameters
-    ----------
-    spectrum
-        The observed spectrum
-    window
-        The fitting window
-    masks
-        Intervals to exclude (e.g. telluric bands)
-    dv
-        Grid step [km/s] when resampling; default the median native step within the window
-    flux
-        Replacement flux on the spectrum's pixels (used by Monte Carlo trials)
-    resample
-        Resample onto a uniform ln λ grid (flux-conserving) instead of using the observed pixels
-
-    Returns
-    -------
-    prepared
-        The window's data; `dv` is the median velocity step. Pixels in a mask or non-finite are masked out
+    The observed pixels keep the noise independent and avoid the extra smoothing of a resampling, which the
+    template rows would not share (on J1745-like BT-Settl injections the resampling biased the CCF by −0.1 to
+    −0.55 km/s per feature window, noiseless). `flux` replaces the spectrum's flux (Monte Carlo trials).
     """
     flux = spectrum.flux if flux is None else flux
     inwin = (spectrum.wave >= window.wmin) & (spectrum.wave <= window.wmax)
@@ -183,25 +134,13 @@ def prepare(spectrum: Spectrum, window: Region, masks: Sequence[Region], dv: flo
         raise ValueError(f'window {window.name} covers fewer than 4 pixels')
     w = spectrum.wave[inwin]
     sigma_known = bool(np.any(np.isfinite(spectrum.sigma) & (spectrum.sigma > 0)))
-    if resample:
-        if dv is None:
-            dv = float(np.median(np.diff(np.log(w)))) * C_KMS
-        grid = broadening.log_wave_grid(w[0], w[-1], dv)
-        f = broadening.rebin(spectrum.wave, flux, grid)
-        s = (broadening._rebin_sigma(spectrum.wave, spectrum.sigma, grid) if sigma_known
-             else np.full(len(grid), np.nan))
-    else:
-        grid, f, s = w, np.asarray(flux, dtype=float)[inwin], spectrum.sigma[inwin]
-        dv = float(np.median(np.diff(np.log(w)))) * C_KMS
-    mask = np.isfinite(f) & ~in_any(grid, [(m.wmin, m.wmax) for m in masks])
+    f, s = np.asarray(flux, dtype=float)[inwin], spectrum.sigma[inwin]
+    mask = np.isfinite(f) & ~in_any(w, [(m.wmin, m.wmax) for m in masks])
     if sigma_known:
         mask &= np.isfinite(s) & (s > 0)
-    return Prepared(grid, f, s, mask, dv, sigma_known, window, int(inwin.sum()))
+    return Prepared(w, f, s, mask, float(np.median(np.diff(np.log(w)))) * C_KMS, sigma_known, window)
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# templates
-# ---------------------------------------------------------------------------------------------------------------
 @dataclass
 class Template:
     """A rest-frame template on a uniform ln λ grid, already broadened to the data's resolution"""
@@ -215,19 +154,19 @@ class Template:
     def wave(self) -> np.ndarray:
         return np.exp(self.lnw0 + self.dlnw * np.arange(len(self.flux)))
 
-    def at(self, wave: np.ndarray, v: float | np.ndarray = 0., *, integrate: bool = True) -> np.ndarray:
+    def at(self, wave: np.ndarray, v: float | np.ndarray = 0.) -> np.ndarray:
         """
         Template flux at observed pixels for radial velocities v (scalar → 1D, array → (len(v), len(wave)))
 
-        By default the shifted template is averaged over each observed pixel (edges half-way between centres in
-        ln λ, and extrapolated by half a pixel at the two ends, which makes the first and last pixels very slightly
-        asymmetric; negligible), matching pixel-integrated data; `integrate=False` point-samples at the centres.
+        The shifted template is averaged over each observed pixel (edges half-way between centres in ln λ, and
+        extrapolated by half a pixel at the two ends, which makes the first and last pixels very slightly
+        asymmetric; negligible), matching pixel-integrated data. A single pixel is point-sampled.
         """
         lnw = np.log(np.asarray(wave, dtype=float))
         v = np.asarray(v, dtype=float)
         shift = np.atleast_1d(np.log(broadening.doppler_factor(v)))
         idx = np.arange(len(self.flux), dtype=float)
-        if not integrate or len(lnw) < 2:
+        if len(lnw) < 2:
             x = ((lnw[None, :] - shift[:, None]) - self.lnw0) / self.dlnw
             out = np.interp(x.ravel(), idx, self.flux, left=np.nan, right=np.nan).reshape(x.shape)
             return out[0] if v.ndim == 0 else out
@@ -253,24 +192,8 @@ def template_from_spectrum(spec: Spectrum, resolution: float, wave_range: tuple[
                            vsini: float = 0., label: str | None = None, dv: float | None = None,
                            pad_kms: float = 1500.) -> Template:
     """
-    Broaden a rest-frame template spectrum to R (and vsini) on a uniform ln λ grid covering wave_range ± pad
-
-    Parameters
-    ----------
-    spec
-        Rest-frame template (vacuum); its `resolution` (None = infinite) is removed in quadrature
-    resolution
-        Target resolving power
-    wave_range
-        Observed range to cover [Å]
-    vsini
-        Rotational broadening [km/s]
-    label
-        Template label
-    dv
-        Grid step [km/s] (default c/(10 R))
-    pad_kms
-        Velocity padding on both sides, so shifted templates still cover the data
+    Broaden a rest-frame (vacuum) template spectrum to R (and vsini) on a uniform ln λ grid of step `dv` [km/s;
+    default c/(10 R)] covering wave_range ± pad_kms; its own `resolution` (None = infinite) is removed in quadrature
     """
     dv = C_KMS / (10. * resolution) if dv is None else dv
     lo = wave_range[0] * broadening.doppler_factor(-pad_kms)
@@ -290,12 +213,6 @@ def template_from_spectrum(spec: Spectrum, resolution: float, wave_range: tuple[
                     dict(spec.meta))
 
 
-def template_from_grid_spec(spec: Spectrum, label: str) -> Template:
-    """Wrap an already-broadened ln-uniform Spectrum (TemplateGrid.broadened) as a Template"""
-    lnw = np.log(spec.wave)
-    return Template(float(lnw[0]), float(lnw[1] - lnw[0]), np.asarray(spec.flux), label, dict(spec.meta))
-
-
 @dataclass(frozen=True)
 class Candidate:
     """A template candidate: either a given spectrum or a grid point (params in the grid's axes order)"""
@@ -313,12 +230,6 @@ class Candidate:
         return self.grid.params(**given)
 
 
-def grid_names(tcfg: Mapping[str, Any]) -> list[str]:
-    """The configured grid names (templates.grid may be one name or a list)"""
-    g = tcfg.get('grid') or 'bt-settl-cifist'
-    return [g] if isinstance(g, str) else [str(x) for x in g]
-
-
 def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
     """
     Template candidates from the method options or the config
@@ -326,9 +237,10 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
     - opts['template']: a rest-frame Spectrum, or a (wave, flux) tuple, used alone;
     - opts['templates']: a list of such;
     - otherwise every configured grid (templates.grid: a name or a list) is opened and its points within the
-      ranges become candidates: teff within teff_range (default teff_prior ± 300 K), log g within logg_range
-      (default all), and met, alpha and extra axes within their ranges or held at the value nearest their
-      prior/default (templates.met_prior, alpha_prior; extra-axis ranges in templates.ranges).
+      ranges become candidates: teff within teff_range (default teff_prior ± teff_window), log g within
+      logg_range (default all), and met, alpha and extra axes within their ranges or held at the value nearest
+      their prior/default (templates.met_prior, alpha_prior; extra-axis ranges in templates.ranges). With no
+      point in the ranges, the point nearest teff_prior (and logg_prior, else 5.0 dex) is used (WARNING).
     """
     def as_spec(t, i):
         if isinstance(t, Spectrum):
@@ -342,40 +254,36 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
     if opts.get('templates'):
         specs = [as_spec(t, i) for i, t in enumerate(opts['templates'])]
         return [Candidate(str(s.meta.get('object', f'template{i}')), spectrum=s) for i, s in enumerate(specs)]
-    tcfg = section(cfg, 'templates')
-    teff = tcfg.get('teff_prior')
-    teff_range = tcfg.get('teff_range')
-    if teff_range is None and teff is not None:
-        teff_range = (teff - opts.get('teff_window', 300.), teff + opts.get('teff_window', 300.))
-    priors = {k: tcfg.get(f'{k}_prior') for k in ('met', 'alpha') if tcfg.get(f'{k}_prior') is not None}
+    t = cfg.templates
+    teff_range = t.teff_range
+    if teff_range is None and t.teff_prior is not None:
+        teff_range = (t.teff_prior - opts['teff_window'], t.teff_prior + opts['teff_window'])
+    priors = {k: getattr(t, f'{k}_prior') for k in ('met', 'alpha') if getattr(t, f'{k}_prior') is not None}
     out = []
-    for name in grid_names(tcfg):
-        grid = open_grid(tcfg, name)
-        extra = {k: tuple(v) for k, v in dict(tcfg.get('ranges') or {}).items() if k in grid.axes}
-        points = grid.select(teff_range=teff_range, logg_range=tcfg.get('logg_range'),
-                             met_range=tcfg.get('met_range'), alpha_range=tcfg.get('alpha_range'), ranges=extra,
-                             priors=priors)
+    for name in grid_names(t):
+        grid = open_grid(t, name)
+        extra = {k: tuple(v) for k, v in t.ranges.items() if k in grid.axes}
+        points = grid.select(teff_range=teff_range, logg_range=t.logg_range, met_range=t.met_range,
+                             alpha_range=t.alpha_range, ranges=extra, priors=priors)
         if not points:
-            points = [grid.nearest(teff or 2000., tcfg.get('logg_prior') or 5., **priors)]
+            if t.teff_prior is None:
+                raise ValueError(f'{grid.name}: no grid points in the template ranges; widen them or set '
+                                 'templates.teff_prior')
+            points = [grid.nearest(t.teff_prior, t.logg_prior or 5., **priors)]
             log.warning('%s: no grid points in the prior ranges: using %s', grid.name, points[0])
         out += [Candidate(f'{grid.name} ' + '/'.join(f'{v:g}' for v in p), grid=grid, params=p) for p in points]
     return out
 
 
-def open_grid(tcfg: Mapping[str, Any], name: str | None = None):
+def open_grid(tcfg: Any, name: str | None = None):
     """
-    The TemplateGrid for one configured grid: its local directory, else the downloaded grid in the cache
-
-    `templates.local_dir` may be a directory (used for the first grid) or a mapping grid → directory. A `medium`
-    given in the config overrides the first grid's declared medium (and is then verified like any other).
+    The TemplateGrid for one configured grid (``tcfg`` is the TemplatesConfig): its local directory, else the
+    downloaded grid in the cache. `local_dir` may be a directory (used for the first grid) or a mapping
+    grid → directory; a `medium` given in the config overrides the first grid's declared medium.
     """
-    from dataclasses import replace as _replace
-    from pathlib import Path
-
-    from .. import templates as T
     names = grid_names(tcfg)
     name = name or names[0]
-    local = tcfg.get('local_dir')
+    local = tcfg.local_dir
     directory = local.get(name) if isinstance(local, Mapping) else (local if name == names[0] else None)
     if not directory:
         cached = T.cache_dir() / name
@@ -384,11 +292,11 @@ def open_grid(tcfg: Mapping[str, Any], name: str | None = None):
                              f'download --grid {name}", or give the method option "template"')
         directory = cached
     meta = None
-    if tcfg.get('medium') and name == names[0]:
+    if tcfg.medium and name == names[0]:
         base = T._read_metadata(Path(directory)) or T.KNOWN_GRIDS.get(name)
         if base is None:
             raise ValueError(f'unknown grid {name!r} and no metadata in {directory}')
-        meta = _replace(base, medium=tcfg['medium'])
+        meta = replace(base, medium=tcfg.medium)
     return T.TemplateGrid(directory, grid=name, meta=meta)
 
 
@@ -401,165 +309,35 @@ def build_template(cand: Candidate, resolution: float, wave_range: tuple[float, 
     lo = wave_range[0] * broadening.doppler_factor(-pad_kms)
     hi = wave_range[1] * broadening.doppler_factor(pad_kms)
     spec = cand.grid.broadened(**cand.param_dict, resolution=resolution, wave_range=(lo, hi), vsini=vsini)
-    t = template_from_grid_spec(spec, cand.label)
-    t.params.update(cand.param_dict)
-    return t
+    lnw = np.log(spec.wave)
+    return Template(float(lnw[0]), float(lnw[1] - lnw[0]), np.asarray(spec.flux), cand.label,
+                    {**spec.meta, **cand.param_dict})
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# best template, its parameters and edge guidance
-# ---------------------------------------------------------------------------------------------------------------
-TEMPLATE_COLUMNS = ('teff', 'logg', 'met', 'alpha')
-
-
-def _encoded_axes(grid) -> set[str]:
-    """Axes a grid really has: encoded in its file names, or taking more than one value"""
-    import re
-    named = set(re.compile(grid.meta.pattern).groupindex)
-    return {a for a in grid.axes if a in named or len(grid.axis_values(a)) > 1}
-
-
-def template_summary(method: str, cands: Sequence[Candidate], scores: Sequence[float], best: Candidate,
-                     dof: int, tcfg: Mapping[str, Any] | None = None) -> dict:
+def choose_template(method: str, cands: list[Candidate], score: Callable[[Candidate], float], cfg: Any,
+                    opts: Mapping[str, Any], resolution: float, wave_range: tuple[float, float], n_pix: int,
+                    executor: Executor | None, vsini: float = 0.) -> tuple[Template, int, dict]:
     """
-    The best template, its χ², χ²-weighted parameter estimates and any parameter edge, with guidance
-
-    Weights over the candidates of the best grid are exp(−Δχ²/(2s)), with s = max(1, χ²_min/ν), so that a fit
-    dominated by model mismatch does not give unrealistically sharp parameters.
-    If the best candidate is at the low or high end of a searched axis (one with at least two values), the edge is
-    reported: widening `templates.<axis>_range` if the grid extends further, otherwise a known grid that covers
-    the region, with the download command and the configuration change (both also as data for a GUI).
-
-    Returns
-    -------
-    summary
-        'template_grid', 'template_label', 'template_<axis>' for teff, logg, met and alpha (NaN where the grid has
-        no such axis), 'template_chi2', 'template_at_edge', 'estimate' {axis: (mean, sd)}, 'edges' [dict]
+    The candidate with the lowest `score` (χ²; scored only when there are several), broadened; its grid flags
+    (outside the grid, in a hole, at a parameter edge) and the template diagnostics shared by every window
     """
-    from .. import templates as T
-    tcfg = dict(tcfg or {})
-    scores = np.asarray(scores, dtype=float)
-    ibest = cands.index(best)
-    out: dict[str, Any] = dict(template_grid=best.grid.name if best.grid is not None else 'user',
-                               template_label=best.label,
-                               template_chi2=float(scores[ibest]) if len(scores) > ibest else np.nan,
-                               estimate={}, edges=[])
-    for a in TEMPLATE_COLUMNS:
-        out[f'template_{a}'] = np.nan
-    if best.grid is None:
-        out['template_at_edge'] = False
-        return out
-    grid = best.grid
-    has = _encoded_axes(grid)
-    for a in TEMPLATE_COLUMNS:
-        if a in has:
-            out[f'template_{a}'] = float(best.param_dict[a])
-    same = [i for i, c in enumerate(cands) if c.grid is grid and np.isfinite(scores[i] if len(scores) > i else np.nan)]
-    if len(same) > 1:
-        chi = scores[same]
-        s = max(1., float(np.nanmin(chi)) / max(dof, 1))
-        w = np.exp(-(chi - np.nanmin(chi)) / (2. * s))
-        w /= w.sum()
-        for a in grid.axes:
-            vals = np.array([cands[i].param_dict[a] for i in same])
-            if a in has:
-                mean = float(np.sum(w * vals))
-                out['estimate'][a] = (mean, float(np.sqrt(np.sum(w * (vals - mean) ** 2))))
-    for a in grid.axes:
-        searched = sorted({c.param_dict[a] for c in cands if c.grid is grid})
-        if len(searched) < 2:
-            continue
-        v = best.param_dict[a]
-        direction = 'low' if np.isclose(v, searched[0]) else 'high' if np.isclose(v, searched[-1]) else None
-        if direction is None:
-            continue
-        out['edges'].append(_edge_guidance(grid, a, v, direction, (searched[0], searched[-1]), best, tcfg, T))
-    out['template_at_edge'] = bool(out['edges'])
-    est = ', '.join(f'{a} {m:.4g} ± {sd:.2g}' for a, (m, sd) in out['estimate'].items())
-    log.info('%s: best template %s (χ² %.1f over %d candidates)%s', method, best.label, out['template_chi2'],
-             len(cands), f'; χ²-weighted {est}' if est else '')
-    for e in out['edges']:
-        log.warning('%s: %s', method, e['message'])
-    return out
-
-
-def _range_key(axis: str) -> str:
-    return f'{axis}_range' if axis in ('teff', 'logg', 'met', 'alpha') else f'ranges.{axis}'
-
-
-def _patch(axis: str, rng: tuple[float, float], **extra) -> dict:
-    t = dict(extra)
-    if axis in ('teff', 'logg', 'met', 'alpha'):
-        t[f'{axis}_range'] = [float(rng[0]), float(rng[1])]
+    if len(cands) > 1:
+        scores = pmap(score, cands, executor)
+        best = cands[int(np.argmin(scores))]
+        log.info('%s: template %s chosen by χ² from %d candidates', method, best.label, len(cands))
     else:
-        t['ranges'] = {axis: [float(rng[0]), float(rng[1])]}
-    return {'templates': t}
+        best, scores = cands[0], [np.nan]
+    tpl = build_template(best, resolution, wave_range, vsini=vsini, pad_kms=opts['pad_kms'])
+    summary = template_summary(method, cands, scores, best, n_pix, cfg.templates)
+    flag = ((FLAG_OUTSIDE_GRID if tpl.params.get('outside_grid') else 0)
+            | (FLAG_GRID_HOLE if tpl.params.get('grid_hole') else 0)
+            | (FLAG_PARAM_EDGE if summary['template_at_edge'] else 0))
+    diag = dict(template_summary=summary, **{k: v for k, v in summary.items() if k.startswith('template_')},
+                template=tpl.label, template_params=tpl.params,
+                template_scores=dict(zip([c.label for c in cands], map(float, scores), strict=False)))
+    return tpl, flag, diag
 
 
-def _edge_guidance(grid, axis, v, direction, searched, best, tcfg, T) -> dict:
-    """Guidance for one axis at an edge (see template_summary)"""
-    gvals = grid.axis_values(axis)
-    glo, ghi = float(gvals[0]), float(gvals[-1])
-    step = float(np.median(np.diff(gvals))) if len(gvals) > 1 else T.AXIS_SCALE.get(axis, 1.)
-    e = dict(axis=axis, direction=direction, value=float(v), searched=tuple(map(float, searched)), grid=grid.name,
-             grid_bounds=(glo, ghi), action='', cfg_patch={}, download=None, command='', message='')
-    where = (f'best {axis} {v:g} ({best.label}) is at the {direction} edge of the searched {axis} range '
-             f'{searched[0]:g} to {searched[1]:g}')
-    extends = v < ghi - 1e-9 if direction == 'high' else v > glo + 1e-9
-    if extends:
-        lo, hi = searched
-        lo, hi = (max(glo, lo - 2 * step), hi) if direction == 'low' else (lo, min(ghi, hi + 2 * step))
-        e.update(action='widen', cfg_patch=_patch(axis, (lo, hi)))
-        e['message'] = (f'{where}; grid {grid.name} extends to {glo if direction == "low" else ghi:g}: widen '
-                        f'templates.{_range_key(axis)} to [{lo:g}, {hi:g}] and refit')
-        return e
-    # the grid itself ends here: suggest a known grid that extends further
-    params = best.param_dict
-    options = []
-    for name, meta in T.KNOWN_GRIDS.items():
-        cov = meta.coverage.get(axis)
-        if cov is None or name == grid.name:
-            continue
-        beyond = cov[0] < v - 1e-9 if direction == 'low' else cov[1] > v + 1e-9
-        fits = all(meta.coverage.get(a, (-np.inf, np.inf))[0] - 1e-9 <= params[a] <= meta.coverage.get(
-            a, (-np.inf, np.inf))[1] + 1e-9 for a in ('teff', 'logg') if a != axis)
-        if beyond and fits:
-            options.append((name, meta, cov))
-    if not options:
-        e.update(action='none', message=f'{where}, which is also the edge of grid {grid.name}; no known grid '
-                                        f'extends further: consider a custom local grid (templates.local_dir)')
-        return e
-    name, meta, cov = options[0]
-    width = 3 * T.AXIS_SCALE.get(axis, step)
-    new = (max(cov[0], v - width), v) if direction == 'low' else (v, min(cov[1], v + width))
-    teff = params.get('teff', 2000.)
-    logg = params.get('logg', 5.)
-    dl = {'grid': name, 'teff_range': (teff - 300., teff + 300.), 'logg_range': (logg - 0.5, logg + 0.5)}
-    if axis in ('teff', 'logg', 'met', 'alpha'):
-        dl[f'{axis}_range'] = new
-    else:
-        dl['ranges'] = {axis: new}
-    flag = {'teff': '--teff', 'logg': '--logg', 'met': '--met', 'alpha': '--alpha'}
-    cmd = (f'rvfitter templates download --grid {name} --teff {dl["teff_range"][0]:g} {dl["teff_range"][1]:g} '
-           f'--logg {dl["logg_range"][0]:g} {dl["logg_range"][1]:g}')
-    if axis in ('met', 'alpha'):
-        cmd += f' {flag[axis]} {new[0]:g} {new[1]:g}'
-    elif axis not in ('teff', 'logg'):
-        cmd += f' --range {axis} {new[0]:g} {new[1]:g}'
-    grids = grid_names(tcfg) if tcfg else [grid.name]
-    patch = _patch(axis, (min(new[0], searched[0]), max(new[1], searched[1])), grid=[*grids, name])
-    e.update(action='download', download=dl, command=cmd, cfg_patch=patch)
-    pr = patch['templates'].get(f'{axis}_range') or patch['templates'].get('ranges', {}).get(axis)
-    e['message'] = (f'{where}, which is also the edge of grid {grid.name}. Grid {name} ({meta.reference}) covers '
-                    f'{axis} {cov[0]:g} to {cov[1]:g}: run "{cmd}", then set templates.grid = {[*grids, name]} '
-                    f'and templates.{_range_key(axis)} = [{pr[0]:g}, {pr[1]:g}], and refit'
-                    + ('' if meta.verified else f' (the SVO id of {name} is not yet verified)'))
-    return e
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# parallel maps and results
-# ---------------------------------------------------------------------------------------------------------------
 def pmap(fn: Callable, items: Sequence, executor: Executor | None = None) -> list:
     """Map fn over items in order, serially or with an executor; results never depend on which"""
     if executor is None or len(items) < 2:
@@ -573,27 +351,33 @@ def child_seeds(rng: np.random.Generator, n: int) -> list[np.random.SeedSequence
     return np.random.SeedSequence(entropy).spawn(n)
 
 
+def run_chunks(fn: Callable, n_total: int, seeds: Sequence, args: tuple, executor: Executor | None) -> np.ndarray:
+    """``n_total`` trials split over ``len(seeds)`` tasks ``fn((seed, n, *args)) -> list``, concatenated in order"""
+    n_each = np.diff(np.linspace(0, n_total, len(seeds) + 1).astype(int))
+    tasks = [(seeds[j], int(n), *args) for j, n in enumerate(n_each) if n > 0]
+    return np.concatenate([np.asarray(x, float) for x in pmap(fn, tasks, executor)])
+
+
+def window_measurement(method: str, window: Region, rv: float, err: float, flag: int, chi2_red: float,
+                       sigma_known: bool, diag: dict) -> Measurement:
+    """One window's measurement: fit_failed for a non-finite error, poor_fit for χ²/ν > 3 with known errors"""
+    if not np.isfinite(err):
+        flag |= FLAG_FIT_FAILED
+    if np.isfinite(chi2_red) and chi2_red > 3. and sigma_known:
+        flag |= FLAG_POOR_FIT
+    m = Measurement(method, window.name, float(rv), float(err), int(flag), diag)
+    log.debug('%s %s: %.2f ± %.2f km/s (χ²/ν %.2f, flag %d)', method, window.name, m.rv, m.rv_err, chi2_red, flag)
+    return m
+
+
 def segment(windows: Sequence[Region], resolution: float, n_res: float | None) -> list[Region]:
     """
-    Split windows longer than n_res resolution elements into near-equal segments (per-segment RVs)
+    Split windows longer than n_res resolution elements (None or ≤ 0: never) into near-equal segments named
+    "<name> [a-b]"
 
-    Each segment is a separate measurement, so the segment-to-segment scatter enters the Birge combination and
-    the hierarchical line × method model, and a region that disagrees (e.g. telluric residuals or a badly
-    matched molecular band) is visible instead of being averaged into one number.
-
-    Parameters
-    ----------
-    windows
-        The fitting windows
-    resolution
-        Resolving power
-    n_res
-        Maximum segment length in resolution elements (None or ≤0: no splitting)
-
-    Returns
-    -------
-    segments
-        The windows, with long ones replaced by segments named "<name> [a–b]"
+    Each segment is a separate measurement, so the segment-to-segment scatter enters the random-effects
+    combinations, and a region that disagrees (e.g. telluric residuals or a badly matched molecular band) is
+    visible instead of being averaged into one number.
     """
     if not n_res or n_res <= 0:
         return list(windows)
@@ -635,7 +419,6 @@ def reject_outliers(measurements: list[Measurement], k: float = 5.) -> list[Meas
 
 def finish(method: str, measurements: list[Measurement], outlier_k: float | None = 5.) -> MethodResult:
     """Combine a method's per-region measurements (random effects), ignoring seriously flagged ones and outliers"""
-    from ..combine import combine_regions
     if outlier_k:
         reject_outliers(measurements, outlier_k)
     bad = SERIOUS | FLAG_OUTLIER
@@ -650,35 +433,3 @@ def finish(method: str, measurements: list[Measurement], outlier_k: float | None
                  rv, err, details.get('tau_line', np.nan), len(good), details.get('birge_rv', np.nan),
                  details.get('birge_err', np.nan))
     return MethodResult(method, rv, err, len(good), measurements)
-
-
-def highpass(wave: np.ndarray, flux: np.ndarray, mask: np.ndarray, fwhm_kms: float) -> np.ndarray:
-    """
-    Smooth continuum by normalised Gaussian convolution in ln λ, using only the masked-in pixels
-
-    Parameters
-    ----------
-    wave
-        Uniform ln λ grid
-    flux
-        Flux
-    mask
-        Pixels to use
-    fwhm_kms
-        Gaussian FWHM [km/s]
-
-    Returns
-    -------
-    continuum
-        The smoothed flux (NaN where no usable pixel lies within the kernel)
-    """
-    dv = float(np.log(wave[1] / wave[0])) * C_KMS
-    kernel = broadening.gaussian_kernel(fwhm_kms * broadening.FWHM_TO_SIGMA / dv, nsigma=3.)
-    from scipy.signal import fftconvolve
-    m = mask & np.isfinite(flux)
-    num = fftconvolve(np.where(m, flux, 0.), kernel, mode='same')
-    den = fftconvolve(m.astype(float), kernel, mode='same')
-    with np.errstate(invalid='ignore', divide='ignore'):
-        out = num / den
-    out[den < 1e-3] = np.nan
-    return out

@@ -1,44 +1,27 @@
 """
-Cross-correlation against a template in log-wavelength, with peak fitting and Monte Carlo errors.
+Cross-correlation in log-wavelength, one RV per window, with Monte Carlo errors.
 
-For each window the data (on their own pixels; no resampling) are divided by their continuum. Windows of
-≤100 Å with continuum windows (the catalogue feature windows) use an explicit linear continuum fitted to those
-windows; other windows a normalised Gaussian convolution of FWHM `highpass_kms` (capped at a third of the
-window). The template, broadened to the data resolution, is shifted onto the data pixels for each trial
-velocity and normalised in exactly the same way (same pixels, weights or kernel), so data and template are
-treated identically, including at window edges and masked intervals. For the high-pass windows, after a first
-CCF the data are divided by a low-order polynomial fitted to data/template at the peak (`flatten_degree`), which
-removes their continuum slope relative to the template, and the CCF is redone.
-The noise-weighted, mean-subtracted correlation coefficient
-
-    C(v) = Σ w d̃ t̃_v / √(Σ w d̃² · Σ w t̃_v²)
-
-is computed on a grid of radial velocities (the template is shifted relativistically and interpolated, so the
-data are never shifted), and its peak is located with a parabola through the top of the peak (or, optionally, a
-Gaussian fit, which is biased for asymmetric peaks).
-
-The statistical error is the standard deviation of the peak over Monte Carlo trials in which Gaussian noise of
-the quoted σ is added to the observed pixels (seeded, optionally parallel), multiplied by √max(1, χ²/ν) of the
-scaled template against the normalised data, so residuals beyond the noise (template mismatch) inflate it as
-they do for the template fit. The Zucker (2003) maximum-likelihood
-error, σ_v² = −[N C''/C · C²/(1 − C²)]⁻¹, is reported as a diagnostic.
-When several templates are candidates, the one with the lowest χ² of the scaled, normalised template at its
-CCF peak (summed over windows) is used.
+Each window's data (on their own pixels) are divided by their continuum: a linear fit to the catalogue continuum
+windows for feature windows of ≤100 Å, else a normalised Gaussian smoothing (FWHM `highpass_kms`, at most a third of
+the window), after which a polynomial fitted to data/template at the first peak (`flatten_degree`) is divided out
+and the CCF redone. Every shifted template row is normalised identically. The peak of the noise-weighted,
+mean-subtracted correlation coefficient C(v) = Σ w d̃ t̃_v / √(Σ w d̃² · Σ w t̃_v²) is located with a parabola. The
+error is the standard deviation of the peak over Monte Carlo noise trials, scaled by √max(1, χ²/ν) of the scaled
+template against the normalised data (template mismatch); the Zucker (2003) error is a diagnostic.
 """
 import logging
 from collections.abc import Sequence
 from concurrent.futures import Executor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
 import numpy as np
-from scipy.optimize import curve_fit
 
 from .. import broadening
 from ..constants import C_KMS
 from ..numerics import parabola_vertex
-from ..types import Measurement, MethodResult, Region, Spectrum
+from ..types import MethodResult, Region, Spectrum
 from . import _common as C
 
 __all__ = ['measure', 'DEFAULTS', 'ccf_curve', 'fit_peak', 'zucker_error']
@@ -46,22 +29,12 @@ __all__ = ['measure', 'DEFAULTS', 'ccf_curve', 'fit_peak', 'zucker_error']
 log = logging.getLogger(__name__)
 
 METHOD = 'ccf'
-DEFAULTS: dict[str, Any] = dict(
-    resolution=None,  # override the data's R
-    rv_min=-500., rv_max=500.,  # search range [km/s]
-    rv_step=None,  # default min(native step / 5, 5 km/s)
+DEFAULTS: dict[str, Any] = C.TEMPLATE_DEFAULTS | dict(  # rv_step default: min(native step / 5, 5 km/s)
     highpass_kms=None,  # continuum-smoothing FWHM; default 25 resolution elements, capped at 1/3 of each window
-    peak='parabola',  # 'parabola' (default) or 'gaussian' (see fit_peak)
     n_mc=100,  # Monte Carlo noise trials (0 disables; then the Zucker error is used)
     flatten_degree=1,  # polynomial dividing out the data/template continuum slope before the CCF (-1: off)
     chi2_scale=True,  # multiply the error by sqrt(max(1, chi2/dof)) when flux errors are given
-    n_chunks=8,  # Monte Carlo tasks (fixed, so results do not depend on the executor)
     vsini=0.,  # rotational broadening applied to the template [km/s] (Gray kernel, epsilon 0.6)
-    template=None, templates=None, teff_window=300.,
-    region_kinds=None,  # region kinds used as windows (default: all but telluric/continuum)
-    segment_res=150.,  # split windows longer than this many resolution elements (0: never)
-    outlier_k=5.,  # gross-outlier rejection among regions (0: off)
-    pad_kms=1500.,
 )
 
 
@@ -92,7 +65,7 @@ def _linear_setup(prep: C.Prepared, mask0: np.ndarray, max_width: float):
     incont = C.in_any(prep.wave, region.continuum) & mask0
     if incont.sum() < 4:
         return None
-    x = 2. * (prep.wave - prep.wave[0]) / (prep.wave[-1] - prep.wave[0]) - 1.
+    x = _xscale(prep.wave)
     design = np.vstack([np.ones_like(x), x]).T
     idx = np.flatnonzero(incont)
     wts = 1. / prep.sigma[idx] ** 2 if prep.sigma_known else np.ones(len(idx))
@@ -160,21 +133,9 @@ def _template_rows(win: _Window, tpl: C.Template, rv: np.ndarray) -> np.ndarray:
 
 def ccf_curve(d: np.ndarray, w: np.ndarray, tmat: np.ndarray) -> np.ndarray:
     """
-    Weighted, mean-subtracted normalised cross-correlation
-
-    Parameters
-    ----------
-    d
-        Normalised data (n_pix)
-    w
-        Weights (n_pix)
-    tmat
-        Shifted normalised template, one row per trial velocity (n_v, n_pix); NaN marks no coverage
-
-    Returns
-    -------
-    c
-        C(v) for each row (NaN if a row has no coverage)
+    Weighted, mean-subtracted normalised cross-correlation of data `d` (weights `w`) with each row of `tmat`
+    (shifted normalised template, one row per trial velocity; NaN marks no coverage); NaN for a row covering
+    less than 90 per cent of the pixels
     """
     good = np.isfinite(tmat)
     tm = np.where(good, tmat, 0.)
@@ -205,25 +166,11 @@ def _half_max_extent(cg: np.ndarray, i: int) -> tuple[int, int, float]:
     return lo, hi, floor
 
 
-def fit_peak(v: np.ndarray, c: np.ndarray, kind: str = 'parabola') -> dict:
+def fit_peak(v: np.ndarray, c: np.ndarray) -> dict:
     """
-    Fit the CCF peak
-
-    Parameters
-    ----------
-    v, c
-        Velocity grid [km/s] and CCF
-    kind
-        'parabola' (default): a parabola through the top of the peak, within ±max(2 steps, 0.2 HWHM) of the
-        maximum. 'gaussian': a Gaussian plus constant over the upper half of the peak; this is biased when the
-        peak is asymmetric and the noise moves the half-maximum boundary (≈0.2 km/s at R = 20 000 and SNR 30 in
-        the injection tests), so it is offered for comparison only.
-
-    Returns
-    -------
-    peak
-        'rv', 'height' C(v̂), 'curvature' C''(v̂) [(km/s)⁻²], 'width' (Gaussian-equivalent σ from the half-maximum
-        width), 'edge' (maximum at the grid edge) and 'ok'
+    The CCF peak from a parabola through its top (±max(2 steps, 0.2 HWHM) of the maximum): 'rv', 'height'
+    C(v̂), 'curvature' C''(v̂) [(km/s)⁻²], 'width' (Gaussian-equivalent σ from the half-maximum width), 'edge'
+    (maximum at the grid edge) and 'ok'
     """
     good = np.isfinite(c)
     if good.sum() < 5:
@@ -231,49 +178,21 @@ def fit_peak(v: np.ndarray, c: np.ndarray, kind: str = 'parabola') -> dict:
     vg, cg = v[good], c[good]
     i = int(np.argmax(cg))
     edge = i < 2 or i > len(cg) - 3
-    lo, hi, floor = _half_max_extent(cg, i)
+    lo, hi, _ = _half_max_extent(cg, i)
     step = float(vg[1] - vg[0])
     hwhm = max(0.5 * (vg[hi] - vg[lo]), step)
     width = hwhm / np.sqrt(2. * np.log(2.))
-    if kind == 'parabola':
-        k = max(2, int(round(0.2 * hwhm / step)))
-        sl = slice(max(i - k, 0), min(i + k + 1, len(cg)))
-        if sl.stop - sl.start < 3:
-            return dict(rv=float(vg[i]), height=float(cg[i]), curvature=np.nan, width=width, edge=edge, ok=False)
-        x0, height, curv = parabola_vertex(vg[sl] - vg[i], cg[sl])
-        if curv >= 0:
-            return dict(rv=float(vg[i]), height=float(cg[i]), curvature=np.nan, width=width, edge=edge, ok=False)
-        return dict(rv=float(vg[i] + x0), height=height, curvature=curv, width=float(width), edge=edge,
-                    ok=bool(abs(x0) <= (k + 0.5) * step))
-    if kind != 'gaussian':
-        raise ValueError(f"peak must be 'gaussian' or 'parabola', not {kind!r}")
-    lo, hi = max(0, min(lo, i - 2)), min(len(cg) - 1, max(hi, i + 2))
-    x, y = vg[lo:hi + 1], cg[lo:hi + 1]
-    if len(x) < 5:  # truncated by the grid edge
-        return fit_peak(v, c, 'parabola')
-    s0 = max((x[-1] - x[0]) / 2.355, vg[1] - vg[0])
-    try:
-        popt, _ = curve_fit(lambda xx, a, mu, s, b: a * np.exp(-0.5 * ((xx - mu) / s) ** 2) + b, x, y,
-                            p0=(cg[i] - floor, vg[i], s0, floor), maxfev=5000)
-    except (RuntimeError, ValueError):
-        return fit_peak(v, c, 'parabola')
-    a, mu, s, b = popt
-    ok = bool(a > 0 and x[0] <= mu <= x[-1])
-    return dict(rv=float(mu), height=float(a + b), curvature=float(-a / s ** 2), width=float(abs(s)), edge=edge,
-                ok=ok)
+    k = max(2, int(round(0.2 * hwhm / step)))
+    sl = slice(max(i - k, 0), min(i + k + 1, len(cg)))
+    x0, height, curv = parabola_vertex(vg[sl] - vg[i], cg[sl]) if sl.stop - sl.start >= 3 else (0., 0., 0.)
+    if curv >= 0:  # too few points, or not a peak
+        return dict(rv=float(vg[i]), height=float(cg[i]), curvature=np.nan, width=width, edge=edge, ok=False)
+    return dict(rv=float(vg[i] + x0), height=height, curvature=curv, width=float(width), edge=edge,
+                ok=bool(abs(x0) <= (k + 0.5) * step))
 
 
 def zucker_error(n_pix: int, height: float, curvature: float) -> float:
-    """
-    Zucker (2003) maximum-likelihood RV error from the CCF peak
-
-    σ_v² = −[N · C''(v̂)/C(v̂) · C(v̂)²/(1 − C(v̂)²)]⁻¹, with N the number of pixels
-
-    Returns
-    -------
-    sigma
-        [km/s], NaN if undefined
-    """
+    """Zucker (2003) RV error [km/s]: σ_v² = −[N · C''(v̂)/C(v̂) · C(v̂)²/(1 − C(v̂)²)]⁻¹; NaN if undefined"""
     if not (np.isfinite(height) and np.isfinite(curvature)) or curvature >= 0 or not 0 < height < 1:
         return np.nan
     return float(np.sqrt(-1. / (n_pix * curvature / height * height ** 2 / (1. - height ** 2))))
@@ -293,23 +212,19 @@ def _chi2_at(win: _Window, tpl: C.Template, v: float) -> tuple[float, float, np.
     return float(np.sum(win.w[ok] * (win.d[ok] - a * t[ok]) ** 2)), float(a), a * t
 
 
-def _score_candidate(cand: C.Candidate, preps: list[C.Prepared], resolution: float, wave_range, opts) -> float:
+def _score_candidate(cand: C.Candidate, preps: list[C.Prepared], resolution: float, wave_range, opts,
+                     coarse_step: float) -> float:
     """Total χ² of one candidate template at its own CCF peak in every window"""
     tpl = C.build_template(cand, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
-    rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, opts['_coarse_step'])
+    rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, coarse_step)
     total = 0.
     for prep in preps:
-        win = _window(_copy_prep(prep), opts['highpass_kms'])
+        win = _window(replace(prep, mask=prep.mask.copy()), opts['highpass_kms'])
         c = _ccf_on_grid(win, tpl, rv)
         if not np.isfinite(c).any():
             return np.inf
         total += _chi2_at(win, tpl, float(rv[np.nanargmax(c)]))[0]
     return total
-
-
-def _copy_prep(prep: C.Prepared) -> C.Prepared:
-    return C.Prepared(prep.wave, prep.flux, prep.sigma, prep.mask.copy(), prep.dv, prep.sigma_known, prep.region,
-                      prep.source_pixels)
 
 
 def _flatten_fit(prep: C.Prepared, tpl: C.Template, v: float, degree: int) -> np.ndarray | None:
@@ -342,52 +257,33 @@ def _flatten(prep: C.Prepared, coef: np.ndarray | None) -> C.Prepared:
         return prep
     p = np.polynomial.polynomial.polyval(_xscale(prep.wave), coef)
     with np.errstate(invalid='ignore', divide='ignore'):
-        return C.Prepared(prep.wave, prep.flux / p, prep.sigma / np.abs(p), prep.mask & (p > 0), prep.dv,
-                          prep.sigma_known, prep.region, prep.source_pixels)
+        return replace(prep, flux=prep.flux / p, sigma=prep.sigma / np.abs(p), mask=prep.mask & (p > 0))
 
 
 def _mc_chunk(args) -> list[float]:
     """Monte Carlo trials: add noise to the observed pixels, redo the CCF on a local grid and fit the peak"""
-    seed, n, spectrum, sigma_pix, window, masks, dv, tpl, rv_local, highpass_kms, kind, coef = args
+    seed, n, spectrum, sigma_pix, window, masks, tpl, rv_local, highpass_kms, coef = args
     rng = np.random.default_rng(seed)
     out = []
     for _ in range(n):
         flux = spectrum.flux + rng.normal(0., 1., len(spectrum.flux)) * np.nan_to_num(sigma_pix)
-        prep = _flatten(C.prepare(spectrum, window, masks, dv=dv, flux=flux), coef)
+        prep = _flatten(C.prepare(spectrum, window, masks, flux=flux), coef)
         win = _window(prep, highpass_kms)
-        peak = fit_peak(rv_local, _ccf_on_grid(win, tpl, rv_local), kind)
+        peak = fit_peak(rv_local, _ccf_on_grid(win, tpl, rv_local))
         out.append(peak['rv'] if peak['ok'] else np.nan)
     return out
 
 
-def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, executor: Executor | None = None,
+def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor: Executor | None = None,
             rng: np.random.Generator) -> MethodResult:
     """
-    Cross-correlation RVs, one per window, combined with a random-effects model (combine.combine_regions)
-
-    Parameters
-    ----------
-    spectrum
-        Observed spectrum (vacuum, in the frame the RV is wanted in)
-    regions
-        Regions for this method: windows (by default every non-telluric, non-continuum region) and telluric masks
-    cfg
-        Config (or mapping); options under cfg.methods.options['ccf'] (see `DEFAULTS`); templates from
-        cfg.templates unless the option 'template'/'templates' is given
-    executor
-        Optional executor for the template scoring and the Monte Carlo trials
-    rng
-        Random generator for the Monte Carlo trials
-
-    Returns
-    -------
-    result
-        The combined RV and the per-window measurements (diagnostics hold the CCF curve, peak fit, errors,
-        template and data/model arrays)
+    Cross-correlation RVs, one per window (every non-telluric, non-continuum region; telluric ones are masked),
+    combined by random effects; options in cfg.methods.options['ccf'] (`DEFAULTS`). Diagnostics hold the CCF,
+    peak fit, errors, template and data/model arrays.
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
-    windows, masks = C.split_regions(regions, opts['region_kinds'])
+    windows, masks = C.split_regions(regions)
     if not windows:
         raise ValueError('no CCF windows among the regions')
     windows = C.segment(windows, resolution, opts['segment_res'])
@@ -406,32 +302,22 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         preps.append(p)
         kept.append(win)
     if not preps:
-        return MethodResult(METHOD, np.nan, np.nan, 0, [])
+        raise ValueError('no CCF window has 10 usable pixels')
     dv = min(p.dv for p in preps)
     step = opts['rv_step'] or min(dv / 5., 5.)
-    opts['_coarse_step'] = max(step, dv / 2.)
     wave_range = (min(p.wave[0] for p in preps), max(p.wave[-1] for p in preps))
-    cands = C.candidates(cfg, opts)
-    if len(cands) > 1:
-        scores = C.pmap(partial(_score_candidate, preps=preps, resolution=resolution, wave_range=wave_range,
-                                opts=opts), cands, executor)
-        best = cands[int(np.argmin(scores))]
-        log.info('ccf: template %s chosen by χ² from %d candidates', best.label, len(cands))
-    else:
-        best, scores = cands[0], [np.nan]
-    tpl_raw = tpl = C.build_template(best, resolution, wave_range, vsini=opts['vsini'], pad_kms=opts['pad_kms'])
-    flag_grid = C.FLAG_OUTSIDE_GRID if tpl_raw.params.get('outside_grid') else 0
-    flag_grid |= C.FLAG_GRID_HOLE if tpl_raw.params.get('grid_hole') else 0
-    summary = C.template_summary(METHOD, cands, scores, best, sum(p.n for p in preps), C.section(cfg, 'templates'))
-    flag_grid |= C.FLAG_PARAM_EDGE if summary['template_at_edge'] else 0
-    summary_scalars = {k: v for k, v in summary.items() if k.startswith('template_')}
+    score = partial(_score_candidate, preps=preps, resolution=resolution, wave_range=wave_range, opts=opts,
+                    coarse_step=max(step, dv / 2.))
+    tpl, flag_grid, tdiag = C.choose_template(METHOD, C.candidates(cfg, opts), score, cfg, opts, resolution,
+                                              wave_range, sum(p.n for p in preps), executor, vsini=opts['vsini'])
     rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, step)
-    seeds = C.child_seeds(rng, len(preps) * opts['n_chunks'])
+    n_chunks = opts['n_chunks']
+    seeds = C.child_seeds(rng, len(preps) * n_chunks)
     measurements = []
     for k, (prep, window) in enumerate(zip(preps, kept, strict=True)):
-        win = _window(_copy_prep(prep), opts['highpass_kms'])
+        win = _window(replace(prep, mask=prep.mask.copy()), opts['highpass_kms'])
         c = _ccf_on_grid(win, tpl, rv)
-        peak = fit_peak(rv, c, opts['peak'])
+        peak = fit_peak(rv, c)
         coef = None
         flatten = opts['flatten_degree'] if win.mode == 'highpass' else -1  # a linear continuum already does it
         if peak['ok'] and flatten >= 0:  # remove the relative continuum slope, then redo the CCF
@@ -440,7 +326,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
                 prep = _flatten(prep, coef)
                 win = _window(prep, opts['highpass_kms'])
                 c = _ccf_on_grid(win, tpl, rv)
-                peak = fit_peak(rv, c, opts['peak'])
+                peak = fit_peak(rv, c)
         flag = flag_grid | (C.FLAG_EDGE if peak['edge'] else 0) | (0 if peak['ok'] else C.FLAG_FIT_FAILED)
         chi2, scale, model = _chi2_at(win, tpl, peak['rv']) if peak['ok'] else (np.nan, np.nan, None)
         dof = max(win.prep.n - 2, 1)
@@ -458,10 +344,9 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         if opts['n_mc'] > 0 and peak['ok'] and not peak['edge']:
             half = 3. * max(peak['width'], C_KMS / resolution / 2.355)
             rv_local = np.arange(peak['rv'] - half, peak['rv'] + half + 1e-9, step)
-            n_each = np.diff(np.linspace(0, opts['n_mc'], opts['n_chunks'] + 1).astype(int))
-            tasks = [(seeds[k * opts['n_chunks'] + j], int(n), spectrum, sigma_pix, window, masks, prep.dv, tpl,
-                      rv_local, opts['highpass_kms'], opts['peak'], coef) for j, n in enumerate(n_each) if n > 0]
-            mc = np.concatenate([np.asarray(x, float) for x in C.pmap(_mc_chunk, tasks, executor)])
+            mc = C.run_chunks(_mc_chunk, opts['n_mc'], seeds[k * n_chunks:(k + 1) * n_chunks],
+                              (spectrum, sigma_pix, window, masks, tpl, rv_local, opts['highpass_kms'], coef),
+                              executor)
             finite = np.isfinite(mc)
             if finite.sum() >= max(5, 0.8 * len(mc)):
                 mc_std = float(np.std(mc[finite], ddof=1))
@@ -472,23 +357,13 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any = None, *, e
         chi2_scale = 1.
         if opts['chi2_scale'] and prep.sigma_known and np.isfinite(chi2):
             chi2_scale = float(np.sqrt(max(1., chi2 / dof)))
-        err *= chi2_scale
-        if not np.isfinite(err):
-            flag |= C.FLAG_FIT_FAILED
-        if np.isfinite(chi2) and chi2 / dof > 3. and prep.sigma_known:
-            flag |= C.FLAG_POOR_FIT
-        diag = dict(template_summary=summary, **summary_scalars,
-                    rv_grid=rv, ccf=c, peak=peak, zucker_err=zerr, mc_std=mc_std, chi2_scale=chi2_scale,
-                    n_mc=int(len(mc)), mc_rvs=mc,
-                    chi2=chi2, dof=dof, scale=scale, n_pix=win.prep.n, resolution=resolution,
-                    highpass_kms=opts['highpass_kms'], continuum_mode=win.mode, filter_fwhm=win.filter_fwhm,
-                    flatten_degree=flatten if coef is not None else -1, template=tpl.label,
-                    template_params=tpl_raw.params,
-                    template_scores=dict(zip([c_.label for c_ in cands], map(float, scores), strict=False)),
+        diag = dict(tdiag, rv_grid=rv, ccf=c, peak=peak, zucker_err=zerr, mc_std=mc_std, chi2_scale=chi2_scale,
+                    n_mc=int(len(mc)), mc_rvs=mc, chi2=chi2, dof=dof, scale=scale, n_pix=win.prep.n,
+                    resolution=resolution, highpass_kms=opts['highpass_kms'], continuum_mode=win.mode,
+                    filter_fwhm=win.filter_fwhm, flatten_degree=flatten if coef is not None else -1,
                     wave=win.wave, data=win.d, model=model, weights=win.w)
-        m = Measurement(METHOD, window.name, float(peak['rv']), float(err), int(flag), diag)
-        log.debug('ccf %s: %.2f ± %.2f km/s (Zucker %.2f, flag %d)', window.name, m.rv, m.rv_err, zerr, flag)
-        measurements.append(m)
+        measurements.append(C.window_measurement(METHOD, window, peak['rv'], err * chi2_scale, flag, chi2 / dof,
+                                                 prep.sigma_known, diag))
     result = C.finish(METHOD, measurements, opts['outlier_k'])
     log.info('ccf: %.2f ± %.2f km/s (template %s, %d windows)', result.rv, result.rv_err, tpl.label,
              result.n_regions)

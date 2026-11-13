@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from conftest import reachable
-from rvfitter import pipeline, refit, results
+from injection import cfg_of
+from rvfitter import config, pipeline, refit, results
 from rvfitter import templates as T
 from rvfitter.medium import vac_to_air
 from rvfitter.methods import _common as C
@@ -102,7 +103,7 @@ def test_edge_guidance_widen(tmp_path, caplog):
     cands = _cands(grid, teff_range=(1800., 2000.), met_range=(-0.5, 0.))
     best = next(c for c in cands if c.param_dict == dict(teff=1900., logg=5.0, met=-0.5, alpha=0.))
     scores = [10. if c is best else 50. for c in cands]
-    tcfg = {'grid': 'toy4', 'met_range': (-0.5, 0.)}
+    tcfg = config.TemplatesConfig(grid='toy4', met_range=(-0.5, 0.))
     s = C.template_summary('template_fit', cands, scores, best, 1000, tcfg)
     assert s['template_at_edge'] and s['template_met'] == -0.5 and s['template_teff'] == 1900.
     assert not np.isnan(s['template_alpha'])  # alpha is encoded in the generic names
@@ -119,7 +120,7 @@ def test_edge_guidance_download(tmp_path):
     cands = _cands(grid, teff_range=(1800., 2000.), met_range=(-1., 0.))
     best = next(c for c in cands if c.param_dict == dict(teff=1900., logg=5.0, met=-1., alpha=0.))
     scores = [10. if c is best else 50. for c in cands]
-    s = C.template_summary('ccf', cands, scores, best, 1000, {'grid': 'toy4'})
+    s = C.template_summary('ccf', cands, scores, best, 1000, config.TemplatesConfig(grid='toy4'))
     (edge,) = s['edges']
     assert edge['action'] == 'download'
     grid_name = edge['download']['grid']
@@ -138,7 +139,7 @@ def test_no_edge_inside(tmp_path):
     cands = _cands(grid, teff_range=(1800., 2000.))
     best = next(c for c in cands if c.param_dict['teff'] == 1900. and c.param_dict['logg'] == 5.0)
     scores = [10. if c is best else 50. for c in cands]
-    s = C.template_summary('ccf', cands, scores, best, 100, {})
+    s = C.template_summary('ccf', cands, scores, best, 100)
     assert s['edges'] == [] and not s['template_at_edge']
 
 
@@ -152,8 +153,8 @@ def test_template_fit_flags_edge_and_results_columns(tmp_path):
     flux = tpl.at(wave, 12.)
     sigma = flux / 200.
     spec = Spectrum(wave, flux + np.random.default_rng(0).normal(0., 1., len(wave)) * sigma, sigma, 3000., {}, 's')
-    cfg = {'templates': {'local_dir': str(grid_dir), 'grid': 'toy4', 'teff_range': (1800., 2000.)},
-           'methods': {'options': {'template_fit': {'segment_res': 0}}}}
+    cfg = cfg_of({'templates': {'local_dir': str(grid_dir), 'grid': 'toy4', 'teff_range': (1800., 2000.)},
+                  'methods': {'options': {'template_fit': {'segment_res': 0}}}})
     res = template_fit.measure(spec, [Region('all', 'band', 7700., 8900.)], cfg, rng=np.random.default_rng(1))
     m = res.measurements[0]
     assert m.diagnostics['template_teff'] == 1800. and m.flag & results.FLAGS['template_param_edge']

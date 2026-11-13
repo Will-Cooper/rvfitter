@@ -10,14 +10,11 @@ from rvfitter.methods import REGISTRY, ccf
 from rvfitter.methods import _common as C
 
 
-def test_fit_peak_gaussian_and_parabola():
+def test_fit_peak():
     v = np.arange(-300., 300., 5.)
     c = 0.1 + 0.7 * np.exp(-0.5 * ((v - 12.3) / 40.) ** 2)
-    g = ccf.fit_peak(v, c, 'gaussian')
-    np.testing.assert_allclose([g['rv'], g['height'], g['width']], [12.3, 0.8, 40.], rtol=1e-6)
-    np.testing.assert_allclose(g['curvature'], -0.7 / 40. ** 2, rtol=1e-6)
-    p = ccf.fit_peak(v, c, 'parabola')
-    assert abs(p['rv'] - 12.3) < 0.5 and p['ok']
+    p = ccf.fit_peak(v, c)
+    assert abs(p['rv'] - 12.3) < 0.5 and p['ok'] and abs(p['width'] - 40.) < 5.
     edge = ccf.fit_peak(v, np.exp(-0.5 * ((v - 400.) / 40.) ** 2))
     assert edge['edge']
 
@@ -36,7 +33,7 @@ def test_ccf_curve_is_one_for_identical():
 
 def test_registry():
     spec, truth = synth.make_spectrum(rv=-40., snr=50., rng=np.random.default_rng(3))
-    cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}}
+    cfg = injection.cfg_of({'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}})
     res = REGISTRY['ccf'](spec, injection.full_region(spec), cfg, rng=np.random.default_rng(0))
     assert abs(res.rv + 40.) < 5. and res.n_regions == len(res.measurements) == 3  # 1500 Å = 3 segments at R 2500
     m = res.measurements[0]
@@ -47,14 +44,14 @@ def test_registry():
 def test_unknown_option():
     spec, truth = synth.make_spectrum(rng=np.random.default_rng(3))
     with pytest.raises(ValueError, match='unknown ccf options'):
-        ccf.measure(spec, injection.full_region(spec), {'methods': {'options': {'ccf': {'n_mcc': 3}}}},
-                    rng=np.random.default_rng(0))
+        ccf.measure(spec, injection.full_region(spec),
+                    injection.cfg_of({'methods': {'options': {'ccf': {'n_mcc': 3}}}}), rng=np.random.default_rng(0))
 
 
 def test_unknown_resolution_is_estimated(caplog):
     from dataclasses import replace
     spec, truth = synth.make_spectrum(rv=10., resolution=3000., snr=60., rng=np.random.default_rng(3))
-    cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}}
+    cfg = injection.cfg_of({'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 10}}}})
     res = ccf.measure(replace(spec, resolution=None), injection.full_region(spec), cfg, rng=np.random.default_rng(0))
     assert 'estimated R' in caplog.text
     r = res.measurements[0].diagnostics['resolution']
@@ -85,7 +82,7 @@ def test_template_choice_by_chi2():
     from rvfitter.types import Spectrum
     templates = [Spectrum(w, f, np.full(len(w), np.nan), None, {'object': f'T{k}'})
                  for k, (w, f) in enumerate([wrong[0], truth['template'], wrong[1]])]
-    cfg = {'methods': {'options': {'ccf': {'templates': templates, 'n_mc': 10}}}}
+    cfg = injection.cfg_of({'methods': {'options': {'ccf': {'templates': templates, 'n_mc': 10}}}})
     res = ccf.measure(spec, injection.full_region(spec), cfg, rng=np.random.default_rng(0))
     assert res.measurements[0].diagnostics['template'] == 'T1'
 
@@ -95,7 +92,7 @@ def test_executor_independent_and_masks():
     regions = injection.full_region(spec)
     mid = 0.5 * (spec.wmin + spec.wmax)
     regions.append(C.Region('tell', 'telluric', mid - 30., mid + 30.))
-    cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 24}}}}
+    cfg = injection.cfg_of({'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 24}}}})
     serial = ccf.measure(spec, regions, cfg, rng=np.random.default_rng(1))
     with ThreadPoolExecutor(4) as ex:
         par = ccf.measure(spec, regions, cfg, executor=ex, rng=np.random.default_rng(1))
@@ -108,7 +105,7 @@ def test_no_sigma_estimates_noise(caplog):
     from dataclasses import replace
     spec, truth = synth.make_spectrum(rv=5., snr=30., rng=np.random.default_rng(9))
     spec = replace(spec, sigma=np.full(len(spec.wave), np.nan))
-    cfg = {'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 20}}}}
+    cfg = injection.cfg_of({'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 20}}}})
     res = ccf.measure(spec, injection.full_region(spec), cfg, rng=np.random.default_rng(1))
     assert 'no flux errors' in caplog.text
     assert abs(res.rv - 5.) < 4 * res.rv_err and 0.5 < res.rv_err < 10.
