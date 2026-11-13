@@ -20,8 +20,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import find_objects, gaussian_filter1d, label
 
+from .broadening import FWHM_TO_SIGMA
 from .constants import C_KMS
 from .features import Feature, features
 from .types import Region, Spectrum
@@ -36,7 +37,6 @@ TEMPLATE_METHODS = frozenset({'ccf', 'template_fit', 'forward_mcmc'})
 TEMPLATE_WINDOW_MODES = ('features', 'full')
 _EDGE_RESEL = 3.  # a feature within this many resolution elements of a mask-clipped window edge is dropped
 TELLURIC_METHODS = frozenset({'telluric_ref'})
-_FWHM_TO_SIGMA = 1. / (2. * math.sqrt(2. * math.log(2.)))
 # Named telluric strictness levels (aliases for the float scale: 0 = off, larger masks more)
 _STRICTNESS = {'off': 0., 'loose': 0.5, 'standard': 1., 'strict': 2.}
 _RELAXED_SPECIES = ('O2',)  # telluric bands relaxed for line regions when the spectrum is telluric-corrected
@@ -214,7 +214,7 @@ class _Context:
             self.R = float(np.median(self.wave) / (2.5 * step))
             self.r_note = 'ESTIMATED from the pixel scale (resolution unknown)'
             log.warning('Spectrum has no resolution; assuming R~%.0f from the pixel scale', self.R)
-        sigma_pix = max(opts.smooth_fwhm * float(np.median(self.wave)) / self.R / step * _FWHM_TO_SIGMA, 0.5)
+        sigma_pix = max(opts.smooth_fwhm * float(np.median(self.wave)) / self.R / step * FWHM_TO_SIGMA, 0.5)
         good = np.isfinite(self.flux)
         filled = np.interp(self.wave, self.wave[good], self.flux[good]) if good.sum() >= 2 else np.full_like(
             self.flux, np.nan)
@@ -234,17 +234,9 @@ class _Context:
         # break points: after pixel i where there is a chip gap, or at NaN runs of >= nan_gap_pix pixels
         cut = np.zeros(len(w), dtype=bool)  # cut[i]: a break between i and i+1
         cut[:-1] |= big
-        i = 0
-        while i < len(w):
-            if good[i]:
-                i += 1
-                continue
-            j = i
-            while j < len(w) and not good[j]:
-                j += 1
-            if j - i >= o.nan_gap_pix:  # a long NaN run is a gap; shorter runs are simply left out
-                cut[max(i - 1, 0):j] = True
-            i = j
+        for (run,) in find_objects(label(~good)[0]):
+            if run.stop - run.start >= o.nan_gap_pix:  # a long NaN run is a gap; shorter runs are simply left out
+                cut[max(run.start - 1, 0):run.stop] = True
         segs: list[tuple[float, float]] = []
         start = 0
         for k in range(len(w)):
@@ -263,6 +255,9 @@ class _Context:
 
     def covered(self, a: float, b: float) -> bool:
         return any(lo <= a and b <= hi for lo, hi in self.segments)
+
+    def snr_low(self, snr: float) -> bool:
+        return math.isnan(snr) or snr < self.opts.snr_min
 
     def snr(self, a: float, b: float) -> float:
         """Robust SNR in the neighbourhood [a, b] widened by the SNR window"""
@@ -357,13 +352,20 @@ def _continuum(ctx: _Context, wmin: float, wmax: float, avoid: Sequence[tuple[fl
     return tuple(sorted(out))
 
 
+def _rejected(f: Feature, teff: float | None, ctx: _Context) -> str | None:
+    """Why a feature is not used at this Teff and R (excluded species, Teff prior, R < r_min), else None"""
+    if f.species in ctx.opts.exclude_species:
+        return 'excluded species'
+    if not f.teff_ok(teff):
+        return 'Teff prior'
+    return 'R < r_min' if ctx.R < f.r_min else None
+
+
 def _feature_list(feats: Sequence[Feature], lo: float, hi: float, teff: float | None, ctx: _Context) -> list[str]:
     """Names of non-telluric catalogue features passing the R and Teff filters that fall in [lo, hi]"""
     names = []
     for f in feats:
-        if f.kind == 'telluric' or f.species in ctx.opts.exclude_species:
-            continue
-        if ctx.R < f.r_min or not f.teff_ok(teff):
+        if f.kind == 'telluric' or _rejected(f, teff, ctx):
             continue
         a, b = f.span
         if b >= lo and a <= hi:
@@ -459,33 +461,20 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
                   strict: float | None = None) -> list[Region]:
     o = ctx.opts
     lines = [f for f in feats if f.kind == 'line']
-    # windows of all catalogue lines inside the coverage, to keep continuum windows feature-free
-    all_windows = []
-    for f in lines:
-        a, b = _line_window(ctx, f)
-        all_windows.append((a - ctx.fwhm(f.wave_vac), b + ctx.fwhm(f.wave_vac), f.name))
-    avoid = all_windows + list(masks)
+    avoid = _avoid_windows(ctx, masks)  # all catalogue lines and the masks: continuum windows stay feature-free
     mode = _strictness(o.telluric) if strict is None else strict
     cands = []
     for f in lines:
         a, b = _line_window(ctx, f)
-        why = cat = None
-        if f.species in o.exclude_species:
-            why = cat = 'excluded species'
-        elif not f.teff_ok(teff):
-            why = cat = 'Teff prior'
-        elif ctx.R < f.r_min:
-            why = cat = 'R < r_min'
-        elif not ctx.covered(a, b):
-            why = cat = 'outside coverage'
-        else:
+        why = cat = _rejected(f, teff, ctx) or (None if ctx.covered(a, b) else 'outside coverage')
+        if why is None:
             half = (0. if mode < 0.75 else o.k_core * ctx.fwhm(f.wave_vac) if mode < 1.5 else b - f.wave_vac)
             hit = _overlaps(f.wave_vac - half, f.wave_vac + half, masks)
             if hit:
                 why, cat = f'telluric ({hit})', 'telluric'
         if why is None:
             snr = ctx.snr(a, b)
-            if (math.isnan(snr) or snr < o.snr_min):
+            if ctx.snr_low(snr):
                 why, cat = f'SNR {snr:.1f} < {o.snr_min:g}', 'SNR'
             else:
                 cands.append((f, a, b, snr))
@@ -514,18 +503,8 @@ def _select_lines(ctx: _Context, feats: Sequence[Feature], masks, teff, drops: C
 def _split_spans(ctx: _Context, masks) -> list[tuple[float, float]]:
     """Coverage minus masked tellurics, as spans of at least min_span_resel resolution elements, chunked"""
     o = ctx.opts
-    pieces = []
-    for lo, hi in ctx.segments:
-        cuts = sorted((max(a, lo), min(b, hi)) for a, b, _ in masks if b > lo and a < hi)
-        start = lo
-        for a, b in cuts:
-            if a > start:
-                pieces.append((start, a))
-            start = max(start, b)
-        if hi > start:
-            pieces.append((start, hi))
     spans = []
-    for lo, hi in pieces:
+    for lo, hi in _split_spans_any(ctx, masks):
         n = ctx.R * math.log(hi / lo)
         if n < o.min_span_resel:
             continue
@@ -541,7 +520,7 @@ def _select_spans(ctx: _Context, feats: Sequence[Feature], masks, teff, method: 
     out = []
     for lo, hi in _split_spans(ctx, masks):
         snr = ctx.snr(lo, hi)
-        if (math.isnan(snr) or snr < ctx.opts.snr_min):
+        if ctx.snr_low(snr):
             drops['SNR'] += 1
             log.debug('span %.0f-%.0f dropped: SNR %.1f', lo, hi, snr)
             continue
@@ -551,7 +530,7 @@ def _select_spans(ctx: _Context, feats: Sequence[Feature], masks, teff, method: 
         shown = ', '.join(names[:6]) + (f' (+{len(names) - 6} more)' if len(names) > 6 else '')
         reason = (f'non-telluric span of {n:.0f} resolution elements, SNR {snr:.1f}, sigma_RV~{sig:.2f} km/s '
                   f'(Bouchy); features: {shown or "none catalogued"}')
-        out.append((sig, Region(f'{kind.upper() if kind == "ccf" else "BAND"} {lo:.0f}-{hi:.0f}', kind, lo, hi,
+        out.append((sig, Region(f'{kind.upper()} {lo:.0f}-{hi:.0f}', kind, lo, hi,
                                 None, (), reason)))
     out.sort(key=lambda t: t[0])
     return [r for _, r in out]
@@ -566,14 +545,9 @@ def _select_feature_windows(ctx: _Context, feats: Sequence[Feature], masks, teff
     for f in feats:
         if f.kind == 'telluric' or f.model_fidelity != 'good':
             continue
-        if f.species in o.exclude_species:
-            drops['excluded species'] += 1
-            continue
-        if not f.teff_ok(teff):
-            drops['Teff prior'] += 1
-            continue
-        if ctx.R < f.r_min:
-            drops['R < r_min'] += 1
+        why = _rejected(f, teff, ctx)
+        if why:
+            drops[why] += 1
             continue
         a, b = (f.wave_vac, f.wave_vac) if f.kind in ('line', 'bandhead') and math.isfinite(f.wave_vac) else (
             f.wmin, f.wmax)
@@ -606,7 +580,7 @@ def _select_feature_windows(ctx: _Context, feats: Sequence[Feature], masks, teff
                 drops['window masked'] += 1
                 continue
             snr = ctx.snr(lo, hi)
-            if math.isnan(snr) or snr < o.snr_min:
+            if ctx.snr_low(snr):
                 drops['SNR'] += 1
                 continue
             sig = ctx.sigma_rv(lo, hi, snr)
@@ -617,7 +591,7 @@ def _select_feature_windows(ctx: _Context, feats: Sequence[Feature], masks, teff
             # continuum windows: the outer cont_fwhm resolution elements at each end (for a linear continuum)
             c = o.cont_fwhm * ctx.fwhm(0.5 * (lo + hi))
             cont = ((float(lo), float(lo + c)), (float(hi - c), float(hi))) if hi - lo > 3 * c else ()
-            out.append((sig, Region(f'{kind.upper() if kind == "ccf" else "BAND"} {label}', kind, float(lo),
+            out.append((sig, Region(f'{kind.upper()} {label}', kind, float(lo),
                                     float(hi), None, cont, reason)))
     out.sort(key=lambda t: t[0])
     return [r for _, r in out]
@@ -654,7 +628,7 @@ def _select_telluric(ctx: _Context, feats: Sequence[Feature], drops: Counter) ->
             drops['too short'] += 1
             continue
         snr = ctx.snr(lo, hi)
-        if (math.isnan(snr) or snr < ctx.opts.snr_min):
+        if ctx.snr_low(snr):
             drops['SNR'] += 1
             continue
         sig = ctx.sigma_rv(lo, hi, snr)
