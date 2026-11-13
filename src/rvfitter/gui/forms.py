@@ -46,6 +46,7 @@ TIPS = {
     'template_fit': 'Chi-squared fit of a (broadened, shifted) model-atmosphere template.',
     'telluric_ref': 'Use telluric lines as a wavelength reference (zero-point check).',
     'forward_mcmc': 'Pixel-level forward model (grid template, vsini, LSF, continuum) sampled by MCMC; slow, opt-in.',
+    'lsd': 'Least-squares deconvolution: the mean line profile against a template line mask; RV and vsini; opt-in.',
     'grid': 'Template grid name (e.g. bt-settl-cifist). Templates are downloaded and cached on first use.',
     'template_grid': 'Template grid name (e.g. bt-settl-cifist). Templates are downloaded and cached on first use.',
     'local_dir': 'Folder with your own template spectra. Leave empty to use the downloaded cache.',

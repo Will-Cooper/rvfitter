@@ -194,5 +194,5 @@ def test_hash_ignores_paths_and_output():
 def test_only_implemented_methods():
     from rvfitter.methods import REGISTRY
     assert set(config.METHOD_NAMES) == set(REGISTRY) and set(Config().methods.enabled) <= set(REGISTRY)
-    with pytest.raises(ValueError, match='lsd'):
-        config.loads('[methods]\nenabled = ["ccf", "lsd"]\n')
+    with pytest.raises(ValueError, match='bisector'):
+        config.loads('[methods]\nenabled = ["ccf", "bisector"]\n')
