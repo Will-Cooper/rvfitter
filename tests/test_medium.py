@@ -29,6 +29,9 @@ def test_uv_unchanged():
     wave = np.array([1215.67, 1999.])
     assert np.array_equal(vac_to_air(wave), wave)
     assert np.array_equal(air_to_vac(wave), wave)
+    # full model grids (e.g. SVO) start near 0 Å, where the formulae diverge: still unchanged, no RuntimeError
+    tiny = np.array([0.001, 1., 1999., 8500.])
+    assert np.array_equal(air_to_vac(tiny)[:3], tiny[:3]) and air_to_vac(tiny)[3] > 8500.
 
 
 def test_to_vacuum_and_bad_inputs():

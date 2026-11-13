@@ -57,16 +57,19 @@ def air_to_vac(wave_air: np.ndarray, method: str = 'ciddor') -> np.ndarray:
     Raises ``RuntimeError`` if the iteration has not converged after `_MAXITER` steps.
     """
     wave_air = np.asarray(wave_air, dtype=float)
-    wave_vac = wave_air * refractive_index(wave_air, method)  # first guess
+    out = wave_air.copy()
+    air = wave_air >= AIR_VACUUM_THRESHOLD  # only these are converted; the formulae diverge as λ → 0
+    wave_vac = wave_air[air] * refractive_index(wave_air[air], method)  # first guess
     for _ in range(_MAXITER):
-        new = wave_air * refractive_index(wave_vac, method)
+        new = wave_air[air] * refractive_index(wave_vac, method)
         converged = not np.any(np.abs(new - wave_vac) > _PRECISION * np.abs(wave_vac))
         wave_vac = new
         if converged:
             break
     else:
         raise RuntimeError(f'air_to_vac did not converge in {_MAXITER} iterations')
-    return np.where(wave_air < AIR_VACUUM_THRESHOLD, wave_air, wave_vac)
+    out[air] = wave_vac
+    return out
 
 
 def to_vacuum(wave: np.ndarray, medium: str, method: str = 'ciddor') -> np.ndarray:

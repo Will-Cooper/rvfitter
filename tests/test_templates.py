@@ -175,3 +175,27 @@ def test_bt_settl_useful_grid_is_air():
     assert grid.bounds()['teff'] == (1500., 2500.) and grid.bounds()['logg'] == (4.5, 5.5)
     spec = grid.broadened(1950., 5.2, resolution=2500., wave_range=(7600., 8000.))
     assert spec.meta['interpolated'] and np.all(np.isfinite(spec.flux))
+
+
+def _votable_bytes(table: Table) -> bytes:
+    from astropy.io.votable import from_table
+    buf = io.BytesIO()
+    from_table(table).to_xml(buf)
+    return buf.getvalue()
+
+
+def test_svo_ssap_and_spectrum_formats(tmp_path):
+    """SVO's live formats (2026-11): `Access.Reference` URLs, and VOTable spectra (WAVELENGTH [Å], FLUX) padded with
+    zero rows, unsorted; both become what `_download_svo` and `read_two_column` expect"""
+    q = Table({'teff': [2000.], 'logg': [5.], 'meta': [0.], 'Access.Reference': ['https://x/ssap.php?fid=1']})
+    assert T._parse_ssap(_votable_bytes(q)) == [{'url': 'https://x/ssap.php?fid=1', 'teff': 2000., 'logg': 5.,
+                                                  'met': 0.}]
+    spec = Table({'WAVELENGTH': [0., 8501., 8500., 0.001], 'FLUX': [0., 2., 1., 5.]})
+    spec['WAVELENGTH'].unit = 'Angstrom'
+    path = tmp_path / 'svo.txt'
+    path.write_bytes(T._svo_two_column(_votable_bytes(spec)))
+    wave, flux = T.read_two_column(path)
+    assert list(wave) == [0.001, 8500., 8501.] and list(flux) == [5., 1., 2.]
+    spec['WAVELENGTH'].unit = 'nm'
+    with pytest.raises(ValueError, match='unit'):
+        T._svo_two_column(_votable_bytes(spec))

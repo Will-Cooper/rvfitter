@@ -642,7 +642,7 @@ def _parse_ssap(votable_bytes: bytes) -> list[dict]:
                     return orig
         return None
 
-    url_col = find('access_url', 'acref', 'spectrum', 'url')
+    url_col = find('access_url', 'access.reference', 'acref', 'spectrum', 'url')
     teff_col, logg_col = find('teff'), find('logg')
     if url_col is None or teff_col is None or logg_col is None:
         raise ValueError(f'unrecognised SSAP response columns: {table.colnames}')
@@ -659,6 +659,22 @@ def _parse_ssap(votable_bytes: bytes) -> list[dict]:
         d.update({axis: float(row[col]) for axis, col in cols.items()})
         rows.append(d)
     return rows
+
+
+def _svo_two_column(votable_bytes: bytes) -> bytes:
+    """An SVO spectrum (VOTable: WAVELENGTH [Å], FLUX) as the two-column text `read_two_column` reads"""
+    import io
+
+    from astropy.io.votable import parse_single_table
+    t = parse_single_table(io.BytesIO(votable_bytes)).to_table()
+    if not {'WAVELENGTH', 'FLUX'} <= set(t.colnames):
+        raise ValueError(f'unexpected SVO spectrum columns: {t.colnames}')
+    if str(t['WAVELENGTH'].unit).lower() not in ('angstrom', 'a'):
+        raise ValueError(f'unexpected SVO wavelength unit: {t["WAVELENGTH"].unit}')
+    out = io.BytesIO()
+    np.savetxt(out, np.column_stack([np.asarray(t['WAVELENGTH'], float), np.asarray(t['FLUX'], float)]),
+               fmt='%.6f %.6e')
+    return out.getvalue()
 
 
 def _generic_name(p: Mapping[str, float]) -> str:
@@ -777,7 +793,7 @@ def _download_svo(meta: GridMeta, want: dict, directory: Path, fetch: Callable[[
             log.debug('[%d/%d] %s cached', i, len(rows), name)
             continue
         log.info('[%d/%d] downloading %s', i, len(rows), name)
-        data = fetch(r['url'])
+        data = _svo_two_column(fetch(r['url']))
         path.write_bytes(data)
         manifest[name] = dict(sha256=hashlib.sha256(data).hexdigest(), **r)
     return _finish(directory, meta, manifest_path, manifest, verify)
