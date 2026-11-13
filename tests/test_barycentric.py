@@ -176,3 +176,21 @@ def test_j1745_matches_pypeit():
     with fits.open(glob.glob(os.path.join(base, 'yespipecorrhelio', pat))[0]) as hdul:
         corrected = _spec(vel_type=hdul[1].header['VEL_TYPE'], **meta)
     assert correction(corrected, 'auto') == (0., 'header')
+
+
+def test_coadd_without_spec1d_frame_message(tmp_path, caplog):
+    """A PypeIt tellcorr file without its spec1d: the frame is unknown (PypeIt default heliocentric), not 'observed';
+    the airmass default names what it is used for"""
+    from astropy.io import fits
+
+    from rvfitter import io, regions
+    cols = [fits.Column(name=n, format='D', array=a) for n, a in (('wave', np.linspace(7000., 9000., 50)),
+                                                                  ('flux', np.ones(50)), ('ivar', np.ones(50)))]
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols)]).writeto(tmp_path / 'X_tellcorr.fits')
+    spec = io.read_spectrum(tmp_path / 'X_tellcorr.fits')
+    assert 'probably heliocentric' in spec.meta['frame_note']
+    caplog.clear()
+    assert correction(spec, 'auto') == (0., 'skipped')
+    assert 'probably heliocentric' in caplog.text and 'observed' not in caplog.text
+    assert regions.meta_airmass(spec.meta, 1., 'the telluric band depths') == 1.
+    assert 'the telluric band depths assume airmass 1.0' in caplog.text

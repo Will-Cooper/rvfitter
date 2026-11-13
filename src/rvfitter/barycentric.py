@@ -238,9 +238,10 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
         if mode == 'apply':
             raise ValueError('Cannot compute the velocity correction; missing ' + ', '.join(missing)
                              + ' (supply them in the overrides)')
-        log.warning('Cannot compute the %s correction for %s (missing %s); skipping it. '
-                    'Measured RVs are then in the observed frame', frame, spectrum.source or 'spectrum',
-                    ', '.join(missing))
+        log.warning('Cannot compute the %s correction for %s (missing %s); skipping it. Measured RVs are then in '
+                    "the frame of the input's wavelengths: %s", frame, spectrum.source or 'spectrum',
+                    ', '.join(missing), meta.get('frame_note') or 'the observed (topocentric) frame unless a '
+                    'velocity correction was applied without a header record')
         return 0., 'skipped'
     log.info('Computed %s correction %+.3f km/s', frame, kms)
     return kms, 'computed'

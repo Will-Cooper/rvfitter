@@ -44,6 +44,10 @@ log = logging.getLogger(__name__)
 
 # PypeIt wavelengths are vacuum by default (documented PypeIt behaviour); used only when the header is silent
 PYPEIT_DEFAULT_MEDIUM = 'vacuum'
+# a coadd without its spec1d files: PypeIt corrects each spec1d's wavelengths to WavelengthSolutionPar.refframe,
+# 'heliocentric' by default, and coadd1d keeps them
+PYPEIT_FRAME_NOTE = ("PypeIt's default (refframe 'heliocentric') makes its wavelengths probably heliocentric; if so, "
+                     "set velocity_frame.correction = 'skip' and frame = 'heliocentric'")
 
 _WAVE_NAMES = ('wave', 'wavelength', 'lambda', 'lam', 'wl', 'wavel', 'wavelengths')
 _FLUX_NAMES = ('flux', 'flam', 'flux_density', 'fluxdensity', 'fluxes')
@@ -329,6 +333,7 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     meta['vel_corr'] = f
     meta['vel_corr_kms'] = None if f is None else vel_corr_to_kms(f)
     meta['velocity_keywords'] = {k: header[k] for k in _VEL_KEYS if k in header}
+    meta['frame_note'] = header.get('RVF_FRAME_NOTE')  # why the input frame is unknown, when a reader knows
     raw = header.get('RVF_RAW_FILES') or header.get('FILENAME')  # PypeIt: the raw frame(s) behind the spectrum
     meta['raw_files'] = [s for s in str(raw).split(',') if s] if raw else []
     meta.update(_slit_meta(header))
@@ -715,7 +720,8 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     coadd1d works on the spec1d wavelengths, which already carry each exposure's ``VEL_CORR``, but writes no
     VEL_CORR itself; without it the zero-point curves would be evaluated in the wrong frame. The spec1d names come
     from the coadd's HISTORY ('From "spec1d_…"'); a tellcorr file (often with an empty header) takes them from the
-    coadd of the same name next to it. Returns {} (with a WARNING) when the spec1d files are not found.
+    coadd of the same name next to it. When the spec1d files are not found the frame is unknown: a WARNING, and
+    ``RVF_FRAME_NOTE`` says so (`rvfitter.barycentric` repeats it instead of calling the frame 'observed').
     """
     def sources(head: fits.Header) -> list[str]:
         return _COADD_FROM_RE.findall(''.join(str(v) for k, v in head.items() if k == 'HISTORY'))
@@ -729,8 +735,9 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     found = [path.parent / n for n in names if (path.parent / n).is_file()]
     if not names or len(found) < len(names):
         log.warning('%s: the spec1d file(s) it was coadded from (%s) are not next to it: the velocity frame '
-                    '(VEL_CORR) is unknown', path.name, ', '.join(names) or 'none named in its HISTORY or a coadd')
-        return out
+                    '(VEL_CORR) is unknown. %s', path.name, ', '.join(names) or 'none named in its HISTORY or a coadd',
+                    PYPEIT_FRAME_NOTE)
+        return {'RVF_FRAME_NOTE': PYPEIT_FRAME_NOTE}
     heads = []
     for p in found:  # PypeIt writes VEL_CORR in the object tables, the raw FILENAME in the primary header
         with fits.open(p) as hl:

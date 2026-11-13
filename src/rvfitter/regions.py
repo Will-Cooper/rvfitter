@@ -219,7 +219,7 @@ class _Context:
         filled = np.interp(self.wave, self.wave[good], self.flux[good]) if good.sum() >= 2 else np.full_like(
             self.flux, np.nan)
         self.smooth = np.where(good, gaussian_filter1d(filled, sigma_pix, mode='nearest'), np.nan)
-        self.airmass = meta_airmass(spec.meta, 1.)
+        self.airmass = meta_airmass(spec.meta, 1., 'the telluric band depths that decide the masking')
         self.segments = self._segments()
 
     def fwhm(self, w: float) -> float:
@@ -270,11 +270,12 @@ class _Context:
         return rv_precision(self.wave[m], self.smooth[m], snr)
 
 
-def meta_airmass(meta: Any, default: float) -> float:
-    """meta['airmass'], or `default` (with a WARNING) when absent; a malformed or < 1 value raises."""
+def meta_airmass(meta: Any, default: float, use: str) -> float:
+    """meta['airmass'], or `default` (with a WARNING naming its `use`) when absent; a malformed or < 1 value raises"""
     am = (meta or {}).get('airmass')
     if am is None:
-        log.warning('No airmass in the header; assuming %.1f', default)
+        log.warning('%s: no airmass in the header; %s assume airmass %.1f', (meta or {}).get('object', 'spectrum'),
+                    use, default)
         return default
     try:
         x = float(am)
