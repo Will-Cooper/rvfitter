@@ -25,7 +25,8 @@ Method:
    (PypeIt's Paranal sky) showed the method unbiased except in the short blue-edge segment, bounded by the O2 A
    band, where it was biased by −8 to −22 km/s.
    `measure_windows` measures the sky in any given windows (e.g. inside the telluric bands, to compare it with
-   the star's telluric nodes); those values never enter the curve.
+   the star's telluric nodes, where the H2O absorption can move the blended OH features); those values never
+   enter the curve.
 5. Δv(λ) is local: within each telluric-free span, the piecewise-linear interpolation between its segment
    values, held constant beyond them; it is never interpolated across an unmeasured gap (a wavelength in a gap
    takes the nearer span's edge value), and its error grows with the distance from the nearest node. Node errors
@@ -367,7 +368,9 @@ def measure_windows(spectrum: Spectrum, windows: list[tuple[float, float]], fwhm
     The sky Δv measured directly in given windows [Å, observatory frame], with no telluric cut.
 
     Used to compare the sky with the star's telluric nodes in the same windows, including inside the telluric
-    bands (the absorption weakens the OH lines there but does not move them). These values never enter the curve
+    bands. There the OH emission (≈ 90 km up) is absorbed by the whole H2O column, and at R ≈ 2600 the absorbed,
+    blended OH features do move: a synthetic sky × the HITRAN transmission at J1745's airmass gave −5 to +16 km/s
+    in the H2O windows at PWV 11 mm, against < 0.5 km/s without absorption. These values never enter the curve
     that `measure` fits. Each result is {'wmin', 'wmax', 'dv', 'err', 'err_stat', 'corr', 'bias', 'used',
     'reason'}, with the same correlation, error and bias test as the curve's segments.
     """
