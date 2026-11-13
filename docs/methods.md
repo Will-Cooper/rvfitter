@@ -51,7 +51,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 | Method | v1 (paper) | v1 after Phase A fixes | v2 | z (quadrature) |
 |---|---|---|---|---|
-| Line centring | 36.2 ± 4.4 | | 34.00 ± 5.48 (σ_total 22.36; `none` and `sky-if-needed`, which refuses the sky here) | 1.31 (0.35 total) |
+| Line centring | 36.2 ± 4.4 | | `sky-if-needed` (default): 15.49 ± 4.16 (σ_total 20.40); `none`: 34.00 ± 5.48 (σ_total 22.36) | default 2.24 (0.52 total); none 1.31 (0.35 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
 | Forward model (MCMC) | — | | | |
@@ -145,3 +145,8 @@ On J1745−1640 the telluric nodes measure the star 23.8 ± 3.6 km/s bluer than 
 The physics of the correction is sound, but it has been tested on one object only, and three of the four nodes lie 540–1260 Å redward of the bluest alkali line used.
 We therefore keep it opt-in (`wavelength_correction = "auto"`) until it is validated on a larger sample with independent RVs, and report the measured constant (`zp_star_sky`) in every mode.
 In the default, the star's slit-centring term enters only through the slit prior (18.0 km/s for J1745).
+
+### Regions on unmeasured parts of the sky curve
+
+A region that lies on an unmeasured part of the sky curve (held flat, ramped or extrapolated over more than half its width) is dropped from every method when the sky correction is applied, with a WARNING naming it. The correction is refused (`sky_unsafe`) only when such regions are the majority.
+This was decided after line centring added K I 7667, which lies in the O2 A gap of J1745's sky: under the earlier rule that single line refused the correction for every method, silently returning J1745's default to the uncorrected values. With the current rule, J1745's line centring moves from 34.0 (uncorrected) to 15.5 km/s, consistent with the sky-corrected CCF and template fit (≈19 km/s); whether the sky correction itself brings the star closer to its true RV is investigated separately.
