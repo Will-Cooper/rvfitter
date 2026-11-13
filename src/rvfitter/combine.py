@@ -20,6 +20,7 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.special import ndtr
 
+from .numerics import weighted_mean_chi2
 from .types import Measurement, MethodResult
 
 __all__ = ['weighted_mean', 'combine_regions', 'hierarchical', 'hierarchical_from_methods', 'mixture_pdf']
@@ -54,11 +55,8 @@ def weighted_mean(rvs: Sequence[float], errs: Sequence[float]) -> tuple[float, f
         return np.nan, np.nan
     if len(rvs) == 1:
         return float(rvs[0]), float(errs[0])
-    weights = 1. / errs ** 2
-    rv = np.average(rvs, weights=weights)
-    formal = 1. / np.sqrt(np.sum(weights))
-    chisq = np.sum(weights * (rvs - rv) ** 2)
-    return float(rv), float(formal * max(1., np.sqrt(chisq / (len(rvs) - 1))))
+    rv, formal, chisq = weighted_mean_chi2(rvs, errs)
+    return rv, float(formal * max(1., np.sqrt(chisq / (len(rvs) - 1))))
 
 
 def combine_regions(measurements: Iterable[Measurement], *, details: dict | None = None) -> tuple[float, float]:
