@@ -37,8 +37,8 @@ def test_cli_measure_without_methods_exits_1(tmp_path, monkeypatch, capsys):
 def test_unknown_or_no_methods_raise():
     cfg = config.Config()
     assert pipeline.enabled_methods(cfg) == ['template_fit', 'ccf', 'linecentre']
-    with pytest.raises(ValueError, match='unknown lsd'):
-        pipeline.enabled_methods(cfg, ['ccf', 'lsd'])
+    with pytest.raises(ValueError, match='unknown bisector'):
+        pipeline.enabled_methods(cfg, ['ccf', 'bisector'])
     cfg.methods.enabled = []
     with pytest.raises(pipeline.NoMethodsError, match='none is enabled'):
         pipeline.run(cfg)
