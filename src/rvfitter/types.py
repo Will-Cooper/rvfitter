@@ -9,9 +9,7 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ['Spectrum', 'Region', 'Measurement', 'MethodResult', 'ObjectResult', 'FLAG_OK']
-
-FLAG_OK = 0
+__all__ = ['Spectrum', 'Region', 'Measurement', 'MethodResult', 'ObjectResult']
 
 
 @dataclass(frozen=True)
@@ -70,12 +68,6 @@ class Spectrum:
     def wmax(self) -> float:
         return float(self.wave[-1])
 
-    def cut(self, wmin: float, wmax: float) -> 'Spectrum':
-        """Return the part of the spectrum within [wmin, wmax]"""
-        keep = (self.wave >= wmin) & (self.wave <= wmax)
-        return Spectrum(self.wave[keep], self.flux[keep], self.sigma[keep], self.resolution, self.meta, self.source,
-                        None if self.sky is None else self.sky[keep])
-
 
 @dataclass(frozen=True)
 class Region:
@@ -96,7 +88,7 @@ class Measurement:
     region: str
     rv: float
     rv_err: float
-    flag: int = FLAG_OK
+    flag: int = 0
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 

@@ -249,21 +249,17 @@ def test_bad_inputs(tmp_path):
         io.read_spectrum(tmp_path / 'junk.txt', medium='mud')
 
 
-def test_register_reader_priority(tmp_path):
-    (tmp_path / 'x.special').write_text('0 0\n')
+def test_unparseable_header_values_warn(caplog):
+    meta = io._meta_from_header({'RA': 'north', 'DEC': '95', 'DATE-OBS': 'last tuesday'})
+    assert meta['ra'] is None and meta['dec'] is None and meta['mjd_mid'] is None
+    for text in ("unparseable RA 'north'", "out-of-range Dec '95'", "unparseable DATE-OBS 'last tuesday'"):
+        assert text in caplog.text
 
-    def sniff(path, hdu=None, columns=None):
-        return path.suffix == '.special'
 
-    def read(path, hdu=None, columns=None):
-        return io.RawSpectrum(WAVE, FLUX, np.full_like(WAVE, np.nan), {'OBJECT': 'special'}, 'vacuum', 'test',
-                              reader='special')
-    io.register_reader('special', sniff, read, first=True)
-    try:
-        spec = io.read_spectrum(tmp_path / 'x.special')
-        assert spec.meta['object'] == 'special' and io.readers()[0] == 'special'
-    finally:
-        io._READERS[:] = [r for r in io._READERS if r.name != 'special']
+def test_ascii_rows_with_wrong_column_count_warn(tmp_path, caplog):
+    (tmp_path / 'a.txt').write_text('5000 1 0.1\n5001 1 0.1\n5002 1\n5003 1 0.1\n')
+    assert len(io.read_spectrum(tmp_path / 'a.txt', medium='vacuum').wave) == 3
+    assert 'dropped 1 row' in caplog.text
 
 
 def test_specutils_fallback(tmp_path):

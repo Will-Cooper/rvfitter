@@ -1,17 +1,20 @@
 """Results tables and writers (CSV, JSON, TSV, HTML) plus per-line details."""
+import functools
 import html
 import logging
 import math
-from collections.abc import Callable, Mapping, Sequence
+import operator
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from .config import METHOD_NAMES, OUTPUT_FORMATS, dump
 from .types import ObjectResult
 
-__all__ = ['FLAGS', 'EXCLUDE_FLAGS', 'METHOD_ORDER', 'TEMPLATE_COLUMNS', 'flag_names', 'to_table', 'details_table',
+__all__ = ['FLAGS', 'EXCLUDE_FLAGS', 'TEMPLATE_COLUMNS', 'flag_names', 'to_table', 'details_table',
            'write', 'summary_lines']
 
 log = logging.getLogger(__name__)
@@ -40,10 +43,7 @@ FLAGS: dict[str, int] = {
 #: Flags that exclude a measurement from a method's combination and from the adopted RV
 EXCLUDE_FLAGS = FLAGS['fit_failed'] | FLAGS['few_regions'] | FLAGS['not_converged'] | FLAGS['outlier']
 
-#: Fixed order of the per-method column blocks
-METHOD_ORDER = ('linecentre', 'ccf', 'template_fit', 'forward_mcmc', 'lsd', 'telluric_ref')
-
-_FORMATS = {'.csv': 'csv', '.json': 'json', '.tsv': 'tsv', '.html': 'html', '.htm': 'html'}
+_FORMATS = {f'.{f}': f for f in OUTPUT_FORMATS} | {'.htm': 'html'}
 _NAN = float('nan')
 
 
@@ -60,11 +60,9 @@ def _num(value: Any) -> float:
         return _NAN
 
 
-def _method_flag(mres) -> int:
-    flag = 0
-    for meas in mres.measurements:
-        flag |= int(meas.flag)
-    return flag
+def _count(value: Any) -> int:
+    n = _num(value)
+    return int(n) if np.isfinite(n) else 0
 
 
 #: Best-template columns, taken from the first template method present in TEMPLATE_METHOD_ORDER
@@ -96,18 +94,43 @@ def _quad(*terms: float) -> float:
     return float(math.sqrt(sum(0.0 if not np.isfinite(t) else t * t for t in terms)))
 
 
-def _columns() -> list[str]:
-    cols = ['object', 'n_spectra', 'files']
-    for m in METHOD_ORDER:
-        cols += [f'rv_{m}', f'rv_{m}_err', f'rv_{m}_flag', f'n_{m}']
-    cols += ['rv_adopted', 'rv_adopted_err', 'rv_adopted_q16', 'rv_adopted_q84', 'tau_line', 'tau_method',
-             'n_methods', 'n_lines', 'rv_mean', 'rv_spread', 'sys_template', 'sys_wavezp', 'sys_star_sky',
-             'rv_total_err', *TEMPLATE_COLUMNS, 'zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread',
-             'zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err', 'zp_star_sky_n', 'star_sky_term',
-             'slit_prior_kms', 'wavelength_correction', 'wavelength_correction_applied', 'zp_flags', 'rv_epoch_pvalue',
-             'rv_epoch_variable', 'n_epochs',
-             'bary_kms', 'bary_source', 'frame', 'binary_dbic', 'binary_flag', 'refitted', 'config_hash', 'version']
-    return cols
+# Output columns in order. A plain name is computed in `to_table`; a tuple (column, source, key, converter, default)
+# is read from ``source`` ('adopted', 'systematics', 'epochs', 'barycentric' or 'binary') of the ObjectResult.
+_SPEC: tuple[str | tuple, ...] = (
+    'object', 'n_spectra', 'files',
+    *(c for m in METHOD_NAMES for c in (f'rv_{m}', f'rv_{m}_err', f'rv_{m}_flag', f'n_{m}')),
+    'rv_adopted',
+    ('rv_adopted_err', 'adopted', 'err', _num, None), ('rv_adopted_q16', 'adopted', 'q16', _num, None),
+    ('rv_adopted_q84', 'adopted', 'q84', _num, None), ('tau_line', 'adopted', 'tau_line', _num, None),
+    ('tau_method', 'adopted', 'tau_method', _num, None), 'n_methods', ('n_lines', 'adopted', 'n_lines', int, 0),
+    'rv_mean', 'rv_spread',
+    ('sys_template', 'systematics', 'template_spread', _num, None),
+    ('sys_wavezp', 'systematics', 'wavelength_zero_point', _num, None),
+    # the star's absolute zero point (slit centring): the applied star - sky constant's error, else the slit-centring
+    # prior (never a measured offset's value); NaN when unconstrained (see star_sky_term)
+    ('sys_star_sky', 'systematics', 'star_sky_systematic', _num, None),
+    'rv_total_err', *TEMPLATE_COLUMNS,
+    ('zp_sky_kms', 'systematics', 'zp_sky_kms', _num, None), ('zp_sky_err', 'systematics', 'zp_sky_err', _num, None),
+    ('zp_sky_slope', 'systematics', 'zp_sky_slope', _num, None),
+    ('zp_sky_model_spread', 'systematics', 'zp_sky_model_spread', _num, None),
+    ('zp_tell_kms', 'systematics', 'zp_tell_kms', _num, None),
+    ('zp_tell_err', 'systematics', 'zp_tell_err', _num, None),
+    ('zp_star_sky', 'systematics', 'zp_star_sky', _num, None),
+    ('zp_star_sky_err', 'systematics', 'zp_star_sky_err', _num, None),
+    ('zp_star_sky_n', 'systematics', 'zp_star_sky_n', _count, None),
+    ('star_sky_term', 'systematics', 'star_sky_term', str, ''),  # what sys_star_sky is
+    ('slit_prior_kms', 'systematics', 'slit_prior', _num, None),  # the computed slit-centring prior, used or not
+    ('wavelength_correction', 'barycentric', 'wavelength_correction_mode', str, ''),  # the configured mode
+    ('wavelength_correction_applied', 'barycentric', 'wavelength_correction', str, 'none'),  # what was applied
+    ('zp_flags', 'barycentric', 'zp_flags', int, 0),  # pipeline.ZP_FLAGS bits
+    ('rv_epoch_pvalue', 'epochs', 'pvalue', _num, None), ('rv_epoch_variable', 'epochs', 'variable', bool, False),
+    ('n_epochs', 'epochs', 'n', int, 1),
+    ('bary_kms', 'barycentric', 'applied_kms', _num, None), ('bary_source', 'barycentric', 'source', str, ''),
+    ('frame', 'barycentric', 'frame', str, ''),
+    ('binary_dbic', 'binary', 'dbic', _num, None), ('binary_flag', 'binary', 'flag', bool, False),
+    'refitted', 'config_hash', 'version',
+)
+_COLUMNS = [c if isinstance(c, str) else c[0] for c in _SPEC]
 
 
 def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
@@ -118,30 +141,31 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
     """
     rows = []
     for res in results:
+        ad = res.adopted or {}
+        src = {'adopted': ad, 'systematics': res.systematics or {}, 'epochs': ad.get('epochs') or {},
+               'barycentric': res.barycentric or {}, 'binary': res.binary or {}}
         row: dict[str, Any] = {'object': res.object, 'n_spectra': len(res.files),
-                               'files': ';'.join(map(str, res.files))}
+                               'files': ';'.join(map(str, res.files)), 'refitted': bool(res.refitted),
+                               'config_hash': res.config_hash, 'version': res.version}
         rvs, errs = [], []
-        for m in METHOD_ORDER:
+        for m in METHOD_NAMES:
             mres = res.methods.get(m)
             if mres is None:
                 row.update({f'rv_{m}': _NAN, f'rv_{m}_err': _NAN, f'rv_{m}_flag': pd.NA, f'n_{m}': pd.NA})
                 continue
             row[f'rv_{m}'] = _num(mres.rv)
             row[f'rv_{m}_err'] = _num(mres.rv_err)
-            row[f'rv_{m}_flag'] = _method_flag(mres)
+            row[f'rv_{m}_flag'] = functools.reduce(operator.or_, (int(x.flag) for x in mres.measurements), 0)
             row[f'n_{m}'] = int(mres.n_regions)
             if np.isfinite(mres.rv):
                 rvs.append(float(mres.rv))
                 errs.append(_num(mres.rv_err))
-        ad = res.adopted or {}
+        for c in _SPEC:
+            if not isinstance(c, str):
+                col, section, key, conv, default = c
+                row[col] = conv(src[section].get(key, default))
         row['rv_adopted'] = _num(ad.get('median', ad.get('rv')))
-        row['rv_adopted_err'] = _num(ad.get('err'))
-        row['rv_adopted_q16'] = _num(ad.get('q16'))
-        row['rv_adopted_q84'] = _num(ad.get('q84'))
-        row['tau_line'] = _num(ad.get('tau_line'))
-        row['tau_method'] = _num(ad.get('tau_method'))
         row['n_methods'] = int(ad.get('n_methods', len(res.methods)))
-        row['n_lines'] = int(ad.get('n_lines', 0))
         rv_arr, err_arr = np.array(rvs), np.array(errs)
         good = np.isfinite(err_arr) & (err_arr > 0)
         if good.any():
@@ -150,46 +174,14 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         else:
             row['rv_mean'] = float(rv_arr.mean()) if len(rv_arr) else _NAN
         row['rv_spread'] = float(np.std(rv_arr, ddof=1)) if len(rv_arr) > 1 else _NAN
-        sysd = res.systematics or {}
-        row['sys_template'] = _num(sysd.get('template_spread'))
-        row['sys_wavezp'] = _num(sysd.get('wavelength_zero_point'))
-        # the star's absolute zero point (slit centring): the applied star − sky constant's error, else the
-        # slit-centring prior (never a measured offset's value); NaN when unconstrained (see star_sky_term)
-        row['sys_star_sky'] = _num(sysd.get('star_sky_systematic'))
+        sysd = src['systematics']
         row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'],
                                      row['sys_star_sky'], _num(sysd.get('floor')))
                                if np.isfinite(row['rv_adopted_err']) else _NAN)
         row.update(_template_row(res))
-        row['zp_sky_kms'] = _num(sysd.get('zp_sky_kms'))
-        row['zp_sky_err'] = _num(sysd.get('zp_sky_err'))
-        row['zp_sky_slope'] = _num(sysd.get('zp_sky_slope'))
-        row['zp_sky_model_spread'] = _num(sysd.get('zp_sky_model_spread'))
-        for key in ('zp_tell_kms', 'zp_tell_err', 'zp_star_sky', 'zp_star_sky_err'):  # NaN when not measured
-            row[key] = _num(sysd.get(key))
-        n_ss = _num(sysd.get('zp_star_sky_n'))
-        row['zp_star_sky_n'] = int(n_ss) if np.isfinite(n_ss) else 0
-        row['star_sky_term'] = str(sysd.get('star_sky_term', ''))  # what sys_star_sky is
-        row['slit_prior_kms'] = _num(sysd.get('slit_prior'))  # the computed slit-centring prior, used or not
-        ep = (res.adopted or {}).get('epochs') or {}
-        row['rv_epoch_pvalue'] = _num(ep.get('pvalue'))
-        row['rv_epoch_variable'] = bool(ep.get('variable', False))
-        row['n_epochs'] = int(ep.get('n', 1))
-        bc = res.barycentric or {}
-        row['wavelength_correction'] = str(bc.get('wavelength_correction_mode', ''))  # the configured mode
-        row['wavelength_correction_applied'] = str(bc.get('wavelength_correction', 'none'))  # what was applied
-        row['zp_flags'] = int(bc.get('zp_flags', 0))  # pipeline.ZP_FLAGS bits
-        bary = res.barycentric or {}
-        row['bary_kms'] = _num(bary.get('applied_kms'))
-        row['bary_source'] = str(bary.get('source', ''))
-        row['frame'] = str(bary.get('frame', ''))
-        row['binary_dbic'] = _num((res.binary or {}).get('dbic'))
-        row['binary_flag'] = bool((res.binary or {}).get('flag', False))
-        row['refitted'] = bool(res.refitted)
-        row['config_hash'] = res.config_hash
-        row['version'] = res.version
         rows.append(row)
-    df = pd.DataFrame(rows, columns=_columns())
-    for m in METHOD_ORDER:
+    df = pd.DataFrame(rows, columns=_COLUMNS)
+    for m in METHOD_NAMES:
         df[f'rv_{m}_flag'] = df[f'rv_{m}_flag'].astype('Int64')
         df[f'n_{m}'] = df[f'n_{m}'].astype('Int64')
     return df
@@ -220,96 +212,66 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
-_HTML_CSS = """
-body{font-family:Helvetica,Arial,sans-serif;margin:1.5em;color:#222;background:#fff}
-h1{font-size:1.3em}
-table{border-collapse:collapse;font-size:0.85em}
-th,td{border:1px solid #ccc;padding:3px 8px;text-align:right;white-space:nowrap}
-td.l,th.l{text-align:left}
-th{background:#004488;color:#fff;cursor:pointer;position:sticky;top:0}
-th:hover{background:#0066bb}
-tr:nth-child(even){background:#f4f6f9}
-a{color:#004488}
-@media (prefers-color-scheme: dark){body{background:#181818;color:#ddd}tr:nth-child(even){background:#222}
-td,th{border-color:#444}a{color:#DDAA33}}
-"""
-
+_HTML_CSS = ('table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:2px 6px;white-space:nowrap}'
+             'th{cursor:pointer}')
 _HTML_JS = """
-document.querySelectorAll('th').forEach(function(th,i){th.addEventListener('click',function(){
-var t=th.closest('table'),b=t.tBodies[0],rows=Array.from(b.rows),asc=th.dataset.asc!=='1';
-th.dataset.asc=asc?'1':'0';
-rows.sort(function(x,y){var a=x.cells[i].textContent,c=y.cells[i].textContent,
-na=parseFloat(a),nc=parseFloat(c);
-if(a===''&&c==='')return 0;if(a==='')return 1;if(c==='')return -1;
-var r=(!isNaN(na)&&!isNaN(nc))?na-nc:a.localeCompare(c);return asc?r:-r;});
-rows.forEach(function(r){b.appendChild(r);});});});
+document.querySelectorAll('th').forEach((th, i) => th.onclick = () => {
+  const b = th.closest('table').tBodies[0], s = th.dataset.asc = th.dataset.asc === '1' ? '-1' : '1';
+  [...b.rows].sort((x, y) => {
+    const a = x.cells[i].textContent, c = y.cells[i].textContent;
+    return s * (a !== '' && c !== '' && !isNaN(a) && !isNaN(c) ? a - c : a.localeCompare(c));
+  }).forEach(r => b.append(r));
+});
 """
 
 
 def _to_html(df: pd.DataFrame, plots: Mapping[str, Any] | None) -> str:
     plots = plots or {}
-    left = {c: not (pd.api.types.is_numeric_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c])) for c in df.columns}
-    head = ''.join(f'<th class="{"l" if left[c] else ""}">{html.escape(c)}</th>' for c in df.columns)
-    if plots:
-        head += '<th class="l">plots</th>'
+    head = ''.join(f'<th>{html.escape(c)}</th>' for c in df.columns) + ('<th>plots</th>' if plots else '')
     body = []
     for _, row in df.iterrows():
-        cells = ''.join(f'<td class="{"l" if left[c] else ""}">{html.escape(_fmt(row[c]))}</td>' for c in df.columns)
+        cells = ''.join(f'<td>{html.escape(_fmt(row[c]))}</td>' for c in df.columns)
         if plots:
             paths = plots.get(row['object'], ())
             if isinstance(paths, (str, Path)):
                 paths = [paths]
             links = ' '.join(f'<a href="{html.escape(str(p), quote=True)}">{html.escape(Path(str(p)).name)}</a>'
                              for p in paths)
-            cells += f'<td class="l">{links}</td>'
+            cells += f'<td>{links}</td>'
         body.append(f'<tr>{cells}</tr>')
     return (f'<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8"><title>rvfitter results</title>'
-            f'<style>{_HTML_CSS}</style></head><body><h1>rvfitter results</h1>'
-            f'<p>Click a column heading to sort.</p><table><thead><tr>{head}</tr></thead>'
+            f'<style>{_HTML_CSS}</style></head><body><p>Click a column heading to sort.</p>'
+            f'<table><thead><tr>{head}</tr></thead>'
             f'<tbody>{"".join(body)}</tbody></table><script>{_HTML_JS}</script></body></html>\n')
+
+
+def _stem(path: Path) -> Path:
+    return path.with_suffix('') if path.suffix.lower() in _FORMATS else path
 
 
 def _resolve_formats(path: Path, formats: str | Sequence[str] | None) -> list[tuple[str, Path]]:
     if formats is None:
         fmt = _FORMATS.get(path.suffix.lower())
-        if fmt is None:
-            return [('csv', path.with_name(path.name + '.csv'))]
-        return [(fmt, path)]
+        return [(fmt, path)] if fmt else [('csv', Path(f'{path}.csv'))]
     if isinstance(formats, str):
         formats = [f for f in formats.split(',') if f]
     out = []
     for f in formats:
         f = f.strip().lower().lstrip('.')
-        if f == 'htm':
-            f = 'html'
-        if f not in ('csv', 'json', 'tsv', 'html'):
+        f = 'html' if f == 'htm' else f
+        if f not in OUTPUT_FORMATS:
             raise ValueError(f'unknown output format {f!r}')
-        out.append((f, path.with_name((path.stem if path.suffix.lower() in _FORMATS else path.name) + f'.{f}')))
+        out.append((f, Path(f'{_stem(path)}.{f}')))
     return out
 
 
 def write(results: Sequence[ObjectResult], path: str | Path, formats: str | Sequence[str] | None = None, *,
-          config: Any = None, dump: Callable[[Any, Path], Any] | None = None,
-          plots: Mapping[str, Any] | None = None) -> list[Path]:
+          config: Any = None, plots: Mapping[str, Any] | None = None) -> list[Path]:
     """
-    Write the results table, the details table and (optionally) the config used
+    Write the results and details tables and, if ``config`` is given, the config used; return the files written.
 
-    Parameters
-    ----------
-    results
-        Object results
-    path
-        Output path; the format is inferred from its extension unless ``formats`` is given
-    formats
-        One or more of csv, json, tsv, html (list or comma-separated); each is written to ``path`` with that suffix
-    config, dump
-        If both are given, ``dump(config, <stem>_config.toml)`` is called (e.g. ``rvfitter.config.dump``)
-    plots
-        Mapping of object name to plot path(s), linked from the HTML table
-
-    Returns
-    -------
-    list of the files written
+    The format is inferred from the extension of ``path`` unless ``formats`` (csv, json, tsv, html; a list or
+    comma-separated) is given. ``plots`` maps an object name to plot path(s), linked from the HTML table.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -325,11 +287,11 @@ def write(results: Sequence[ObjectResult], path: str | Path, formats: str | Sequ
         else:
             out.write_text(_to_html(df, plots))
         written.append(out)
-    stem = path.with_suffix('') if path.suffix.lower() in _FORMATS else path
+    stem = _stem(path)
     det = Path(f'{stem}_details.csv')
     details_table(results).to_csv(det, index=False)
     written.append(det)
-    if config is not None and dump is not None:
+    if config is not None:
         cfgpath = Path(f'{stem}_config.toml')
         dump(config, cfgpath)
         written.append(cfgpath)

@@ -1,6 +1,6 @@
 """Command-line interface: init, run, measure, inject, forecast, templates, gui and doctor.
 
-Exit codes: 0 ok, 1 runtime error, 2 usage error (including subcommands that are not yet available).
+Exit codes: 0 clean, 1 usage, config or runtime error, 2 the run finished but a file was skipped or a method failed.
 """
 import argparse
 import importlib
@@ -72,8 +72,25 @@ def _verbosity(args) -> int:
     return 1 if getattr(args, 'verbose', False) else -1 if getattr(args, 'quiet', False) else 0
 
 
+def _finish(res, failures: list[tuple[str, str]], out: Path, formats, cfg) -> int:
+    """Log the failure summary and the results, write them, and return the exit code (2 if anything failed)"""
+    from . import results
+
+    if failures:
+        log.error('%d failure(s) during the run:', len(failures))
+        for what, why in failures:
+            log.error('  %s: %s', what, why)
+    if not res:
+        log.error('No objects were measured')
+        return 1
+    for line in results.summary_lines(res):
+        log.info(line)
+    results.write(res, out, formats, config=cfg)
+    return 2 if failures else 0
+
+
 def _cmd_measure(args) -> int:
-    from . import config, pipeline, results
+    from . import config, pipeline
 
     out = Path(args.out)
     logging_setup.configure(_verbosity(args), out.parent / 'rvfitter.log')
@@ -91,18 +108,14 @@ def _cmd_measure(args) -> int:
     if args.no_plots:
         cfg.output.plots = False
     methods = [m for m in args.methods.split(',') if m] if args.methods else None
-    res = pipeline.run(cfg, args.path, n_procs=args.n_procs, medium=args.medium, methods=methods, bary=args.bary)
-    if not res:
-        log.error('No objects were measured')
-        return 1
-    for line in results.summary_lines(res):
-        log.info(line)
-    results.write(res, out, args.formats, config=cfg, dump=config.dump)
-    return 0
+    failures: list[tuple[str, str]] = []
+    res = pipeline.run(cfg, args.path, n_procs=args.n_procs, medium=args.medium, methods=methods, bary=args.bary,
+                       failures=failures)
+    return _finish(res, failures, out, args.formats, cfg)
 
 
 def _cmd_run(args) -> int:
-    from . import config, pipeline, results
+    from . import config, pipeline
 
     cfg = config.load(args.config)
     if args.no_plots:
@@ -110,17 +123,12 @@ def _cmd_run(args) -> int:
     inputs = cfg.input.paths
     if not inputs:
         log.error('The config %s names no input paths', args.config)
-        return 2
+        return 1
     out = Path(cfg.output.path or 'results.csv')
     logging_setup.configure(_verbosity(args), out.parent / 'rvfitter.log')
-    res = pipeline.run(cfg, inputs, n_procs=args.n_procs)
-    if not res:
-        log.error('No objects were measured')
-        return 1
-    for line in results.summary_lines(res):
-        log.info(line)
-    results.write(res, out, cfg.output.formats or None, config=cfg, dump=config.dump)
-    return 0
+    failures: list[tuple[str, str]] = []
+    res = pipeline.run(cfg, inputs, n_procs=args.n_procs, failures=failures)
+    return _finish(res, failures, out, cfg.output.formats or None, cfg)
 
 
 def _cmd_init(args) -> int:
@@ -140,13 +148,12 @@ def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, bool]]:
     def add(name, ok, detail='', required=True):
         checks.append((name, bool(ok), detail, required))
 
-    add('Python >= 3.11', sys.version_info >= (3, 11), sys.version.split()[0])
     for mod, req in (('numpy', True), ('scipy', True), ('astropy', True), ('specutils', True), ('pandas', True),
                      ('matplotlib', True), ('PySide6', False), ('emcee', False)):
         try:
             m = importlib.import_module(mod)
             add(f'import {mod}', True, getattr(m, '__version__', ''), req)
-        except Exception as exc:  # noqa: BLE001
+        except (ImportError, OSError) as exc:
             add(f'import {mod}', False, f'{type(exc).__name__}: {exc}'.splitlines()[0], req)
     try:
         import os
@@ -155,7 +162,7 @@ def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, bool]]:
         plats = sorted(p.name for p in plugdir.glob('libq*')) if plugdir.is_dir() else []
         add('Qt platform plugin', bool(plats), f"{os.environ.get('QT_QPA_PLATFORM', 'default')}; {len(plats)} found",
             False)
-    except Exception as exc:  # noqa: BLE001
+    except (ImportError, OSError) as exc:
         add('Qt platform plugin', False, f'PySide6 unavailable ({type(exc).__name__})', False)
     add('LaTeX (plot labels)', shutil.which('latex') is not None, shutil.which('latex') or 'not on PATH', False)
     try:
@@ -166,7 +173,7 @@ def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, bool]]:
         probe.write_text('ok')
         probe.unlink()
         add('Template cache writable', True, str(cache))
-    except Exception as exc:  # noqa: BLE001
+    except OSError as exc:
         add('Template cache writable', False, str(exc))
     if offline:
         add('SVO reachable', True, 'skipped (--offline)', False)
@@ -174,7 +181,7 @@ def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, bool]]:
         try:
             with urllib.request.urlopen(SVO_URL, timeout=3):  # noqa: S310
                 add('SVO reachable', True, SVO_URL, False)
-        except Exception as exc:  # noqa: BLE001
+        except OSError as exc:  # URLError and timeouts
             add('SVO reachable', False, f'{type(exc).__name__}', False)
     return checks
 
@@ -199,8 +206,7 @@ _EXTRAS = {'PySide6': 'gui', 'emcee': 'mcmc', 'corner': 'mcmc'}
 
 
 def _import_failure(exc: BaseException, command: str) -> int:
-    """Log an ImportError: a missing optional dependency is a runtime error (1), an absent rvfitter module is
-    "not yet available" (2)"""
+    """Log an ImportError and return 1; an absent rvfitter module is reported as not yet available"""
     name = getattr(exc, 'name', None) or ''
     root = name.split('.')[0]
     if root in _EXTRAS:
@@ -208,7 +214,7 @@ def _import_failure(exc: BaseException, command: str) -> int:
         return 1
     if root == 'rvfitter' or isinstance(exc, (AttributeError, NotImplementedError)):
         log.error('rvfitter %s is not yet available', command)
-        return 2
+        return 1
     log.error('rvfitter %s: missing dependency %s', command, name or exc)
     return 1
 
@@ -233,11 +239,11 @@ def main(argv=None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
-    except SystemExit as exc:
-        return int(exc.code or 0)
+    except SystemExit as exc:  # argparse: 0 for --help/--version, 2 for a usage error
+        return 1 if exc.code else 0
     if args.command is None:
         parser.print_help()
-        return 2
+        return 1
     handlers = {'measure': _cmd_measure, 'run': _cmd_run, 'init': _cmd_init, 'doctor': _cmd_doctor}
     handler = handlers.get(args.command, _cmd_lazy)
     try:

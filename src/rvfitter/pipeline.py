@@ -946,24 +946,21 @@ def _check_sky_source(raw: Spectrum, other: Spectrum, name: str, path: str) -> N
                     100 * overlap, len(other.wave), len(raw.wave))
 
 
-def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str) -> list[Spectrum]:
-    from . import archives, io
+def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str,
+              failures: list[tuple[str, str]] | None = None) -> list[Spectrum]:
+    from . import archives
 
     spectra = []
     for inp in ([inputs] if isinstance(inputs, (str, Path)) else inputs):
-        for path in archives.collect_inputs(Path(inp)):
-            try:
-                spectra.append(io.read_spectrum(path, medium=medium, hdu=cfg.input.hdu,
-                                                resolution=cfg.input.resolution))
-            except Exception as exc:  # noqa: BLE001
-                log.warning('Skipping %s: %s', path, exc)
+        spectra += archives.load_spectra(archives.collect_inputs(Path(inp)), failures, medium=medium,
+                                         hdu=cfg.input.hdu, resolution=cfg.input.resolution)
     return spectra
 
 
 def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_procs: int | None = None,
         medium: str | None = None, methods: Sequence[str] | None = None, bary: str | None = None,
-        on_object: Callable[[ObjectResult], None] | None = None, cancel: threading.Event | None = None
-        ) -> list[ObjectResult]:
+        on_object: Callable[[ObjectResult], None] | None = None, cancel: threading.Event | None = None,
+        failures: list[tuple[str, str]] | None = None) -> list[ObjectResult]:
     """
     Run the analysis on all spectra found in ``inputs`` (default ``cfg.input.paths``)
 
@@ -973,6 +970,7 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     The keywords ``n_procs``, ``medium``, ``methods`` and ``bary`` override the config.
     ``on_object`` is called with each finished object; if ``cancel`` is set (checked between objects and between
     methods) the results so far are returned and the interrupted object is dropped.
+    Every skipped file is appended to ``failures`` as ``(path, reason)``, for the caller's end-of-run summary.
     """
     from . import archives
 
@@ -983,7 +981,7 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
         inputs = cfg.input.paths
     if n_procs is None:
         n_procs = cfg.parallel.n_procs
-    spectra = _read_all(cfg, inputs, medium or cfg.input.medium)
+    spectra = _read_all(cfg, inputs, medium or cfg.input.medium, failures)
     groups = archives.group_by_object(spectra, cfg.grouping.override)
     names = sorted(groups)
     log.info('Read %d spectra of %d objects', len(spectra), len(names))

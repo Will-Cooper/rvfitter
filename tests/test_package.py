@@ -22,9 +22,9 @@ def test_cli_version():
     assert rvfitter.__version__ in out.stdout
 
 
-def test_cli_usage_error_exits_2():
+def test_cli_usage_error_exits_1():
     from rvfitter.cli import main
-    assert main(['measure']) == 2
+    assert main(['measure']) == 1
 
 
 def _stub_modules():

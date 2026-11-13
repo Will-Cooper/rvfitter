@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from rvfitter import results
+from rvfitter.config import METHOD_NAMES, Config
 from rvfitter.types import Measurement, MethodResult, ObjectResult
 
 
@@ -32,7 +33,7 @@ def test_schema():
     assert cols[:3] == ['object', 'n_spectra', 'files']
     assert cols[3:7] == ['rv_linecentre', 'rv_linecentre_err', 'rv_linecentre_flag', 'n_linecentre']
     assert cols[-2:] == ['config_hash', 'version']
-    order = [cols.index(f'rv_{m}') for m in results.METHOD_ORDER]
+    order = [cols.index(f'rv_{m}') for m in METHOD_NAMES]
     assert order == sorted(order)
     assert len(df) == 2
     assert np.isnan(df.loc[0, 'rv_template_fit']) and pd.isna(df.loc[0, 'rv_lsd_flag'])
@@ -58,8 +59,7 @@ def test_flags():
 @pytest.mark.parametrize('ext', ['csv', 'tsv', 'json', 'html'])
 def test_write_roundtrip(tmp_path, ext):
     res = [make_result(), make_result('B', with_lsd=True)]
-    written = results.write(res, tmp_path / f'out.{ext}', config={'a': 1},
-                            dump=lambda c, p: p.write_text('a = 1\n'))
+    written = results.write(res, tmp_path / f'out.{ext}', config=Config())
     assert tmp_path / f'out.{ext}' in written
     assert (tmp_path / 'out_details.csv').exists() and (tmp_path / 'out_config.toml').exists()
     ref = results.to_table(res)

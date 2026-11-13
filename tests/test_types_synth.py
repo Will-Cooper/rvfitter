@@ -11,8 +11,6 @@ def test_spectrum_validation():
         Spectrum(np.array([2., 1.]), np.ones(2), np.ones(2))
     with pytest.raises(ValueError):
         Spectrum(np.array([1., 2.]), np.ones(3), np.ones(2))
-    s = Spectrum(np.arange(10.), np.ones(10), np.ones(10))
-    assert s.cut(2, 5).wave.tolist() == [2., 3., 4., 5.]
 
 
 def test_synth_shift_matches_rv():
