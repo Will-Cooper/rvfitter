@@ -79,7 +79,7 @@ def _from_dict(d: dict) -> FakeConfig:
 
 
 def make_result(name: str, rv: float = 10.0):
-    return SimpleNamespace(object=name, files=[f'{name}.txt'], rv=rv,
+    return SimpleNamespace(object=name, files=[f'{name}.txt'], rv=rv, methods={}, adopted={},
                            barycentric={'applied_kms': -12.345, 'source': 'computed', 'frame': 'barycentric'})
 
 

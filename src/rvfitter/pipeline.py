@@ -237,6 +237,9 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     sysd = wcorr.combine_epochs(zp_epochs)
     bary_info.update(wavelength_correction=sysd.pop('applied'), wavelength_correction_mode=sysd.pop('mode'),
                      zp_flags=int(sysd.pop('zp_flags')), sky_tests=sysd.pop('sky_tests'))
+    meta = corrected[0].meta  # the curves `plotting.plot_wavelength_correction` draws (first epoch)
+    bary_info['wavelength_curves'] = {k: meta.get(k) for k in ('sky_zeropoint', 'telluric_zeropoint',
+                                                              'wavelength_correction')}
     if len(zp_epochs) > 1:
         bary_info['wavelength_correction_epochs'] = [
             {k: v for k, v in z.items() if k != 'sky_tests'} | {'epoch': lab}

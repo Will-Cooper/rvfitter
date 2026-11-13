@@ -262,3 +262,13 @@ def test_lazy_backend_honours_config(monkeypatch):
     assert seen['override'] == {'a': 'obj'}
     be.select_regions(spec, cfg, True)
     assert seen['select'][:3] == (2000., ['ccf'], cfg.regions.overrides)
+
+
+def test_diagnostic_figures_render(qtbot, win):
+    from plotting_synth import synthetic_result
+    win.diagnostics.show_result(synthetic_result())
+    tabs = win.diagnostics.figures
+    assert {tabs.tabText(i) for i in range(tabs.count())} >= {'line fits', 'ccf', 'adopted'}
+    tabs.currentWidget().layout().itemAt(1).widget().draw()
+    win.diagnostics.clear()
+    assert tabs.count() == 0
