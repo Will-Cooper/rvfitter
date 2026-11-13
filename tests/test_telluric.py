@@ -231,8 +231,9 @@ def test_pipeline_telluric_and_auto_modes():
         assert abs(info_a['zp_star_sky']) < 3. * info_a['zp_star_sky_err'] + 2.  # the star sees the sky's curve
         wc = spec_a.meta['wavelength_correction']
         assert wc['constant_kms'] == pytest.approx(info_a['zp_star_sky']) and wc['sky'] is not None
-        # the constant's error is sys_star_sky, not part of sys_wavezp
-        assert systematics.wavelength_zero_point(spec_a) == pytest.approx(info_a['zp_sky_err'])
+        # the constant's error is sys_star_sky, not part of sys_wavezp, which is the applied per-region sky's
+        assert set(info_a['sky_windows']) == {r.name for r in regs}
+        assert systematics.wavelength_zero_point(spec_a) == pytest.approx(wc['sky']['zp_sky_err'])
     nosky = Spectrum(raw.wave, raw.flux, raw.sigma, None, raw.meta, 'x')
     _, info_t = wcorr.correct(nosky, nosky, cfg, 'X', regions=regs)
     assert info_t['applied'] == 'none' and info_t['zp_flags'] & wcorr.ZP_FLAGS['no_sky']

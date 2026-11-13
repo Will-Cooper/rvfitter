@@ -47,6 +47,7 @@ ZP_FLAGS: dict[str, int] = {
     'slit_prior': 2048,  # sys_star_sky is the slit-centring prior (or a user value), not a measurement
     'dar_pa_unknown': 4096,  # no slit PA (raw header): the DAR factor s is fitted (star - sky) or marginalised (prior)
     'dar_unknown': 8192,  # no zenith distance or plate scale: the DAR across the slit is not modelled
+    'sky_window_fallback': 16384,  # a region's own sky window failed: the sky curve is used there instead
 }
 
 # sky-if-needed criteria (calibration data only; fixed a priori)
@@ -400,7 +401,9 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     elif mode == 'telluric':
         log.warning('%s: wavelength_correction = "telluric" but the telluric zero point could not be measured; '
                     'nothing applied', name)
-    # apply
+    # apply: the sky measured in each region's own window where it can be (`_region_sky`)
+    if sky_ok:
+        zp = _region_sky(zp, regions, spec, cfg, name, info)
     if sky_ok and mode == 'auto' and np.isfinite(info['zp_star_sky']):  # opt-in until validated beyond J1745
         spec = sky_zeropoint.apply(spec, zp, constant_kms=info['zp_star_sky'], constant_err=info['zp_star_sky_err'],
                                    dar=_dar_table(info, spec), source='sky+star')
@@ -440,6 +443,54 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
                  'value is not an error; the slit-centring prior is used instead', name, info['zp_star_sky'],
                  info['zp_star_sky_err'], info['zp_star_sky_n'], mode, info['applied'])
     return spec, info
+
+
+def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str, info: dict) -> Any:
+    """
+    The sky curve to apply, with one node per region: the sky Δv measured directly in a window centred on the
+    region, so each region gets its local zero point rather than the curve interpolated between 250 Å segments
+
+    The window starts at the region's width (at least `sky_zeropoint.MIN_WIDTH`) and grows by 25 per cent until
+    `measure_windows` uses it (correlation ≥ 0.7 and the synthetic bias test within 0.1 resolution elements), up
+    to ``calibration.sky_segment_width``; it is clipped to the telluric-free span holding the region, so no deep
+    telluric band enters it. Where no window passes, the curve's own value and error are used (WARNING, flag
+    sky_window_fallback). Without regions the curve is returned unchanged.
+    """
+    if not regions:
+        return zp
+    ff = telluric_zeropoint.frame_factor(spec.meta)
+    nodes, fallback = [], []
+    for r in regions:
+        lo, hi = r.wmin / ff, r.wmax / ff
+        c = 0.5 * (lo + hi)
+        span = next(((a, b) for a, b in zp.span_bounds.values() if a <= c <= b), None)
+        width, res = max(hi - lo, sky_zeropoint.MIN_WIDTH), None
+        while span is not None:
+            a, b = max(c - width / 2., span[0]), min(c + width / 2., span[1])
+            res = sky_zeropoint.measure_windows(zp.source_spectrum, [(a, b)], zp.fwhm)[0]
+            if res['used'] or width >= cfg.calibration.sky_segment_width or (a, b) == span:
+                break
+            width = min(1.25 * width, cfg.calibration.sky_segment_width)
+        if res is not None and res['used']:
+            nodes.append((c, res['dv'], res['err'], r.name, f"window {res['wmin']:.0f}-{res['wmax']:.0f} Å"))
+        else:
+            fallback.append(r.name)
+            nodes.append((c, float(zp.dv(c)), float(zp.dv_err(c)), r.name, 'sky curve (fallback)'))
+    nodes.sort()
+    if fallback:
+        info['zp_flags'] |= ZP_FLAGS['sky_window_fallback']
+        log.warning('%s: no usable sky window for region(s) %s (too few lines or the bias test failed); the sky curve '
+                    'is applied there instead', name, ', '.join(fallback))
+    info['sky_windows'] = {n: dict(wave=w, dv=v, err=e, source=src) for w, v, e, n, src in nodes}
+    log.info('%s: sky Δv per region: %s', name, '; '.join(f'{n} {v:+.1f} ± {e:.1f} km/s ({src})'
+                                                           for w, v, e, n, src in nodes))
+    w = np.array([n[0] for n in nodes])
+    keep = np.concatenate([[True], np.diff(w) > 0])  # regions sharing a centre share a node
+    return replace(zp, node_wave=w[keep], node_dv=np.array([n[1] for n in nodes])[keep],
+                   node_err=np.array([n[2] for n in nodes])[keep], node_span=np.zeros(int(keep.sum()), dtype=int),
+                   main_span=(float(w.min()), float(w.max())),
+                   span_bounds={0: (float(min(a for a, _ in zp.span_bounds.values())),
+                                    float(max(b for _, b in zp.span_bounds.values())))})
 
 
 def _dar_geometry(raw: Spectrum, tsrc: Spectrum | None, cfg: Any, name: str, info: dict) -> dict:

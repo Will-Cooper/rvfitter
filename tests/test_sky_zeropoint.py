@@ -210,3 +210,33 @@ def test_wavelength_zero_point_systematic():
     assert unapplied < np.min(np.abs(_dv_true(lam)))
     big = Spectrum(spec.wave, spec.flux, spec.sigma, 1600., {**spec.meta, 'wave_rms': 2.}, 'x')
     assert systematics.wavelength_zero_point(big) == pytest.approx(299792.458 * 2. / np.median(spec.wave))
+
+
+def test_sky_measured_in_each_regions_window(caplog):
+    """
+    A distortion with structure on scales below the 250 Å segments: each region gets the sky measured in its own
+    window (grown until the synthetic bias test passes), which follows the truth better than the curve does; a
+    region whose window cannot pass falls back to the curve with a WARNING and a flag
+    """
+    def dv(w):
+        return 15. + 25. * np.sin(2. * np.pi * (w - 7700.) / 400.)
+    raw = _sky_spectrum(dv_func=dv)
+    curve = Z.measure(raw)
+    cfg = config.Config()
+    cfg.calibration.wavelength_correction = 'sky'
+    spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=ALKALI)
+    assert info['applied'] == 'sky'
+    for r in ALKALI:
+        c = 0.5 * (r.wmin + r.wmax)
+        win = info['sky_windows'][r.name]
+        assert win['source'].startswith('window') and abs(win['dv'] - dv(c)) < 3. * win['err'] + 2., (r.name, win)
+        assert float(Z.applied_dv(spec.meta, c)) == pytest.approx(win['dv'])
+    err_win = [abs(info['sky_windows'][r.name]['dv'] - dv(0.5 * (r.wmin + r.wmax))) for r in ALKALI]
+    err_curve = [abs(float(curve.dv(0.5 * (r.wmin + r.wmax))) - dv(0.5 * (r.wmin + r.wmax))) for r in ALKALI]
+    assert np.mean(err_win) < np.mean(err_curve)
+    # no OH lines around a region (sky zeroed there): the curve is used, loudly
+    blank = replace(raw, sky=np.where((raw.wave > 8350.) & (raw.wave < 8700.), 5., raw.sky))
+    caplog.set_level(logging.WARNING)
+    _, info2 = wcorr.correct(blank, blank, cfg, 'X', regions=ALKALI)
+    assert info2['zp_flags'] & wcorr.ZP_FLAGS['sky_window_fallback'] and 'no usable sky window' in caplog.text
+    assert info2['sky_windows']['Cs I']['source'] == 'sky curve (fallback)'

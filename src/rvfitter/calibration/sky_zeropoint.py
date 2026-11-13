@@ -58,7 +58,7 @@ log = logging.getLogger(__name__)
 _DV = 2.  # grid step [km/s]
 _MAX_LAG = 150.  # search range [km/s]
 _MIN_CORR = 0.7  # minimum peak correlation of a usable segment
-_MIN_WIDTH = 60.  # telluric-free spans narrower than this [Å] are not used
+MIN_WIDTH = 60.  # telluric-free spans (and region sky windows) narrower than this [Å] are not used
 _TELLURIC_DEPTH = 0.3  # catalogue telluric bands at least this deep are cut out (they distort the OH emission)
 _MIN_LINES = 3  # minimum model lines in a segment with ≥ 10 per cent of its strongest amplitude
 INFLATE_DEFAULT = 0.02  # node-error growth [km/s per Å] when no two nodes share a span
@@ -431,7 +431,7 @@ def measure(spectrum: Spectrum, *, seg_width: float = 250.,
             and f.depth >= _TELLURIC_DEPTH]
     lags = np.arange(-_MAX_LAG, _MAX_LAG + 1e-9, _DV)
     segs = []
-    for lo, hi, span in _segments(float(w_all[0]), float(w_all[-1]), tell, seg_width, _MIN_WIDTH):
+    for lo, hi, span in _segments(float(w_all[0]), float(w_all[-1]), tell, seg_width, MIN_WIDTH):
         seg = dict(wmin=float(lo), wmax=float(hi), centre=float(0.5 * (lo + hi)), dv=np.nan, err=np.nan, corr=np.nan,
                    bias=np.nan, err_stat=np.nan, used=False, reason='', span=int(span))
         inseg = (lw >= lo) & (lw <= hi)
