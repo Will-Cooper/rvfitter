@@ -100,6 +100,7 @@ class MethodsConfig:
     """Which RV methods run, and their options"""
     enabled: list[str] = field(default_factory=lambda: ['template_fit', 'ccf', 'linecentre'])
     options: dict[str, dict[str, Any]] = field(default_factory=dict)  # method name → keyword options
+    binary: bool = False  # run the single- versus two-template test (binary_dbic, binary_flag)
 
 
 @dataclass
