@@ -19,7 +19,7 @@ import numpy as np
 from . import __version__, archives, barycentric, combine, regions, systematics
 from .calibration import sky_zeropoint
 from .calibration import wavelength_correction as wcorr
-from .methods import REGISTRY, forward
+from .methods import REGISTRY, binary, forward
 from .refit import apply_patch, config_for_object, object_seed, plain
 from .results import EXCLUDE_FLAGS, FLAGS
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
@@ -99,6 +99,19 @@ def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor
         out[m] = _guarded(lambda m=m: REGISTRY[m](spec, sel.get(m, []), cfg, executor=executor, rng=rngs[m]),
                           m, name, failures)
     return out
+
+
+def _binary(spectra: list[Spectrum], infos: list[dict], cfg: Any, name: str, failures: Failures) -> dict:
+    """The single- versus two-template test of each epoch (`methods.binary`): the largest ΔBIC, flag if any"""
+    select = region_selector(cfg, ['template_fit'])
+    try:
+        tests = [binary.test(s, _drop_uncovered(select(s), i)['template_fit'], cfg)
+                 for s, i in zip(spectra, infos, strict=True)]
+    except ValueError as exc:  # the test cannot run on these data
+        log.error('%s: binary test failed: %s', name, exc)
+        failures.append((f'{name} binary', f'ValueError: {exc}'))
+        return {}
+    return dict(dbic=max(t['dbic'] for t in tests), flag=any(t['flag'] for t in tests), epochs=tests)
 
 
 def _guarded(call: Callable[[], Any], method: str, name: str, failures: Failures, n: int | None = None) -> Any:
@@ -234,6 +247,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     else:
         log.warning('%s: no adopted RV', name)
 
+    binary_info = _binary(corrected, cal_infos, cfg, name, failures) if cfg.methods.binary else {}
     sysd = wcorr.combine_epochs(zp_epochs)
     bary_info.update(wavelength_correction=sysd.pop('applied'), wavelength_correction_mode=sysd.pop('mode'),
                      zp_flags=int(sysd.pop('zp_flags')), sky_tests=sysd.pop('sky_tests'))
@@ -251,7 +265,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         sysd['linecentre_shape_correction'] = any(m.diagnostics.get('shape_correction')
                                                   for m in results['linecentre'].measurements)
     return ObjectResult(object=name, files=[s.source for s in spectra], methods=results, adopted=adopted,
-                        systematics=sysd, barycentric=bary_info, config_hash=_config_hash(cfg), version=__version__)
+                        systematics=sysd, barycentric=bary_info, binary=binary_info, config_hash=_config_hash(cfg),
+                        version=__version__)
 
 
 def _config_hash(cfg: Any) -> str:

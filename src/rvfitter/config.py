@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
-METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref', 'linecentre', 'forward_mcmc')  # methods.REGISTRY keys
+METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref', 'linecentre', 'forward_mcmc', 'lsd')  # methods.REGISTRY keys
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 MEDIA = ('air', 'vacuum')
 
@@ -104,6 +104,7 @@ class MethodsConfig:
     """Which RV methods run, and their options"""
     enabled: list[str] = field(default_factory=lambda: ['template_fit', 'ccf', 'linecentre'])
     options: dict[str, dict[str, Any]] = field(default_factory=dict)  # method name → keyword options
+    binary: bool = False  # run the single- versus two-template test (binary_dbic, binary_flag)
 
 
 @dataclass

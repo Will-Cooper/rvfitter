@@ -196,3 +196,24 @@ def test_forward_mcmc_epochs_share_one_fit(fakes, monkeypatch):
     assert calls == [2]  # A only
     assert [m.rv for m in res['A'].methods['forward_mcmc'].measurements] == [10., 11.]
     assert res['B'].methods['forward_mcmc'].rv > 12.  # FakeMethod: 10 + noise + 9
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_binary_test_only_when_enabled(fakes, monkeypatch, enabled):
+    calls = []
+
+    def fake_test(spectrum, regs, cfg):
+        calls.append(spectrum.source)
+        return {'dbic': 12. if spectrum.source == 'A_1.fits' else -3., 'flag': spectrum.source == 'A_1.fits'}
+
+    monkeypatch.setattr(pipeline.binary, 'test', fake_test)
+    cfg = config.Config()
+    cfg.methods.enabled = ['ccf']
+    cfg.methods.binary = enabled
+    table = results.to_table(pipeline.run(cfg, INPUTS, n_procs=1)).set_index('object')
+    if not enabled:
+        assert not calls and table['binary_dbic'].isna().all()
+        return
+    assert len(calls) == 4  # every epoch; A has two
+    assert table.loc['A', 'binary_dbic'] == 12. and bool(table.loc['A', 'binary_flag'])
+    assert table.loc['B', 'binary_dbic'] == -3. and not bool(table.loc['B', 'binary_flag'])

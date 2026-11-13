@@ -55,9 +55,11 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
 | Forward model (MCMC) | — | | `sky-if-needed` (default): 18.83 ± 2.45 (σ_total 20.62); `none`: 37.58 ± 4.85 (σ_total 21.04); vsini 39–88 km/s and Teff 1810–1970 K per window (not physical at R 2600) | default 2.19 (0.36 total); none 2.12 (0.54 total) |
-| LSD | — | | | |
+| LSD | — | | `sky-if-needed` (default): 10.61 ± 10.63 (σ_total 22.26); `none`: 33.57 ± 10.94 (σ_total 22.40); template mask (BT-Settl 2000/5.0, ~2720 lines), χ²/ν ≈ 94 inflates the error; vsini unresolved (< 126 km/s) | default 1.43 (0.70 total); none 0.66 (0.33 total) |
 | Telluric-referenced | — | | | |
 | Adopted | 32.7 ± 6.5 | | | |
+
+The single- versus two-template binary test (`methods.binary`, template-fit windows, `none`) gives ΔBIC = 6.7 for J1745−1640, below the threshold of 10, so it is not flagged. The two-component solution (64 and −15 km/s, flux ratio 0.53) absorbs template mismatch (χ²/ν = 16 for the single fit), not a second star.
 
 ## Barycentric correction of the GTC spectra
 
