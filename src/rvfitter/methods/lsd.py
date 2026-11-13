@@ -218,6 +218,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     if opts['mask'] not in ('template', 'catalogue'):
         raise ValueError(f'lsd option mask must be "template" or "catalogue", not {opts["mask"]!r}')
     resolution = C.resolution_of(spectrum, cfg, opts)
+    cands = C.candidates(cfg, opts)
+    regions = C.covered_regions(METHOD, regions, cands)
     windows, masks = C.split_regions(regions)
     windows = C.segment(windows, resolution, opts['segment_res'])  # each segment has its own polynomial
     datas = []
@@ -235,7 +237,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     tf_datas, _ = template_fit._prepare(spectrum, regions, tf_opts, resolution)
     score = partial(template_fit._score_candidate, datas=tf_datas, resolution=resolution, wave_range=wave_range,
                     opts=tf_opts, rv_grid=template_fit._rv_grid(spectrum, tf_opts))
-    tpl_mask, flag_grid, tdiag = C.choose_template(METHOD, C.candidates(cfg, opts), score, cfg, opts,
+    tpl_mask, flag_grid, tdiag = C.choose_template(METHOD, cands, score, cfg, opts,
                                                    opts['mask_resolution'], wave_range,
                                                    sum(d.n for d in datas), executor)
     tpl_data = C.Template(tpl_mask.lnw0, tpl_mask.dlnw, broadening.broaden_loglam(

@@ -119,7 +119,11 @@ def _guarded(call: Callable[[], Any], method: str, name: str, failures: Failures
     try:
         return call()
     except Exception as exc:  # noqa: BLE001 - the one (object, method) guard: a failure never stops a batch
-        log.exception('%s: method %s failed', name, method)
+        if isinstance(exc, ValueError):  # a method's documented refusal ("cannot measure"): its message says why
+            log.error('%s: method %s failed: %s', name, method, exc)
+            log.debug('%s: method %s traceback', name, method, exc_info=exc)  # ValueError may also be a bug
+        else:
+            log.exception('%s: method %s failed', name, method)
         failures.append((f'{name} {method}', f'{type(exc).__name__}: {exc}'))
         return _failed(method, exc) if n is None else [_failed(method, exc) for _ in range(n)]
 

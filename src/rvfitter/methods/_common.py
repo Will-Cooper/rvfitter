@@ -229,6 +229,30 @@ class Candidate:
         given = dict(zip(self.grid.axes, self.params, strict=False))  # trailing axes may be omitted: defaults
         return self.grid.params(**given)
 
+    @property
+    def wave_range(self) -> tuple[float, float]:
+        """Vacuum wavelength range [Å] of the template"""
+        if self.spectrum is not None:
+            return float(self.spectrum.wave[0]), float(self.spectrum.wave[-1])
+        return self.grid.wave_range(**self.param_dict)
+
+
+def covered_regions(method: str, regions: Sequence[Region], cands: Sequence[Candidate]) -> list[Region]:
+    """
+    The regions without the fitting windows that are not wholly inside every candidate template's wavelength range
+    (a WARNING names them; e.g. NIR data with an optical grid); ValueError when none remains
+    """
+    lo = max(c.wave_range[0] for c in cands)
+    hi = min(c.wave_range[1] for c in cands)
+    windows, _ = split_regions(regions)
+    dropped = [r for r in windows if not lo <= r.wmin < r.wmax <= hi]
+    if dropped:
+        names = ', '.join(f'{r.name} ({r.wmin:.0f}-{r.wmax:.0f} Å)' for r in dropped)
+        if len(dropped) == len(windows):
+            raise ValueError(f'{method}: the templates cover {lo:.0f}-{hi:.0f} Å, which contains no window: {names}')
+        log.warning('%s: the templates cover %.0f-%.0f Å: dropping %s', method, lo, hi, names)
+    return [r for r in regions if r not in dropped]
+
 
 def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
     """

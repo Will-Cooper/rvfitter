@@ -93,3 +93,19 @@ def test_segments_and_outlier_rejection():
     ms = [Measurement('x', str(i), v, 2.) for i, v in enumerate([20., 22., 25., 21., 400.])]
     res = C.finish('x', ms)
     assert ms[-1].flag & C.FLAG_OUTLIER and res.n_regions == 4 and abs(res.rv - 22.) < 2.
+
+
+@pytest.mark.parametrize('method', ['template_fit', 'ccf'])
+def test_windows_outside_the_template_are_dropped(method, caplog):
+    """A window the template does not cover is dropped with a WARNING naming it; none covered: a clear ValueError"""
+    from rvfitter.types import Region
+    spec, truth = synth.make_spectrum(rv=10., snr=50., rng=np.random.default_rng(1))
+    w, f = truth['template']
+    tpl = (w[w < 8300.], f[w < 8300.])
+    cfg = injection.cfg_of({'methods': {'options': {method: {'template': tpl}}}})
+    inside, outside = Region('in', method, 7600., 8000.), Region('out', method, 8500., 8900.)
+    res = REGISTRY[method](spec, [inside, outside], cfg, rng=np.random.default_rng(0))
+    assert [m.region for m in res.measurements] == ['in'] and abs(res.rv - 10.) < 5.
+    assert 'dropping out (8500-8900 Å)' in caplog.text
+    with pytest.raises(ValueError, match='contains no window: out'):
+        REGISTRY[method](spec, [outside], cfg, rng=np.random.default_rng(0))

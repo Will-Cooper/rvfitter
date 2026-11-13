@@ -202,9 +202,8 @@ def _run_window(task: tuple) -> dict:
     return out
 
 
-def _box(cfg: Any, opts: dict):
+def _box(cands: list[C.Candidate]):
     """The grid and its candidate points (the prior box)"""
-    cands = C.candidates(cfg, opts)
     grids = {c.grid.key if c.grid is not None else None for c in cands}
     if None in grids or len(grids) != 1:
         raise ValueError('forward_mcmc needs exactly one template grid (templates.grid), not given templates')
@@ -223,7 +222,9 @@ def fit_epochs(spectra: Sequence[Spectrum], regions: Sequence[Sequence[Region]],
     if len(res) != 1:
         raise ValueError(f'forward_mcmc: the epochs have different resolving powers {sorted(res)}')
     resolution = res.pop()
-    grid, points = _box(cfg, opts)
+    cands = C.candidates(cfg, opts)
+    grid, points = _box(cands)
+    regions = [C.covered_regions(METHOD, r, cands) for r in regions]
     starts = [template_fit.measure(s, r, cfg, executor=executor, rng=g)
               for s, r, g in zip(spectra, regions, rng.spawn(len(spectra)), strict=True)]
     if not all(np.isfinite(s.rv) for s in starts):

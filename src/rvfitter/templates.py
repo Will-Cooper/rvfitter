@@ -440,6 +440,12 @@ class TemplateGrid:
                     weights=[float(c[1]) for c in corners], interpolated=len(corners) > 1, outside_grid=outside,
                     grid_hole=bool(missing), missing_corners=[list(m) for m in missing], **extra)
 
+    def wave_range(self, teff: float, logg: float = 5., met: float | None = None, **extra: float
+                   ) -> tuple[float, float]:
+        """Vacuum wavelength range [Å] of the grid file nearest the parameters"""
+        wave = _load_vacuum(*_file_key(self._index[self.nearest(teff, logg, met, **extra)]), self.meta.medium)[0]
+        return float(wave[0]), float(wave[-1])
+
     def get(self, teff: float, logg: float = 5., met: float | None = None, *,
             wave_range: tuple[float, float] | None = None, method: str = 'linear', **extra: float) -> Spectrum:
         """

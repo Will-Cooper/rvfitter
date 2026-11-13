@@ -216,14 +216,15 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
-    datas, kept = _prepare(spectrum, regions, opts, resolution)
+    cands = C.candidates(cfg, opts)
+    datas, kept = _prepare(spectrum, C.covered_regions(METHOD, regions, cands), opts, resolution)
     if not datas:
         raise ValueError(f'no template-fit window has {opts["poly_degree"] + 10} usable pixels')
     rv_grid = _rv_grid(spectrum, opts)
     wave_range = (min(d.wave[0] for d in datas), max(d.wave[-1] for d in datas))
     score = partial(_score_candidate, datas=datas, resolution=resolution, wave_range=wave_range, opts=opts,
                     rv_grid=rv_grid)
-    tpl, flag_grid, tdiag = C.choose_template(METHOD, C.candidates(cfg, opts), score, cfg, opts, resolution,
+    tpl, flag_grid, tdiag = C.choose_template(METHOD, cands, score, cfg, opts, resolution,
                                               wave_range, sum(len(d.wave) for d in datas), executor)
     n_chunks = opts['n_chunks']
     seeds = C.child_seeds(rng, len(datas) * n_chunks)

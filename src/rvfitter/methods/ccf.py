@@ -283,7 +283,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
-    windows, masks = C.split_regions(regions)
+    cands = C.candidates(cfg, opts)
+    windows, masks = C.split_regions(C.covered_regions(METHOD, regions, cands))
     if not windows:
         raise ValueError('no CCF windows among the regions')
     windows = C.segment(windows, resolution, opts['segment_res'])
@@ -308,7 +309,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     wave_range = (min(p.wave[0] for p in preps), max(p.wave[-1] for p in preps))
     score = partial(_score_candidate, preps=preps, resolution=resolution, wave_range=wave_range, opts=opts,
                     coarse_step=max(step, dv / 2.))
-    tpl, flag_grid, tdiag = C.choose_template(METHOD, C.candidates(cfg, opts), score, cfg, opts, resolution,
+    tpl, flag_grid, tdiag = C.choose_template(METHOD, cands, score, cfg, opts, resolution,
                                               wave_range, sum(p.n for p in preps), executor, vsini=opts['vsini'])
     rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, step)
     n_chunks = opts['n_chunks']
