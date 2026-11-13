@@ -54,7 +54,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 | Line centring | 36.2 ± 4.4 | | `sky-if-needed` (default): 15.49 ± 4.16 (σ_total 20.40); `none`: 34.00 ± 5.48 (σ_total 22.36) | default 2.24 (0.52 total); none 1.31 (0.35 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
-| Forward model (MCMC) | — | | | |
+| Forward model (MCMC) | — | | `sky-if-needed` (default): 18.83 ± 2.45 (σ_total 20.62); `none`: 37.58 ± 4.85 (σ_total 21.04); vsini 39–88 km/s and Teff 1810–1970 K per window (not physical at R 2600) | default 2.19 (0.36 total); none 2.12 (0.54 total) |
 | LSD | — | | | |
 | Telluric-referenced | — | | | |
 | Adopted | 32.7 ± 6.5 | | | |

@@ -19,7 +19,8 @@
 - `io.read_spectrum`: multi-object PypeIt spec1d → the name-matched table, else the highest-S/N science object (logged; `input.hdu` overrides; `meta['hdu'|'extname'|'n_objects']`).
 - `systematics`: `template_spread(_details)` (templates, grids, window modes; a variant that raises ValueError is NaN with a WARNING), `wavelength_zero_point(spectrum, *, wave=)` (max of the arc RMS and the zero-point term at the measurements' wavelengths).
 - `pipeline` (orchestration only): `run(..., failures=)`, `measure_object`, `refit_object`, `enabled_methods` (NoMethodsError, a ValueError), `region_selector`. `calibration/wavelength_correction`: `correct(raw, spec, cfg, name, regions=)` (sky-if-needed, sky, auto, telluric, none), `ZP_FLAGS`, `zp_flag_names`, `star_sky_term` (sys_star_sky per epoch), `combine_epochs`, `arc_kms`, `valid_range`, `matching_object`. `refit`: `suggested_refits`, `apply_patch`, `config_for_object`, `object_seed`.
-- `plotting`, line centring, forward modelling, LSD and binaries: not written (the empty stubs were deleted; `config.METHOD_NAMES` lists implemented methods only).
+- `methods/forward` (`forward_mcmc`, opt-in): `measure`, `fit_epochs(spectra, regions_per_epoch, cfg, *, executor, rng)`; `pipeline.measure_object` routes multi-epoch objects through `fit_epochs`. See Unit 6.
+- `plotting`, LSD and binaries: not written (`config.METHOD_NAMES` lists implemented methods only).
 
 **Decisions in force:**
 - Per method, regions are combined by random effects (`hierarchical` with one method; Birge is kept in the diagnostics). Across methods, the hierarchical line × method model gives the adopted RV.
@@ -61,8 +62,7 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
    - `docs/architecture.md` (shared) should list `wavelength_zero_point(spectrum, cfg, *, wave=None)` and `telluric_zeropoint.measure(..., teff=, spread_templates=)`;
    - the arc-line range is not read automatically from `wvcalib.fits` (set `calibration.wave_valid_range`);
    - a telluric model inside `template_fit` (the unimplemented `telluric_model` option was deleted).
-3. Unit 6: `methods/forward.py` (emcee, `fit_epochs`).
-4. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
+3. Unit 7: LSD, binary, systematics, `inject`, `forecast`, `plotting`.
 
 **Gotchas:**
 - Run with `PYTHONPATH=<wt>/src`. Test-data tests need `RVFITTER_TESTDATA=/home/wcooper/Documents/rvfitter-testdata` and are marked `data`; the J1745 files are under `pypeit/R2500I/GTC54-15A0/OB0055/`.
@@ -78,6 +78,16 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
 - In this worktree, chained shell commands with `cd` and heredocs are sometimes refused: write scripts to `tmp/<name>/` and run them.
 - The fitted H2O scaling on J1745 (a_H2O ≈ 21 at airmass 1.88) means PWV ≈ 11 mm, high for La Palma. It is probably real absorption, but the H2O τ profile (one 1.5 km scale height) is then extrapolated.
 
+
+### Unit 6: forward-model MCMC (`methods/forward.py`; branch unit6-forward)
+- Model per window (and epoch): P(x) · [G(Teff, log g, [M/H]) ⊗ rot(vsini) ⊗ LSF(R)](λ/D(v)) · T(λ)^α. G is multilinear over the box of the `_common.candidates` points (`TemplateGrid.corners`, now public; holes are outside the prior); the grid points are LSF-broadened once per window. α (telluric, option `telluric`, default off) is used only when `input.telluric_corrected` is False and needs the telluric model.
+- The polynomial (`poly_degree` 2) and an error scale s (σ → sσ, Jeffreys prior, per window and epoch) are marginalised analytically: ln L = −(N − k)/2 ln χ²_min − ½ ln det(AᵀWA). So the "free jitter" is a free scale, not an extra MCMC dimension; `error_scale` = √(χ²/ν) at the mode is in the diagnostics.
+- Start: template_fit's RV and template parameters; RV prior ±500 km/s about it; vsini ∈ [0, `vsini_max` 100]. Nelder–Mead mode → one clip at `clip_k` 5σ → mode again → emcee (`n_walkers` 32, `n_burn` 1000, `n_steps` 4000). Converged = n_steps ≥ 50 τ_max and mean acceptance 0.15–0.8; else `not_converged` (excluded from the combination). One emcee seed per window from `child_seeds`, windows mapped with `_common.pmap`: identical results for any n_procs (tested, and on J1745).
+- Diagnostics per window: `rv_quantiles`, `posterior` {vsini, teff, logg, (met), (alpha): (median, half 16–84)}, `vsini`, `teff_post`, `logg_post`, thinned `samples` (thin = τ_min/2) with `sample_names`, `tau`, `acceptance`, `n_clipped`, `wave`/`data`/`model`.
+- Tests (`tests/test_forward.py`): a toy three-point grid (short chains: not_converged flag, process-pool invariance, `fit_epochs` recovers 10 and 60 km/s, the telluric term only for uncorrected input); slow+data: BT-Settl 2000/5.0 injection at R 2500, SNR 30, 40 seeds with default chains: pull width 1.05, mean 0.10, 38/40 converged; J1745. `tests/test_pipeline.py`: two epochs → one `fit_epochs` call.
+- The synthetic spectra are point-sampled whilst the model is pixel-averaged, so the model is slightly broader: Teff is biased by up to ≈ 80 K on the toy grid and ≈ 10 K on BT-Settl; the RV is not (symmetric).
+- J1745 (R 2602, tellcorr, BT-Settl useful, teff_prior 2100; reported, not tuned): 4 feature windows. `none` 37.58 ± 4.85 (σ_total 21.04; z 2.12, 0.54 total); `sky-if-needed` 18.83 ± 2.45 (σ_total 20.62; z 2.19, 0.36). Per window (none): Cs I 8523 49.2 ± 2.8, Na I 8185+8197 34.6 ± 3.7, Rb I 7802 36.5 ± 3.8, Rb I 7949 23.1 ± 6.9; every window `poor_fit` (χ²/ν 3.1–10.5), all converged (τ 54–67). vsini 39–88 km/s and Teff 1810–1970 K vary between windows: at R 2600 vsini is degenerate with the template mismatch of the pressure-broadened alkali lines, so neither is a physical measurement. Runtime (`none`, whole pipeline): 194 s with n_procs 1, 76 s with 20 (only 4 windows to share).
+- Not done: a per-window or global joint fit of all windows with one shared atmosphere (only epochs share it); wavelength terms and LSF width as free parameters; the corner plot (Unit 7 `plotting`).
 
 Here, we record the design decisions, validation and J1745−1640 results of the methods package (`broadening`, `combine`, `templates`, `calibration/*`, `methods/*`, `systematics`, `plotting`).
 
