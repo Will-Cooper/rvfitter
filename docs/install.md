@@ -195,7 +195,8 @@ Sonora Bobcat, Diamondback, Elf Owl and SAND come from Zenodo as whole files (CC
 Each BT-Settl spectrum from SVO is about 60 MB at full resolution, so download only the Teff/log g range you need.
 If a server is down, copy a grid obtained elsewhere into `<cache>/<grid>/`, or point to any folder with `local_dir = "/path/to/grid"` under `[templates]` in your config (`rvfitter init spectrum.fits` writes one to edit).
 
-**Plots mention LaTeX / fonts.** rvfitter bundles its fonts; no LaTeX installation is needed.
+**Plots and LaTeX.** By default (`plot_style = "quick"` under `[output]`) rvfitter draws its figures with bundled Computer Modern fonts; no LaTeX installation is needed.
+For paper-ready figures typeset by LaTeX, set `plot_style = "paper"`; this needs `latex` and `dvipng` (TeX Live, MiKTeX or MacTeX), and rvfitter stops with a clear message if they are missing.
 
 **Telluric model.** The optional telluric methods need a one-off, about 90 MB build: `rvfitter templates telluric --build`.
 

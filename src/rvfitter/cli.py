@@ -84,7 +84,7 @@ def _finish(res, failures: list[tuple[str, str]], out: Path, formats, cfg) -> in
         log.info(line)
     results.write(res, out, formats, config=cfg)
     if cfg.output.plots:
-        plotting.save_all(res, out.parent)
+        plotting.save_all(res, out.parent, cfg.output.plot_style)
     return 2 if failures else 0
 
 

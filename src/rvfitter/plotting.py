@@ -8,8 +8,10 @@ block, never at import, and its text is frozen onto the figure so that it still 
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import matplotlib as mpl
@@ -37,12 +39,21 @@ METHOD_LABELS = {'ccf': 'CCF', 'template_fit': 'Template fit', 'linecentre': 'Li
                  'forward_mcmc': 'Forward model', 'lsd': 'LSD', 'telluric_ref': 'Telluric reference'}
 
 
-def _rc() -> dict:
-    # Computer Modern without a LaTeX install: the fonts are stored on each text, so a figure draws the same
-    # wherever it is drawn (usetex would read the family from rcParams at draw time, outside this style)
+_PAPER: ContextVar[bool] = ContextVar('rvfitter_paper_plots', default=False)
+
+
+def _rc(paper: bool) -> dict:
+    # quick: bundled Computer Modern, pinned on each text by `_freeze`, so a figure draws the same wherever it is drawn.
+    # paper: LaTeX typesets the text; it reads the font from rcParams at draw time, so paper figures must be saved
+    # inside `style_context(paper=True)` (as `save_all` does)
+    if paper and not (shutil.which('latex') and shutil.which('dvipng')):
+        raise RuntimeError('output.plot_style = "paper" needs a LaTeX installation (latex and dvipng on PATH); '
+                           'install TeX Live/MiKTeX or use plot_style = "quick"')
+    fonts = ({'text.usetex': True, 'font.serif': ['Computer Modern Roman']} if paper else
+             {'text.usetex': False, 'font.serif': ['cmr10'], 'axes.formatter.use_mathtext': True,
+              'axes.unicode_minus': False})
     return {
-        'text.usetex': False, 'font.family': 'serif', 'font.serif': ['cmr10'], 'mathtext.fontset': 'cm',
-        'axes.formatter.use_mathtext': True, 'axes.unicode_minus': False,
+        **fonts, 'font.family': 'serif', 'mathtext.fontset': 'cm',
         'axes.prop_cycle': cycler(color=COLOURS * 2, linestyle=['-'] * 3 + ['--'] * 3),
         'xtick.direction': 'in', 'ytick.direction': 'in', 'xtick.top': True, 'ytick.right': True,
         'xtick.minor.visible': True, 'ytick.minor.visible': True, 'image.cmap': 'viridis',
@@ -51,10 +62,15 @@ def _rc() -> dict:
 
 
 @contextmanager
-def style_context() -> Iterator[None]:
-    """Apply the rvfitter figure style (serif, inward ticks, colour-blind-safe cycle) inside a ``with`` block only"""
-    with mpl.rc_context(_rc()):
-        yield
+def style_context(paper: bool | None = None) -> Iterator[None]:
+    """The rvfitter figure style inside a ``with`` block only; `paper` (default: the enclosing choice) uses LaTeX"""
+    paper = _PAPER.get() if paper is None else paper
+    token = _PAPER.set(paper)
+    try:
+        with mpl.rc_context(_rc(paper)):
+            yield
+    finally:
+        _PAPER.reset(token)
 
 
 def _break_gaps(w: np.ndarray, *ys: np.ndarray) -> tuple[np.ndarray, ...]:
@@ -65,7 +81,14 @@ def _break_gaps(w: np.ndarray, *ys: np.ndarray) -> tuple[np.ndarray, ...]:
 
 
 def _ang() -> str:
-    return _ANG
+    return r'\AA' if mpl.rcParams['text.usetex'] else _ANG
+
+
+def _t(s: str) -> str:
+    """Free text (region and parameter names) escaped for LaTeX when it typesets the figure"""
+    if not mpl.rcParams['text.usetex']:
+        return s
+    return s.replace('\\', '').replace('_', r'\_').replace('%', r'\%').replace('&', r'\&').replace('#', r'\#')
 
 
 def _kms() -> str:
@@ -85,7 +108,8 @@ def _freeze(fig: Figure) -> Figure:
 def _styled(fn: Callable[[ObjectResult], Figure]) -> Callable[[ObjectResult], Figure]:
     def wrapper(result: ObjectResult) -> Figure:
         with style_context():
-            return _freeze(fn(result))
+            fig = fn(result)
+            return fig if mpl.rcParams['text.usetex'] else _freeze(fig)
     wrapper.__name__, wrapper.__doc__ = fn.__name__, fn.__doc__
     return wrapper
 
@@ -116,7 +140,7 @@ def _top_label(ax, x: float, text: str, line: bool = True) -> None:
     """A grey feature label along the top of the axes, with a dashed line for an atomic line"""
     if line:
         ax.axvline(x, color=GREY, ls='--', lw=0.8, zorder=0)
-    ax.text(x, 1.02, text, color=GREY, ha='center', va='bottom', fontsize=7,
+    ax.text(x, 1.02, _t(text), color=GREY, ha='center', va='bottom', fontsize=7,
             transform=blended_transform_factory(ax.transData, ax.transAxes))
 
 
@@ -216,7 +240,7 @@ def plot_adopted(result: ObjectResult) -> Figure:
                    color=GREY, alpha=0.25, lw=0)
         ax.axvline(ad['median'], color=GREY, ls='--', lw=1)
         ax.set_title(rf'Adopted RV $={ad["median"]:.2f}\pm{ad["err"]:.2f}$ {_kms()}', fontsize=9)
-    ax.set_yticks(range(len(lines)), lines)
+    ax.set_yticks(range(len(lines)), [_t(x) for x in lines])
     ax.set_ylim(-0.7, len(lines) - 0.3)
     ax.invert_yaxis()
     ax.set_xlabel(f'RV [{_kms()}]')
@@ -235,7 +259,7 @@ def plot_corner(result: ObjectResult) -> Figure:
     m = _need(result, 'forward_mcmc', 'samples')[0]
     d = m.diagnostics
     fig = Figure(figsize=(6, 6))
-    corner.corner(np.asarray(d['samples']), labels=[str(n) for n in d['sample_names']], fig=fig,
+    corner.corner(np.asarray(d['samples']), labels=[_t(str(n)) for n in d['sample_names']], fig=fig,
                   quantiles=[0.16, 0.5, 0.84], show_titles=True, color=COLOURS[0])
     return fig
 
@@ -298,14 +322,17 @@ def make_all(result: ObjectResult) -> dict[str, Figure]:
     return out
 
 
-def save_all(results: list[ObjectResult], directory: Path) -> list[Path]:
-    """Write every figure of every result as ``<directory>/<object>_<figure>.pdf``"""
+def save_all(results: list[ObjectResult], directory: Path, style: str = 'quick') -> list[Path]:
+    """Write every figure of every result as ``<directory>/<object>_<figure>.pdf``; `style` 'quick' or 'paper'"""
+    if style not in ('quick', 'paper'):
+        raise ValueError(f"plot style must be 'quick' or 'paper', not {style!r}")
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
-    for res in results:
-        for name, fig in make_all(res).items():
-            path = directory / f'{res.object}_{name}.pdf'
-            fig.savefig(path)
-            paths.append(path)
+    with style_context(paper=style == 'paper'):  # built and saved in the style (LaTeX reads it at save time)
+        for res in results:
+            for name, fig in make_all(res).items():
+                path = directory / f'{res.object}_{name}.pdf'
+                fig.savefig(path)
+                paths.append(path)
     log.info('Wrote %d figures to %s', len(paths), directory)
     return paths

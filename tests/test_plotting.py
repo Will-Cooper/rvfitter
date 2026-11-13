@@ -45,3 +45,22 @@ def test_style_does_not_leak():
         assert mpl.rcParams['font.family'] == ['serif']
     plotting.plot_adopted(synthetic_result())
     assert dict(mpl.rcParams) == before
+
+
+def test_paper_style_needs_latex(monkeypatch, tmp_path):
+    monkeypatch.setattr(plotting.shutil, 'which', lambda name: None)
+    with pytest.raises(RuntimeError, match='LaTeX'):
+        plotting.save_all([synthetic_result()], tmp_path, style='paper')
+    with pytest.raises(ValueError, match='quick'):
+        plotting.save_all([synthetic_result()], tmp_path, style='fancy')
+
+
+@pytest.mark.skipif(not (plotting.shutil.which('latex') and plotting.shutil.which('dvipng')), reason='no LaTeX')
+def test_paper_style_uses_latex(tmp_path):
+    with plotting.style_context(paper=True):
+        assert mpl.rcParams['text.usetex']
+        with plotting.style_context():  # nested calls keep the enclosing choice
+            assert mpl.rcParams['text.usetex']
+    assert not mpl.rcParams['text.usetex']
+    paths = plotting.save_all([synthetic_result()], tmp_path, style='paper')
+    assert paths and all(p.stat().st_size > 0 for p in paths)

@@ -145,6 +145,8 @@ class OutputConfig:
     path: str = 'results.csv'
     formats: list[str] = field(default_factory=lambda: ['csv'])
     plots: bool = True
+    # 'quick': bundled Computer Modern, no LaTeX needed; 'paper': text typeset by LaTeX (usetex; needs latex+dvipng)
+    plot_style: str = 'quick'
     medium: str = 'vacuum'  # medium of the wavelengths in reports and plots
 
 
@@ -449,6 +451,7 @@ def _validate(cfg: Config) -> list[str]:
     for k, fmt in enumerate(o.formats):
         _choice(p, f'output.formats[{k}]', fmt, OUTPUT_FORMATS)
     _choice(p, 'output.medium', o.medium, MEDIA)
+    _choice(p, 'output.plot_style', o.plot_style, ('quick', 'paper'))
     return p
 
 
