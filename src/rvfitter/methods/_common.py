@@ -328,6 +328,16 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
     return out
 
 
+def grid_directory(tcfg: Any, name: str) -> Path | None:
+    """The directory of configured grid `name`: its `local_dir`, else the download cache if present, else None"""
+    local = tcfg.local_dir
+    directory = local.get(name) if isinstance(local, Mapping) else (local if name == grid_names(tcfg)[0] else None)
+    if directory:
+        return Path(directory)
+    cached = T.cache_dir() / name
+    return cached if cached.is_dir() else None
+
+
 def open_grid(tcfg: Any, name: str | None = None):
     """
     The TemplateGrid for one configured grid (``tcfg`` is the TemplatesConfig): its local directory, else the
@@ -336,14 +346,10 @@ def open_grid(tcfg: Any, name: str | None = None):
     """
     names = grid_names(tcfg)
     name = name or names[0]
-    local = tcfg.local_dir
-    directory = local.get(name) if isinstance(local, Mapping) else (local if name == names[0] else None)
-    if not directory:
-        cached = T.cache_dir() / name
-        if not cached.is_dir():
-            raise ValueError(f'no templates for grid {name}: set templates.local_dir, or run "rvfitter templates '
-                             f'download --grid {name}", or give the method option "template"')
-        directory = cached
+    directory = grid_directory(tcfg, name)
+    if directory is None:
+        raise ValueError(f'no templates for grid {name}: set templates.local_dir, or run "rvfitter templates '
+                         f'download --grid {name}", or give the method option "template"')
     meta = None
     if tcfg.medium and name == names[0]:
         base = T._read_metadata(Path(directory)) or T.KNOWN_GRIDS.get(name)

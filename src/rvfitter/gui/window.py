@@ -56,8 +56,8 @@ QUICK_START = """
 <li><b>Open spectra</b>: files, a folder or a zip/tar archive (or drop them onto the window).
 They are grouped into objects in the list on the left.</li>
 <li><b>Check the Setup tab</b>. Its boxes are filled in from the spectra, and each says where its value came from.
-A gold <i>estimated: check</i> or rose <i>implausible: check</i> means rvfitter guessed: type the right value if you
-know it.</li>
+A gold <i>estimated: check</i> or rose <i>estimate out of range: type R</i> means rvfitter guessed: type the value if
+you know it.</li>
 <li><b>Measure RVs</b>. The bar shows each method as it runs; each object appears in the <b>Results</b> table when
 it is done. Select an object to see its <b>Diagnostics</b>; a gold dot marks a result that needs attention.</li>
 </ol>
@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
 
         # tabs
         self.tabs = QTabWidget()
-        self.setup = SetupPanel(cfg)
+        self.setup = SetupPanel(cfg, self.backend.template_status)
         self.setup.advancedRequested.connect(self.advanced_settings)
         self.tabs.addTab(_scrolled(self.setup), 'Setup')
 
@@ -569,9 +569,64 @@ class MainWindow(QMainWindow):
             return None
         try:
             cfg = self.current_config()
+            needs = self.backend.template_methods(cfg)
+            missing = [g for g, t in self.backend.template_status(cfg).items() if t is None] if needs else []
         except Exception as exc:
             self._error('Invalid settings', str(exc))
             return None
+        if not missing:
+            return self._start(cfg)
+        choice = self._ask_missing_templates(missing, needs)
+        if choice == 'download':
+            self._download_then_start(cfg, missing)
+            return None
+        if choice == 'without':
+            cfg.methods.enabled = [m for m in cfg.methods.enabled if m not in needs]
+            if not cfg.methods.enabled:
+                self._error('Nothing to measure', f'Every enabled method ({", ".join(needs)}) needs the templates '
+                            f'({", ".join(missing)}). Download them, or enable linecentre in the Setup tab.')
+                return None
+            log.warning('Template grid %s not downloaded: skipping %s for this run; measuring with %s.',
+                        ', '.join(missing), ', '.join(needs), ', '.join(cfg.methods.enabled))
+            return self._start(cfg)
+        return None
+
+    def _ask_missing_templates(self, missing: list[str], needs: list[str]) -> str:
+        """'download', 'without' or 'cancel', from a dialog about the grids `missing` that methods `needs` read"""
+        box = QMessageBox(QMessageBox.Icon.Question, 'Templates not downloaded',
+                          f'The template grid {", ".join(missing)} is not downloaded, and {", ".join(needs)} '
+                          'need it. Download it now (once; it is kept in the cache), or measure with the '
+                          'model-free methods only?', parent=self)
+        buttons = {box.addButton('Download and measure', QMessageBox.ButtonRole.AcceptRole): 'download',
+                   box.addButton('Measure without template methods', QMessageBox.ButtonRole.ActionRole): 'without',
+                   box.addButton(QMessageBox.StandardButton.Cancel): 'cancel'}
+        box.exec()
+        return buttons.get(box.clickedButton(), 'cancel')
+
+    def _download_then_start(self, cfg: Any, grids: list[str]) -> JobWorker:
+        """Download `grids` in the background (busy bar), then measure with `cfg`"""
+        self.measure_btn.setEnabled(False)
+        self.progress.setRange(0, 0)
+        self.progress.setFormat('Downloading templates…')
+        self.progress.setVisible(True)
+        self.statusBar().showMessage(f'Downloading template grid {", ".join(grids)}…')
+
+        def ok(_none: None) -> None:
+            self.setup.show_grid_status()
+            self._start(cfg)
+
+        def fail(msg: str) -> None:
+            self.progress.setVisible(False)
+            self.measure_btn.setEnabled(True)
+            self.statusBar().showMessage('Template download failed.')
+            self._error('Template download failed',
+                        f'{msg}\n\nCheck the internet connection and press Measure RVs again; or choose "Measure '
+                        'without template methods"; or point templates.local_dir (Advanced settings) at a grid '
+                        'you already have.')
+
+        return self._job(lambda: self.backend.download_templates(cfg, grids), ok, fail)
+
+    def _start(self, cfg: Any) -> RunWorker:
         n_procs = cfg.parallel.n_procs
         self.results.clear()
         self.model.clear()

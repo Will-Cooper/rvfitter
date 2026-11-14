@@ -61,7 +61,7 @@ def test_read_spectrum_flags_a_rebinned_spectrum(tmp_path, caplog):
     fine = np.linspace(native[0], native[-1], 3 * len(native))  # rebinned onto a 3x finer grid
     spec = io.read_spectrum(_write_ascii(tmp_path / 'rebinned.txt', fine))
     assert spec.meta['resolution_implausible'] and spec.resolution > io.R_ESTIMATE_CEILING
-    assert 'IMPLAUSIBLE' in caplog.text
+    assert 'type the resolving power in the Setup tab' in caplog.text
 
 
 def test_header_and_config_resolution_are_not_estimated(tmp_path):

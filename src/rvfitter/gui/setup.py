@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import typing
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import Signal
@@ -31,10 +32,11 @@ FIELDS = (
     ('calibration.wavelength_correction', 'Wavelength fix'),
     ('templates.grid', 'Templates'),
 )
-SOURCE_TEXT = {'header': 'from header', 'estimated': 'estimated: check', 'implausible': 'implausible: check',
+SOURCE_TEXT = {'header': 'from header', 'estimated': 'estimated: check', 'implausible': 'estimate out of range: type R',
                'default': 'default', 'user': 'set by you'}
 SOURCE_ROLE = {'estimated': 'flagged', 'implausible': 'failed'}  # theme colour roles of the tags that need a look
 R_PATH = 'input.resolution'
+GRID_PATH = 'templates.grid'
 NO_DATA = 'Open spectra to fill these in from the data.'
 
 
@@ -64,8 +66,10 @@ class SetupPanel(QWidget):
 
     advancedRequested = Signal()
 
-    def __init__(self, cfg: Any, parent: QWidget | None = None):
+    def __init__(self, cfg: Any, template_status: Callable[[Any], dict], parent: QWidget | None = None):
         super().__init__(parent)
+        self._template_status = template_status  # Backend.template_status
+        self.grid_status = QLabel()
         self.cfg = copy.deepcopy(cfg)
         self.editors: dict[str, Editor] = {}
         self.tags: dict[str, QLabel] = {}
@@ -82,6 +86,8 @@ class SetupPanel(QWidget):
             row = QHBoxLayout()
             row.addWidget(ed.widget)
             row.addWidget(tag)
+            if path == GRID_PATH:
+                row.addWidget(self.grid_status)
             row.addStretch(1)
             form.addRow(label, row)
             self.editors[path], self.tags[path] = ed, tag
@@ -112,6 +118,20 @@ class SetupPanel(QWidget):
     def _mark_user(self, path: str) -> None:
         self.sources[path] = 'user'
         self._show_tag(path)
+        if path == GRID_PATH:
+            self.show_grid_status()
+
+    def show_grid_status(self) -> None:
+        """Say whether each selected grid is present locally and over which Teff range"""
+        try:
+            status = self._template_status(self.get_config())
+        except FileNotFoundError as exc:  # a templates.local_dir that is not a usable grid
+            self.grid_status.setText(f'not usable: {exc}')
+            return
+        parts = [(f'{g}: ' if len(status) > 1 else '') + (f'downloaded, {t[0]:.0f}–{t[1]:.0f} K' if t else
+                                                          'not downloaded: downloaded when you press Measure RVs')
+                 for g, t in status.items()]
+        self.grid_status.setText('; '.join(parts))
 
     def _show_tag(self, path: str) -> None:
         src, tag = self.sources[path], self.tags[path]
@@ -126,6 +146,7 @@ class SetupPanel(QWidget):
             ed.set(_get(self.cfg, path))
             self.sources[path] = sources[path]
             self._show_tag(path)
+        self.show_grid_status()
 
     def set_config(self, cfg: Any) -> None:
         """Show ``cfg`` (opened settings, the Advanced dialog): boxes whose value changes become 'set by you'"""

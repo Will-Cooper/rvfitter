@@ -193,6 +193,94 @@ def test_run_with_automatic_processes(qtbot, win, backend, spectra_dir):
     assert backend.runs[0]['n_procs'] is None and win.model.rowCount() == 2
 
 
+def test_setup_says_whether_the_grid_is_downloaded(win, backend):
+    assert win.setup.grid_status.text() == 'downloaded, 1200–3000 K'
+    backend.missing_grids = {'bt-settl-cifist'}
+    win.setup.show_grid_status()
+    assert win.setup.grid_status.text() == 'not downloaded: downloaded when you press Measure RVs'
+
+
+def _missing_and_answer(win, backend, monkeypatch, answer):
+    backend.missing_grids = {'bt-settl-cifist'}
+    asked = []
+    monkeypatch.setattr(win, '_ask_missing_templates', lambda missing, needs: asked.append((missing, needs)) or answer)
+    return asked
+
+
+def test_measure_with_missing_grid_downloads_then_measures(qtbot, win, backend, spectra_dir, monkeypatch):
+    _load(qtbot, win, spectra_dir)
+    asked = _missing_and_answer(win, backend, monkeypatch, 'download')
+    win.run()
+    qtbot.waitUntil(lambda: bool(backend.runs) and win.worker is None, timeout=10000)
+    assert asked == [(['bt-settl-cifist'], ['ccf', 'template_fit'])]
+    assert backend.downloads == [{'grids': ['bt-settl-cifist']}]
+    assert backend.runs[0]['cfg'].methods.enabled == ['ccf', 'template_fit']
+    assert win.setup.grid_status.text().startswith('downloaded')
+
+
+def test_measure_with_missing_grid_download_failure_says_what_to_do(qtbot, win, backend, spectra_dir, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    _load(qtbot, win, spectra_dir)
+    _missing_and_answer(win, backend, monkeypatch, 'download')
+    backend.download_error = 'SVO unreachable'
+    shown = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *a: shown.append(a[2]))
+    win.run()
+    qtbot.waitUntil(lambda: bool(shown), timeout=10000)
+    assert 'SVO unreachable' in shown[0] and 'local_dir' in shown[0]
+    assert not backend.runs and win.measure_btn.isEnabled()
+
+
+def test_measure_without_template_methods(qtbot, win, backend, spectra_dir, monkeypatch, caplog):
+    _load(qtbot, win, spectra_dir)
+    win.setup.editors['methods.enabled'].boxes['linecentre'].click()
+    _missing_and_answer(win, backend, monkeypatch, 'without')
+    with caplog.at_level(logging.WARNING):
+        win.run()
+        qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
+    assert backend.runs[0]['cfg'].methods.enabled == ['linecentre']
+    assert any(r.levelno == logging.WARNING and 'skipping ccf, template_fit' in r.getMessage() for r in caplog.records)
+    assert 'linecentre' in win.current_config().methods.enabled and 'ccf' in win.current_config().methods.enabled
+
+
+def test_measure_without_template_methods_and_none_left(qtbot, win, backend, spectra_dir, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    _load(qtbot, win, spectra_dir)
+    _missing_and_answer(win, backend, monkeypatch, 'without')
+    shown = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *a: shown.append(a[1]))
+    assert win.run() is None
+    assert shown == ['Nothing to measure'] and not backend.runs
+
+
+def test_lazy_backend_template_status_and_methods(tmp_path, monkeypatch):
+    import numpy as np
+
+    from rvfitter import config
+    from rvfitter import templates as T
+    from rvfitter.gui.backend import LazyBackend
+    monkeypatch.setenv('RVFITTER_CACHE', str(tmp_path))
+    cfg, be = config.Config(), LazyBackend()
+    cfg.templates.grid = ['bt-settl-cifist', 'sphinx']
+    grid = tmp_path / 'bt-settl-cifist'
+    grid.mkdir()
+    for teff in (1200, 3000):
+        np.savetxt(grid / f'lte{teff / 100:05.1f}-5.0.txt', np.c_[[7000., 8000.], [1., 1.]])
+    T.write_metadata(grid, T.KNOWN_GRIDS['bt-settl-cifist'])
+    assert be.template_status(cfg) == {'bt-settl-cifist': (1200., 3000.), 'sphinx': None}
+    cfg.methods.enabled = ['linecentre', 'ccf', 'lsd']
+    cfg.methods.options = {'lsd': {'template': 'star.fits'}}
+    assert be.template_methods(cfg) == ['ccf']
+    cfg.methods.options = {'linecentre': {'shape_correction': True}}
+    assert be.template_methods(cfg) == ['linecentre', 'ccf', 'lsd']
+
+
+def test_measure_with_missing_grid_cancelled(qtbot, win, backend, spectra_dir, monkeypatch):
+    _load(qtbot, win, spectra_dir)
+    _missing_and_answer(win, backend, monkeypatch, 'cancel')
+    assert win.run() is None and not backend.runs and not backend.downloads
+
+
 def test_run_without_inputs_does_not_start(win, monkeypatch):
     monkeypatch.setattr(win, '_error', lambda *a: None)
     assert win.run() is None

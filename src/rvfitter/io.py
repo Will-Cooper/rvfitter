@@ -1319,9 +1319,14 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
         r = estimate_resolution(wave)
         why = implausible_resolution(r, meta)
         meta['resolution_implausible'] = why is not None
-        log.warning('%s: no resolving power in the header; estimated R ≈ %.0f from the pixel spacing (assuming %g '
-                    'pixels per resolution element)%s. Set input.resolution if you know R.', path.name, r,
-                    SAMPLING_PX, f'; IMPLAUSIBLE, {why}: the spectrum may be rebinned' if why else '')
+        if why:
+            log.warning('%s: no resolving power in the header; the R ≈ %.0f estimated from the pixel spacing is %s; '
+                        'the spectrum may be rebinned: type the resolving power in the Setup tab (input.resolution).',
+                        path.name, r, why)
+        else:
+            log.warning('%s: no resolving power in the header; estimated R ≈ %.0f from the pixel spacing (assuming '
+                        '%g pixels per resolution element). Set input.resolution if you know R.', path.name, r,
+                        SAMPLING_PX)
     if raw.reader in ('pypeit_spec1d', 'pypeit_coadd'):
         _attach_arc_range(meta, path, raw.header.get('RVF_EXTNAME'))
     log.debug('%s: %d pixels, %.1f-%.1f Å (vacuum), medium_in=%s (%s)', path.name, len(wave), wave[0], wave[-1],

@@ -47,6 +47,12 @@ class Backend(Protocol):
 
     def refit(self, result: Any, cfg: Any, suggestion: Mapping[str, Any]) -> tuple[Any, Any]: ...
 
+    def template_status(self, cfg: Any) -> dict[str, tuple[float, float] | None]: ...
+
+    def template_methods(self, cfg: Any) -> list[str]: ...
+
+    def download_templates(self, cfg: Any, grids: Sequence[str]) -> None: ...
+
 
 class LazyBackend:
     """The real backend: imports each core module on first use."""
@@ -137,3 +143,37 @@ class LazyBackend:
             templates.download(**suggestion['download'])
             log.info('Download finished.')
         return pipeline.refit_object(result, cfg, suggestion['cfg_patch'], n_procs=cfg.parallel.n_procs)
+
+    def template_status(self, cfg: Any) -> dict[str, tuple[float, float] | None]:
+        """Each configured grid → the Teff range [K] present locally (``templates.local_dir`` or the cache), or None"""
+        from rvfitter import templates
+        from rvfitter.methods import _common as C
+        out: dict[str, tuple[float, float] | None] = {}
+        for name in C.grid_names(cfg.templates):
+            directory = C.grid_directory(cfg.templates, name)
+            out[name] = None if directory is None else \
+                templates.TemplateGrid(directory, grid=name, verify=False).bounds()['teff']
+        return out
+
+    def template_methods(self, cfg: Any) -> list[str]:
+        """
+        The enabled methods that read the template grid: all but linecentre (unless its shape_correction is on), and
+        none given its own template by the method option ``template``/``templates``
+        """
+        out = []
+        for m in cfg.methods.enabled:
+            opts = cfg.methods.options.get(m, {})
+            if opts.get('template') is not None or opts.get('templates'):
+                continue
+            if m != 'linecentre' or opts.get('shape_correction'):
+                out.append(m)
+        return out
+
+    def download_templates(self, cfg: Any, grids: Sequence[str]) -> None:
+        """Download ``grids`` into the cache over ``templates.teff_range`` (default: ``templates.download``'s)"""
+        from rvfitter import templates
+        teff = {} if cfg.templates.teff_range is None else {'teff_range': tuple(cfg.templates.teff_range)}
+        for grid in grids:
+            log.info('Downloading template grid %s%s.', grid, f" (Teff {teff['teff_range']} K)" if teff else '')
+            templates.download(grid, **teff)
+            log.info('Download of %s finished.', grid)

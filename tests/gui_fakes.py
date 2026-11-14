@@ -108,6 +108,8 @@ class FakeBackend:
         self.edge_objects: set[str] = set()
         self.downloads: list[dict] = []
         self.refits: list[tuple] = []
+        self.missing_grids: set[str] = set()  # template_status reports these not downloaded
+        self.download_error: str | None = None  # download_templates raises this
 
     def version(self):
         return '0.0-test'
@@ -206,3 +208,16 @@ class FakeBackend:
         new = make_result(result.object, 99.0)
         self.edge_objects.discard(result.object)
         return new, new_cfg
+
+    def template_status(self, cfg):
+        grids = [cfg.templates.grid] if isinstance(cfg.templates.grid, str) else cfg.templates.grid
+        return {g: None if g in self.missing_grids else (1200., 3000.) for g in grids}
+
+    def template_methods(self, cfg):
+        return [m for m in cfg.methods.enabled if m != 'linecentre']
+
+    def download_templates(self, cfg, grids):
+        if self.download_error:
+            raise ValueError(self.download_error)
+        self.downloads.append({'grids': list(grids)})
+        self.missing_grids -= set(grids)
