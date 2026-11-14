@@ -6,7 +6,7 @@ authors:
 - family-names: "Cooper"
   given-names: "W. J."
   orcid: "https://orcid.org/0000-0003-3501-8967"
-version: 3.0.0  # set at each release (see docs/releasing.md)
+version: 2.1.0  # set at each release (see docs/releasing.md)
 date-released: 2026-11-14  # set at each release
 doi: 10.5281/zenodo.6624927  # concept DOI: resolves to the latest Zenodo release
 license: MIT

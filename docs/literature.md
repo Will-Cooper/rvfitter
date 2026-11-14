@@ -40,7 +40,7 @@ Key: **core** = measures RV; **cal** = calibration or correction step; **err** =
 | PHOENIX | ~50 000 | ~0.3 km/s | — |
 | UVES | ~40 000 | 40–670 m/s | — |
 
-## Gap analysis against rvfitter v1
+## Gap analysis against the script-based rvfitter
 
 **Missing:**
 - An actual CCF (#1) and pixel-level template matching (#2).
@@ -57,7 +57,7 @@ Key: **core** = measures RV; **cal** = calibration or correction step; **err** =
 - Band selection (#20).
 
 **Present but wrong or weak:**
-- **v1 "cross-correlation":** the user nudges the template RV by eye. It is neither reproducible nor weighted, and its error (rvstep/2 + λ RMS) is not statistical. The λ RMS is a fair ingredient of a systematic term, but should not be the error itself.
+- **Script-based "cross-correlation":** the user nudges the template RV by eye. It is neither reproducible nor weighted, and its error (rvstep/2 + λ RMS) is not statistical. The λ RMS is a fair ingredient of a systematic term, but should not be the error itself.
 - **Air wavelengths with c/n_air in the Doppler formula** *[outside report]*. The fix is to convert to vacuum and use c.
 - **Single-line alkali centring:** acceptable at R~2000 *[outside report]* with core-only windows, a systematic floor and a scatter-inflated weighted mean.
 

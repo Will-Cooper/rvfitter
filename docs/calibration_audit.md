@@ -77,12 +77,12 @@ O2 A is not used for J1745−1640 (below 2800 K the K I wings fill it).
   An offset of 1 arcsec across the slit is ${\approx}190$ km/s at R2500I with 2 × 2 binning, so these are off-centre point sources.
 - We note that the Ross 640 comparison uses the sky of the J1745−1640 exposure (the same night and solution, but a 1.23 arcsec rather than a 2.52 arcsec slit), so its constant also contains any change of the solution between the two exposures.
 
-## 3. v1 RVs against the literature
+## 3. Previous-release RVs against the literature
 
-The 12 test objects (Cooper et al. 2024 spectra) with an independent literature RV give v1 − literature differences from −43 to +45 km/s, against quoted errors of 2–7 km/s (Table 3).
+The 12 test objects (Cooper et al. 2024 spectra) with an independent literature RV give previous-release − literature differences from −43 to +45 km/s, against quoted errors of 2–7 km/s (Table 3).
 Per-object absolute zero-point errors of ~20 km/s are therefore real for slit spectra without a telluric constraint.
 
-Table 3: v1 RVs for the Cooper et al. (2024) spectra against the literature [km/s].
+Table 3: Previous-release RVs for the Cooper et al. (2024) spectra against the literature [km/s].
 
 | Object | Night | Literature | Reference | Paper | Paper − literature |
 |---|---|---|---|---|---|

@@ -1,4 +1,4 @@
-# rvfitter v2 architecture and interface contract
+# rvfitter architecture and interface contract
 
 This document fixes the data types and function signatures that the modules of `src/rvfitter/` share.
 Each Phase C work package codes against these interfaces, so packages can be developed in parallel.

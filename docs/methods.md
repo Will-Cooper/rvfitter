@@ -1,6 +1,6 @@
 # Methods and benchmark
 
-This document maps each radial-velocity (RV) technique in [`literature.md`](literature.md) to its implementation in rvfitter v2, and records results on the primary benchmark.
+This document maps each radial-velocity (RV) technique in [`literature.md`](literature.md) to its implementation in rvfitter, and records results on the primary benchmark.
 The method sections are filled in as each technique lands.
 
 ## Benchmark: J1745−1640
@@ -49,7 +49,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 ### Results by method
 
-| Method | v1 | v1 after Phase A fixes | v2 | z (quadrature) |
+| Method | Previous release | Previous release, bug-fixed | rvfitter | z (quadrature) |
 |---|---|---|---|---|
 | Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (default): 13.55 ± 3.62 (σ_total 19.42); `none`: 34.99 ± 5.55 (σ_total 22.83) | default 2.95 (0.65 total); none 1.46 (0.38 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
@@ -64,7 +64,7 @@ The single- versus two-template binary test (`methods.binary`, template-fit wind
 ## Barycentric correction of the GTC spectra
 
 The GTC/OSIRIS spectra used by Cooper et al. (2024) were corrected to the heliocentric frame by `PypeIt` 1.7.0 during reduction.
-rvfitter v2 recomputes that correction for J1745−1640 from the header coordinates and mid-exposure time, at the Roque de los Muchachos site.
+rvfitter recomputes that correction for J1745−1640 from the header coordinates and mid-exposure time, at the Roque de los Muchachos site.
 It finds −20.851 km/s heliocentric (−20.858 km/s barycentric).
 `PypeIt` applied −21.006 km/s (`VEL_CORR` = 0.9999299356).
 
@@ -99,7 +99,7 @@ Each node's error includes the spread over the neighbouring templates (±100 K).
 - Four nodes have a usable sky in the same window (the 9416–9656 Å sky correlates at only 0.56). They give a star − sky offset of **−23.8 ± 3.6 km/s** (H2O 8200: −17.3 ± 10.6; H2O 9300: −24.9 ± 4.9, −23.1 ± 13.8 and −24.5 ± 7.1 km/s; χ² = 0.4 for 3 degrees of freedom, p = 0.93). The star therefore sees the sky's distortion plus a constant, as the audit found for both stars of that night (`docs/calibration_audit.md`). This is probably slit centring: the star sits bluer than the uniformly illuminated sky.
 - The telluric curve alone cannot correct the alkali lines: Rb I 7802, Rb I 7949 and Cs I 8523 lie 290–430 Å from the nearest telluric node.
 
-### What rvfitter v2 does
+### What rvfitter does
 
 We fixed the following error budget before running the benchmark, and did not change it afterwards.
 An offset is either applied, with its error carried as a systematic, or unknown, with a physically motivated prior width; a measured offset's value is never added to the error budget.
@@ -122,7 +122,7 @@ On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (1
 
 For J1745−1640, all three sky tests pass: 6 segments with every region 100 per cent measured, a mean offset of +14.9 ± 3.6 km/s (4.1σ), a segment variation with χ² = 53 for 5 degrees of freedom (p = 3 × 10⁻¹⁰), and a largest correction of 33.5 km/s at the regions against a floor of 5.8 km/s.
 The sky is therefore applied; the star − sky constant (−23.7 ± 4.3 km/s from four nodes, its error including the 2.3 km/s spread over the telluric-fit star models) is applied with it only in `auto`.
-The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the v1 RVs about the literature (`docs/calibration_audit.md`).
+The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the previous release's RVs about the literature (`docs/calibration_audit.md`).
 
 ### Differential atmospheric refraction across the slit
 

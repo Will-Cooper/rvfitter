@@ -1,7 +1,7 @@
 # Releasing rvfitter
 
 Versions come from git tags (`hatch-vcs`): tag `v2.1.0` builds as `2.1.0`.
-Untagged builds get a `.devN+g<hash>` version; `3.0.0.dev0` is the fallback when there is no git metadata.
+Untagged builds get a `.devN+g<hash>` version; `2.1.0.dev0` is the fallback when there is no git metadata.
 
 ## One-time setup (trusted publishing, no API tokens)
 

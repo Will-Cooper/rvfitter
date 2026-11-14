@@ -1,12 +1,12 @@
 # Installing rvfitter
 
-rvfitter v2 is installed with `pip` into a conda environment.
+rvfitter is installed with `pip` into a conda environment.
 It is **not yet on PyPI**, so use the GitHub command marked "now" below.
 When it is released, use the "after release" command instead; everything else is identical.
 
 | | Command |
 |---|---|
-| Now (development branch) | `pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@v2-modernise"` |
+| Now (before the PyPI release) | `pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"` |
 | After release on PyPI | `pip install "rvfitter[all]"` |
 
 `[all]` adds the GUI (PySide6) and the MCMC method (emcee, corner).
@@ -58,7 +58,7 @@ Repeat this `conda activate` line in every new terminal before using rvfitter.
 ### 3. Install rvfitter
 
 ```bash
-pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@v2-modernise"
+pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
 ```
 
 This takes a few minutes and ends with `Successfully installed ... rvfitter-2.0.0.dev0 ...`.
@@ -104,7 +104,7 @@ python -m pipx ensurepath
 Close and reopen the terminal, then:
 
 ```bash
-pipx install "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@v2-modernise"
+pipx install "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@main"
 rvfitter --version
 ```
 
@@ -204,7 +204,7 @@ For paper-ready figures typeset by LaTeX, set `plot_style = "paper"`; this needs
 
 ```bash
 conda activate rvfitter
-pip install --upgrade --force-reinstall --no-deps "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@v2-modernise"
+pip install --upgrade --force-reinstall --no-deps "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@main"
 ```
 
 After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).

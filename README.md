@@ -1,11 +1,11 @@
 # rvfitter
 
 Radial velocities of brown dwarfs from any reduced 1D spectrum, with several independent techniques combined into one adopted RV and an error budget that includes the systematics.
-rvfitter v2 has a command line, a PySide6 GUI and a Python API; it supersedes the script-based v1 (kept in `legacy/`).
+rvfitter has a command line, a PySide6 GUI and a Python API; the earlier script-based code is kept in `legacy/`.
 Cite the code via the Zenodo DOI below and Cooper et al. (2024, MNRAS 534, 695).
 
 **Install: see [docs/install.md](docs/install.md)** (Miniforge or pipx, with a copy-paste first RV and troubleshooting).
-Coming from v1? See [docs/migration.md](docs/migration.md).
+Coming from the script-based release? See [docs/migration.md](docs/migration.md).
 
 ## Quick start
 
