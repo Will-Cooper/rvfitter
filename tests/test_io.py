@@ -473,7 +473,7 @@ def test_spextool_single_and_multi_order(tmp_path):
 @pytest.mark.skipif(not TESTDATA, reason='RVFITTER_TESTDATA not set')
 @pytest.mark.parametrize('name, r, site', [('sxd_J0508+3319', 2000., 'NASA IRTF'),
                                            ('prism_J1143+5324', 220., 'NASA IRTF'), ('xtc_J0526-5026', 3500., 'ctio')])
-def test_gemma_spextool_files(name, r, site):
+def test_spextool_files(name, r, site):
     from rvfitter import barycentric
     spec = io.read_spectrum(Path(TESTDATA) / f'gemma_spectra/spectra/{name}.fits')
     assert spec.resolution == r and spec.meta['site'] == site and spec.meta['medium_source'] == 'header:WAVETYPE'

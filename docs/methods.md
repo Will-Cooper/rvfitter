@@ -49,7 +49,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 ### Results by method
 
-| Method | v1 (paper) | v1 after Phase A fixes | v2 | z (quadrature) |
+| Method | v1 | v1 after Phase A fixes | v2 | z (quadrature) |
 |---|---|---|---|---|
 | Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (default): 13.55 ± 3.62 (σ_total 19.42); `none`: 34.99 ± 5.55 (σ_total 22.83) | default 2.95 (0.65 total); none 1.46 (0.38 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
@@ -69,7 +69,7 @@ It finds −20.851 km/s heliocentric (−20.858 km/s barycentric).
 `PypeIt` applied −21.006 km/s (`VEL_CORR` = 0.9999299356).
 
 The 0.155 km/s difference traces to the GTC headers: they record `LON-OBS` = +17.877°, but GTC lies at 17.89° **west**.
-Every GTC RV in the paper sample therefore probably carries a sub-0.2 km/s offset from this.
+Every GTC/OSIRIS spectrum reduced by `PypeIt` with these headers therefore probably carries a sub-0.2 km/s offset from this.
 That is well below the quoted uncertainties, but it is systematic, so it is recorded here.
 The helio–barycentric difference for this spectrum is only 0.007 km/s.
 
@@ -84,7 +84,7 @@ We cross-correlated it per segment with a vacuum model sky and checked it agains
 - Correcting each line by its local sky offset reduces the line-to-line scatter from 11.3 to 3.2 km/s. This test does not use the benchmark. Most of the apparent line-to-line scatter in this spectrum is therefore wavelength calibration, not template physics.
 - The sky fills the slit uniformly, whereas the star may be off-centre, so the sky cannot measure the star's own constant offset. That requires the telluric absorption lines, which share the star's light path.
 
-The same distortion probably affects other GTC/OSIRIS R2500I spectra in Cooper et al. (2024), and its size varies by line, so the paper's line-centre RVs may carry offsets of up to a few tens of km/s per line.
+The same distortion probably affects other GTC/OSIRIS R2500I spectra reduced this way, and its size varies by line, so uncorrected line-centre RVs from such spectra may carry offsets of up to a few tens of km/s per line.
 
 ### The star's own zero point from the telluric lines
 
@@ -122,7 +122,7 @@ On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (1
 
 For J1745−1640, all three sky tests pass: 6 segments with every region 100 per cent measured, a mean offset of +14.9 ± 3.6 km/s (4.1σ), a segment variation with χ² = 53 for 5 degrees of freedom (p = 3 × 10⁻¹⁰), and a largest correction of 33.5 km/s at the regions against a floor of 5.8 km/s.
 The sky is therefore applied; the star − sky constant (−23.7 ± 4.3 km/s from four nodes, its error including the 2.3 km/s spread over the telluric-fit star models) is applied with it only in `auto`.
-The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the paper's RVs about the literature (`docs/calibration_audit.md`).
+The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the v1 RVs about the literature (`docs/calibration_audit.md`).
 
 ### Differential atmospheric refraction across the slit
 

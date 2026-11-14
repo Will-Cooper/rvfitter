@@ -91,7 +91,7 @@ def test_config_validates_wave_rms():
 
 @pytest.mark.data
 @pytest.mark.parametrize('name', ['sxd_J0508+3319.fits', 'prism_J0832+3538.fits', 'xtc_J0526-5026.fits'])
-def test_gemma_spectra_get_scale_and_seeing(name):
+def test_spextool_spectra_get_scale_and_seeing(name):
     root = os.environ.get('RVFITTER_TESTDATA')
     if not root:
         pytest.skip('RVFITTER_TESTDATA not set')
