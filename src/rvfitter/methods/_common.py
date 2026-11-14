@@ -3,6 +3,7 @@ Helpers shared by the template-based methods: options, regions, window data, tem
 selection, deterministic parallel maps, and the per-window and per-method results.
 """
 import copy
+import functools
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Executor
@@ -176,6 +177,15 @@ class Template:
     def wave(self) -> np.ndarray:
         return np.exp(self.lnw0 + self.dlnw * np.arange(len(self.flux)))
 
+    @functools.cached_property
+    def _cumulative(self) -> tuple[np.ndarray, np.ndarray]:
+        """Running integral of the flux (index units) and running count of non-finite intervals"""
+        finite = np.isfinite(self.flux)
+        f = np.where(finite, self.flux, 0.)
+        cum = np.concatenate([[0.], np.cumsum(0.5 * (f[1:] + f[:-1]))])
+        bad = np.concatenate([[0.], np.cumsum(~finite[1:] | ~finite[:-1])]).astype(float)
+        return cum, bad
+
     def at(self, wave: np.ndarray, v: float | np.ndarray = 0.) -> np.ndarray:
         """
         Template flux at observed pixels for radial velocities v (scalar → 1D, array → (len(v), len(wave)))
@@ -194,12 +204,9 @@ class Template:
             return out[0] if v.ndim == 0 else out
         mid = 0.5 * (lnw[1:] + lnw[:-1])
         edges = np.concatenate([[2 * lnw[0] - mid[0]], mid, [2 * lnw[-1] - mid[-1]]])
-        finite = np.isfinite(self.flux)
-        f = np.where(finite, self.flux, 0.)
-        cum = np.concatenate([[0.], np.cumsum(0.5 * (f[1:] + f[:-1]))])  # integral in index units
-        bad = np.concatenate([[0.], np.cumsum(~finite[1:] | ~finite[:-1])]).astype(float)
+        cum, bad = self._cumulative
         x = ((edges[None, :] - shift[:, None]) - self.lnw0) / self.dlnw
-        inside = (x >= 0) & (x <= len(f) - 1)
+        inside = (x >= 0) & (x <= len(self.flux) - 1)
         cx = np.interp(x.ravel(), idx, cum).reshape(x.shape)
         bx = np.interp(x.ravel(), idx, bad).reshape(x.shape)
         width = np.diff(x, axis=1)
