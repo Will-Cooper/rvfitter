@@ -133,7 +133,8 @@ def test_run_writes_pdfs_unless_no_plots(monkeypatch, tmp_path):
     from plotting_synth import synthetic_result
     from rvfitter import config, pipeline, results
     ns = types.SimpleNamespace
-    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=['csv'], plots=True))
+    cfg = ns(input=ns(paths=['x']), output=ns(path=str(tmp_path / 'o.csv'), formats=['csv'], plots=True,
+                                                                    plot_style='quick'))
     monkeypatch.setattr(config, 'load', lambda p: cfg, raising=False)
     monkeypatch.setattr(pipeline, 'run', lambda *a, **k: [synthetic_result()])
     monkeypatch.setattr(results, 'write', lambda *a, **k: [])
