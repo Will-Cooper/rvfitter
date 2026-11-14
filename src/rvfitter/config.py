@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref', 'linecentre', 'forward_mcmc', 'lsd')  # methods.REGISTRY keys
+METHOD_LABELS = {'ccf': 'CCF', 'template_fit': 'Template fit', 'linecentre': 'Line centring',  # display names
+                 'forward_mcmc': 'Forward model', 'lsd': 'LSD', 'telluric_ref': 'Telluric reference'}
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 MEDIA = ('air', 'vacuum')
 INPUT_MEDIA = ('auto', *MEDIA)

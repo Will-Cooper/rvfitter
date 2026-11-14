@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import METHOD_NAMES, OUTPUT_FORMATS
+from ..config import METHOD_LABELS, METHOD_NAMES, OUTPUT_FORMATS
 from ..templates import KNOWN_GRIDS
 
 TIPS = {
@@ -253,7 +253,9 @@ class CheckListEditor(Editor):
             self._add(c)
 
     def _add(self, name: str):
-        box = QCheckBox(name)
+        box = QCheckBox(METHOD_LABELS.get(name, name))
+        if name in METHOD_LABELS:
+            box.setToolTip(f'{METHOD_LABELS[name]} (config name "{name}")')
         n = len(self.boxes)
         self.boxes[name] = box
         self._lay.addWidget(box, n // self.COLUMNS, n % self.COLUMNS)
