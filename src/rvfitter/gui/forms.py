@@ -14,7 +14,7 @@ import types
 import typing
 from typing import Any, Literal, Union, get_args, get_origin
 
-from PySide6.QtCore import QMargins, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -276,26 +277,41 @@ class CheckListEditor(Editor):
 class GroupEditor(Editor):
     """A nested dataclass: a group box holding one editor per field.
 
-    A section (one level below the root) is collapsible: its title is a check box that shows or hides the fields.
+    A section (one level below the root) is collapsible: an arrow button with its title shows or hides the fields
+    (an arrow, not a check box, so it does not read as switching the section on or off).
     """
 
     def __init__(self, cls: type, path: str, tooltips: dict[str, str]):
         self.cls, self.path = cls, path
         title = LABELS.get(path.rsplit('.', 1)[-1], path.rsplit('.', 1)[-1].replace('_', ' ').capitalize())
-        self.widget = QGroupBox(title)
+        section = path.count('.') == 1
         self.body = QWidget()
         self.layout = QFormLayout(self.body)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)  # same on every OS
+        self.box = QGroupBox('' if section else title)
+        QVBoxLayout(self.box).addWidget(self.body)
+        if not section:
+            self.widget = self.box
+            self._add_fields(cls, path, tooltips)
+            return
+        self.widget = QWidget()
         outer = QVBoxLayout(self.widget)
-        outer.addWidget(self.body)
-        self._margins = outer.contentsMargins()
-        if path.count('.') == 1:
-            self.widget.setCheckable(True)
-            self.widget.setChecked(path.rsplit('.', 1)[-1] in OPEN_SECTIONS)
-            self.widget.toggled.connect(self._expand)
-            self._expand(self.widget.isChecked())
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.toggle = QToolButton(text=title, checkable=True, autoRaise=True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        font = self.toggle.font()
+        font.setBold(True)
+        self.toggle.setFont(font)
+        self.toggle.toggled.connect(self._expand)
+        outer.addWidget(self.toggle)
+        outer.addWidget(self.box)
+        self.toggle.setChecked(path.rsplit('.', 1)[-1] in OPEN_SECTIONS)
+        self._expand(self.toggle.isChecked())
+        self._add_fields(cls, path, tooltips)
+
+    def _add_fields(self, cls: type, path: str, tooltips: dict[str, str]) -> None:
         self.children: dict[str, Editor] = {}
         hints = typing.get_type_hints(cls)
         for f in dataclasses.fields(cls):
@@ -316,8 +332,8 @@ class GroupEditor(Editor):
                     lab.setToolTip(tip)
 
     def _expand(self, on: bool) -> None:
-        self.body.setVisible(on)
-        self.widget.layout().setContentsMargins(self._margins if on else QMargins(0, 0, 0, 0))
+        self.box.setVisible(on)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if on else Qt.ArrowType.RightArrow)
 
     def get(self, base: Any = None) -> Any:
         base = base if base is not None else self.cls()

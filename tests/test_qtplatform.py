@@ -41,3 +41,18 @@ def test_xcb_cursor_only_checked_for_xcb(monkeypatch):
     assert not xcb_cursor_missing({'QT_QPA_PLATFORM': 'offscreen'}, ['xcb'], 'linux')
     assert not xcb_cursor_missing({}, ['wayland'], 'linux')
     assert not xcb_cursor_missing({}, ['xcb'], 'darwin')
+
+
+def test_wayland_quiets_textinput_warning_unless_user_rules(monkeypatch):
+    from rvfitter.gui import qtplatform
+    monkeypatch.setattr(qtplatform, 'plugin_names', lambda d: ['wayland', 'xcb'])
+    monkeypatch.setattr(qtplatform.sys, 'platform', 'linux')
+    for var in ('QT_QPA_PLATFORM', 'QT_LOGGING_RULES'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('XDG_SESSION_TYPE', 'wayland')
+    qtplatform.configure_platform()
+    assert qtplatform.os.environ['QT_LOGGING_RULES'] == 'qt.qpa.wayland.textinput=false'
+    monkeypatch.delenv('QT_QPA_PLATFORM')
+    monkeypatch.setenv('QT_LOGGING_RULES', 'mine')
+    qtplatform.configure_platform()
+    assert qtplatform.os.environ['QT_LOGGING_RULES'] == 'mine'

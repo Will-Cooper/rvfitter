@@ -47,6 +47,8 @@ def configure_platform() -> None:
     os.environ['QT_QPA_PLATFORM'] = choice
     if choice == 'xcb':
         log.info('No Qt Wayland plugin in this PySide6: running through XWayland (QT_QPA_PLATFORM=xcb)')
+    else:  # a harmless Qt/GNOME text-input warning floods the terminal on Wayland; user rules win
+        os.environ.setdefault('QT_LOGGING_RULES', 'qt.qpa.wayland.textinput=false')
 
 
 def xcb_cursor_missing(env: Mapping[str, str], plugins: list[str], system: str = sys.platform) -> bool:
