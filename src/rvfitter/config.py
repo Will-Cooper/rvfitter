@@ -162,6 +162,9 @@ class CalibrationConfig:
     slit_prior: str | float = 'auto'
     # [arcsec] seeing FWHM assumed for the 'auto' slit prior when the trace FWHM is unknown (WARNING, seeing_assumed)
     seeing_fwhm: float = 0.8
+    # [km/s] wavelength-calibration accuracy assumed when the file records no arc RMS (WARNING, wave_rms_assumed); wins
+    # over the instrument-typical value of data/instruments.csv
+    wave_rms_kms: float | None = None
     zero_point_known: bool = False  # fibre/IFU data or absolute calibration: no slit-centring term
     sky_source: str | None = None  # file whose sky spectrum shares the input's wavelength solution (e.g. a spec1d)
     sky_segment_width: float = 250.  # [Å]; Δv(λ) is interpolated between segments of the telluric-free spans
@@ -438,6 +441,8 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f'calibration.slit_prior = {sp!r} must be "auto", "none" or a velocity >= 0 [km/s]')
     if not cfg.calibration.seeing_fwhm > 0:
         p.append(f'calibration.seeing_fwhm = {cfg.calibration.seeing_fwhm} must be > 0 [arcsec]')
+    if cfg.calibration.wave_rms_kms is not None and not cfg.calibration.wave_rms_kms > 0:
+        p.append(f'calibration.wave_rms_kms = {cfg.calibration.wave_rms_kms} must be > 0 [km/s]')
     if not cfg.calibration.sky_segment_width > 0:
         p.append(f'calibration.sky_segment_width = {cfg.calibration.sky_segment_width} must be > 0 [Å]')
     if not cfg.calibration.telluric_segment_width > 0:

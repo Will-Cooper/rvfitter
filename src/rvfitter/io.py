@@ -359,6 +359,9 @@ def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     inst, _ = _first(header, ('INSTRUME', 'INSTRUMENT', 'INSTR'))
     out['instrument'] = None if inst is None else str(inst).strip()
+    # every INSTRUME/INSTR value: Spextool files carry both ('SpeX Spectrograph', 'uSpeX'), and the table keys on INSTR
+    out['instrument_names'] = tuple(str(header[k]).strip() for k in ('INSTRUME', 'INSTRUMENT', 'INSTR')
+                                    if header.get(k) is not None)
     pyp = header.get('PYP_SPEC')
     out['pypeit_spec'] = None if pyp is None else str(pyp).strip()
     width, key = None, None
