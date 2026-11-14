@@ -218,3 +218,15 @@ def test_binary_test_only_when_enabled(fakes, monkeypatch, enabled):
     assert len(calls) == 4  # every epoch; A has two
     assert table.loc['A', 'binary_dbic'] == 12. and bool(table.loc['A', 'binary_flag'])
     assert table.loc['B', 'binary_dbic'] == -3. and not bool(table.loc['B', 'binary_flag'])
+
+
+def test_failed_template_method_leaves_no_template_term(fakes, monkeypatch):
+    """A template method enabled but failing everywhere (e.g. an optical grid on NIR data) contributes nothing, so
+    model-free line centring alone has no template systematic (absent, not unknown)"""
+    monkeypatch.setattr(pipeline, 'REGISTRY', {'linecentre': FakeMethod('linecentre'),
+                                               'template_fit': FakeMethod('template_fit', fail=True)})
+    monkeypatch.setattr(systematics, 'template_spread', lambda *a, **k: float('nan'))
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = ['linecentre', 'template_fit']
+    res = pipeline.run(cfg, INPUTS, n_procs=1, failures=[])
+    assert all(r.systematics['template_spread'] == 0. for r in res)

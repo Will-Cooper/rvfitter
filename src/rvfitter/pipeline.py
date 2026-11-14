@@ -265,7 +265,10 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     if 'linecentre' in results:  # True only with the opt-in, template-calibrated shape correction
         sysd['linecentre_shape_correction'] = any(m.diagnostics.get('shape_correction')
                                                   for m in results['linecentre'].measurements)
-    if set(results) <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
+    # methods that contributed a usable measurement (an enabled template method that failed everywhere does not)
+    used = {m for m, r in results.items()
+            if any(np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS for x in r.measurements)}
+    if used <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
         sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
     else:
         sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
