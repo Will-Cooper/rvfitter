@@ -12,6 +12,9 @@ shape: the template nearest the priors, at the spectrum's R on its pixels, noise
 exactly like the data, its RV (truth 0) is subtracted, and the standard deviation of that offset over the
 template and its ±1 Teff-step grid neighbours is added in quadrature to the error. The method then depends on
 the template models (logged at INFO).
+
+A resolving power below `_common.min_resolution` (the smallest catalogue r_min of the lines) is refused; an unknown
+R is estimated by the template fit first (WARNING), as for the template methods.
 """
 import logging
 from collections.abc import Sequence
@@ -142,6 +145,8 @@ def _fit(lines: list[_Line], profile: str, sigma_known: bool, name: str) -> tupl
     v = float(params[0])
     err = float(np.sqrt(cov[0, 0])) * chi2_scale
     flag = C.FLAG_EDGE if min(v - v_lo, v_hi - v) < _EDGE_FRAC * (v_hi - v_lo) else 0
+    if flag:  # at the window's velocity bound: the covariance error there is 0
+        err = C.bound_error(err, v_lo, v_hi)
     absent = params[1::nb] <= 1e-6 * np.array([ln.p0[0] for ln in lines])  # no absorption
     widths = sum(params[2 + j::nb] for j in range(len(names)))  # σ + γ for a Voigt profile
     unresolved = widths <= half_pix * (1. + 1e-3)  # a width at its bound: a noise spike, not a line
@@ -209,6 +214,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     (a few fast, deterministic fits); they keep the method signature.
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
+    C.check_resolution(METHOD, C.resolution_of(spectrum, cfg, opts))  # an unknown R is estimated (WARNING)
     profile = opts['profile']
     if profile not in PROFILES:
         raise ValueError(f'linecentre profile must be one of {sorted(PROFILES)}, not {profile!r}')

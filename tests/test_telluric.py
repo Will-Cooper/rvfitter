@@ -328,7 +328,7 @@ def test_unmeasured_constant_uses_slit_prior(caplog):
     cfg.calibration.slit_prior = 'auto'
     cfg.calibration.zero_point_known = True
     known = wcorr.star_sky_term(info, spec, at, cfg, 'X')
-    assert np.isnan(known['value']) and known['flags'] == 0
+    assert known['value'] == 0. and known['flags'] == 0  # the term is defined as 0, not unknown
     cfg.calibration.zero_point_known = False
     bare = _star_and_sky(25., slit_meta=False)
     _, info2 = wcorr.correct(bare, bare, cfg, 'X', regions=REGS)

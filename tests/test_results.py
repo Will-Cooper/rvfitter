@@ -22,7 +22,7 @@ def make_result(name='J1745', rv=27.4, with_tref=False):
         object=name, files=['a.fits', 'b.fits'], methods=ms,
         adopted={'median': rv, 'err': 1.5, 'q16': rv - 1.5, 'q84': rv + 1.5, 'tau_line': 0.4, 'tau_method': 0.2,
                  'n_methods': 2, 'n_lines': 4},
-        systematics={'template_spread': 0.8, 'wavelength_zero_point': 0.6},
+        systematics={'template_spread': 0.8, 'wavelength_zero_point': 0.6, 'star_sky_systematic': 0.},
         barycentric={'applied_kms': -12.3, 'source': 'header', 'frame': 'barycentric'},
         binary={'dbic': 3.2, 'flag': False}, config_hash='abc123', version='2.0.0')
 
@@ -43,6 +43,13 @@ def test_schema():
     assert df.loc[0, 'rv_spread'] == pytest.approx(np.std([27.9, 27.1], ddof=1))
     assert df.loc[0, 'rv_mean'] == pytest.approx(27.5)
     assert df.loc[0, 'files'] == 'a.fits;b.fits'
+
+
+def test_total_error_unknown_term_is_nan():
+    """An unknown (NaN) systematic makes rv_total_err NaN; it is never counted as 0"""
+    res = make_result()
+    res.systematics['star_sky_systematic'] = np.nan
+    assert np.isnan(results.to_table([res]).loc[0, 'rv_total_err'])
 
 
 def test_details():

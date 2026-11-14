@@ -45,6 +45,7 @@ SITES: dict[str, tuple[float, float, float]] = {
     'salt': (-32.3760, 20.8120, 1798.),
     'subaru': (19.8255, -155.4761, 4163.),
     'lbt': (32.7013, -109.8891, 3221.),
+    'ctio': (-30.1653, -70.8150, 2215.),  # Cerro Tololo (Blanco 4-m, ARCoIRIS): astropy EarthLocation.of_site('ctio')
 }
 # Lower-case substrings found in TELESCOP/OBSERVAT strings -> key of SITES (first match wins)
 _ALIASES: tuple[tuple[str, str], ...] = (
@@ -59,6 +60,7 @@ _ALIASES: tuple[tuple[str, str], ...] = (
     ('mcdonald', 'mcdonald'), ('palomar', 'palomar'), ('kitt peak', 'kitt_peak'), ('kpno', 'kitt_peak'),
     ('la silla', 'la_silla'), ('lasilla', 'la_silla'), ('salt', 'salt'), ('southern african large', 'salt'),
     ('subaru', 'subaru'), ('lbt', 'lbt'), ('large binocular', 'lbt'),
+    ('ctio', 'ctio'), ('cerro tololo', 'ctio'), ('blanco', 'ctio'),
 )
 
 # Header keywords, compared case-insensitively against raw header keys or `Spectrum.meta` names.
@@ -236,9 +238,10 @@ def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric
         if mode == 'apply':
             raise ValueError('Cannot compute the velocity correction; missing ' + ', '.join(missing)
                              + ' (supply them in the overrides)')
-        log.warning('Cannot compute the %s correction for %s (missing %s); skipping it. '
-                    'Measured RVs are then in the observed frame', frame, spectrum.source or 'spectrum',
-                    ', '.join(missing))
+        log.warning('Cannot compute the %s correction for %s (missing %s); skipping it. Measured RVs are then in '
+                    "the frame of the input's wavelengths: %s", frame, spectrum.source or 'spectrum',
+                    ', '.join(missing), meta.get('frame_note') or 'the observed (topocentric) frame unless a '
+                    'velocity correction was applied without a header record')
         return 0., 'skipped'
     log.info('Computed %s correction %+.3f km/s', frame, kms)
     return kms, 'computed'

@@ -153,7 +153,8 @@ def _fit_profile(v: np.ndarray, z: np.ndarray, cov: np.ndarray, sig0: float) -> 
     red = float(np.sum(((z - _gauss(v, *p)) / err_z) ** 2)) / max(len(v) - 4, 1)
     err = np.sqrt(np.diag(pcov))
     edge = p[2] - 2 * p[3] < lo or p[2] + 2 * p[3] > hi
-    return dict(ok=bool(np.all(np.isfinite(err))), edge=bool(edge), mu=float(p[2]), mu_err=float(err[2]),
+    return dict(ok=bool(np.all(np.isfinite(err))), edge=bool(edge), mu=float(p[2]),
+                mu_err=C.bound_error(float(err[2]), lo, hi) if edge else float(err[2]),
                 sig=float(p[3]), sig_err=float(err[3]), chi2_red=red, params=p)
 
 
@@ -218,6 +219,9 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     if opts['mask'] not in ('template', 'catalogue'):
         raise ValueError(f'lsd option mask must be "template" or "catalogue", not {opts["mask"]!r}')
     resolution = C.resolution_of(spectrum, cfg, opts)
+    C.check_resolution(METHOD, resolution)
+    cands = C.candidates(cfg, opts)
+    regions = C.covered_regions(METHOD, regions, cands)
     windows, masks = C.split_regions(regions)
     windows = C.segment(windows, resolution, opts['segment_res'])  # each segment has its own polynomial
     datas = []
@@ -235,7 +239,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     tf_datas, _ = template_fit._prepare(spectrum, regions, tf_opts, resolution)
     score = partial(template_fit._score_candidate, datas=tf_datas, resolution=resolution, wave_range=wave_range,
                     opts=tf_opts, rv_grid=template_fit._rv_grid(spectrum, tf_opts))
-    tpl_mask, flag_grid, tdiag = C.choose_template(METHOD, C.candidates(cfg, opts), score, cfg, opts,
+    tpl_mask, flag_grid, tdiag = C.choose_template(METHOD, cands, score, cfg, opts,
                                                    opts['mask_resolution'], wave_range,
                                                    sum(d.n for d in datas), executor)
     tpl_data = C.Template(tpl_mask.lnw0, tpl_mask.dlnw, broadening.broaden_loglam(

@@ -109,3 +109,15 @@ def test_no_sigma_estimates_noise(caplog):
     res = ccf.measure(spec, injection.full_region(spec), cfg, rng=np.random.default_rng(1))
     assert 'no flux errors' in caplog.text
     assert abs(res.rv - 5.) < 4 * res.rv_err and 0.5 < res.rv_err < 10.
+
+
+def test_peak_at_search_bound_is_flagged():
+    """A CCF peak at, near or truncated by a search bound is an edge (not_converged, excluded) with a finite error"""
+    v = np.arange(-500., 500.1, 5.)
+    for centre, edge in ((0., False), (-489., True), (-520., True), (497., True)):
+        assert ccf.fit_peak(v, np.exp(-0.5 * ((v - centre) / 50.) ** 2))['edge'] is edge, centre
+    assert C.bound_error(0., -500., 500.) == 500. and C.bound_error(np.nan, -1., 1.) == 1.
+    spec, truth = synth.make_spectrum(rv=480., snr=50., rng=np.random.default_rng(2))
+    cfg = injection.cfg_of({'methods': {'options': {'ccf': {'template': truth['template'], 'n_mc': 0}}}})
+    m = ccf.measure(spec, injection.full_region(spec), cfg, rng=np.random.default_rng(1)).measurements[0]
+    assert m.flag & C.FLAG_EDGE and m.rv_err >= 500.

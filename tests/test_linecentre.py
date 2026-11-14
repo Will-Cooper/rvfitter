@@ -209,3 +209,11 @@ def test_blended_cs_8946_not_for_line_centring():
     spec, _ = synth.make_spectrum(rv=RV, snr=300., wave_range=(8400., 9000.), rng=np.random.default_rng(1))
     names = {r.name for r in regions.select(spec, teff=2000., methods=['linecentre'])['linecentre']}
     assert 'Cs I 8523' in names and 'Cs I 8946' not in names
+
+
+def test_line_outside_its_window_is_a_bound_hit():
+    """A line shifted beyond its window: the fit stops at the velocity bound, flagged with a finite error, never 0"""
+    spec, _ = synth.make_spectrum(rv=900., snr=100., template=_template('gaussian'), rng=np.random.default_rng(1))
+    rest, _ = synth.make_spectrum(rv=0., snr=100., template=_template('gaussian'), rng=np.random.default_rng(1))
+    hits = [m for m in _measure(spec, _line_regions(rest)).measurements if m.flag & C.FLAG_EDGE]
+    assert hits and all(np.isfinite(m.rv_err) and m.rv_err >= 100. for m in hits)

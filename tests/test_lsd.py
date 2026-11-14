@@ -86,4 +86,5 @@ def test_j1745():
                  '%d mask lines; template %s)', mode, m.rv, m.rv_err, total, abs(m.rv - 26.2) / np.hypot(2.3, m.rv_err),
                  abs(m.rv - 26.2) / np.hypot(2.3, total), d['mask_zero_point'], d['vsini'], d['vsini_upper'],
                  d['n_mask_lines'], d['template'])
-        assert np.isfinite(m.rv) and np.isfinite(total)
+        # lsd alone: the template spread (measured with template_fit) is unknown, so rv_total_err is NaN
+        assert np.isfinite(m.rv) and np.isnan(total)

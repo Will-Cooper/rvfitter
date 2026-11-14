@@ -52,3 +52,11 @@ def test_catalogue_lines_match_nist():
         if diff > TOL:
             bad.append(f'{row["name"]}: {float(row["wave_vac"]):.4f} Å differs from NIST by {diff:.4f} Å')
     assert not bad, 'catalogue wavelengths disagree with NIST:\n' + '\n'.join(bad)
+
+
+def test_j_band_k_i_lines_kept_in_late_m_dwarfs():
+    """The J-band K I lines are used through the M dwarfs (Cushing et al. 2005; M1V ~ 3650 K), not only below 2600 K"""
+    from rvfitter.features import features
+    kj = [f for f in features() if f.species == 'K I' and f.wave_vac > 11000.]
+    assert len(kj) == 4 and all(f.teff_ok(3200.) and f.teff_ok(3600.) and not f.teff_ok(4000.) for f in kj)
+    assert all('Pecaut' in f.caveat and f.rest_ref == 'NIST ASD (Ritz)' for f in kj)

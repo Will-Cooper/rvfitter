@@ -396,7 +396,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region] | None = None, *, reso
     ff = frame_factor(spectrum.meta)
     wave = spectrum.wave / ff
     flux, sigma = np.asarray(spectrum.flux, float), np.asarray(spectrum.sigma, float)
-    airmass = meta_airmass(spectrum.meta, _AIRMASS_DEFAULT)
+    airmass = meta_airmass(spectrum.meta, _AIRMASS_DEFAULT, 'the starting telluric scalings (then fitted)')
     pwv = telluric.DEFAULT_PWV
     if template is not None and resolution is None and not spectrum.resolution:
         raise ValueError('a stellar template needs a known resolution')

@@ -93,3 +93,40 @@ def test_segments_and_outlier_rejection():
     ms = [Measurement('x', str(i), v, 2.) for i, v in enumerate([20., 22., 25., 21., 400.])]
     res = C.finish('x', ms)
     assert ms[-1].flag & C.FLAG_OUTLIER and res.n_regions == 4 and abs(res.rv - 22.) < 2.
+
+
+def test_outlier_cannot_mask_itself():
+    """Leave-one-out: a displaced line among few (J1331 line centres; Rb I 7802 at -253) inflates the MAD of all
+    five RVs (s = 42 km/s, not rejected) but not the MAD of the other four (s = 21 km/s)"""
+    from rvfitter.types import Measurement
+    rvs, errs = [-73.6, -70.7, -252.9, -45.0, -108.2], [5.1, 7.2, 8.7, 17.8, 44.4]
+    ms = [Measurement('linecentre', str(i), v, e) for i, (v, e) in enumerate(zip(rvs, errs, strict=True))]
+    C.reject_outliers(ms, 5.)
+    assert [bool(m.flag & C.FLAG_OUTLIER) for m in ms] == [False, False, True, False, False]
+
+
+@pytest.mark.parametrize('method', ['template_fit', 'ccf', 'linecentre', 'lsd'])
+def test_low_resolution_refused(method):
+    """Below the smallest catalogue r_min of a method's features (1000) the method refuses with a clear ValueError"""
+    spec, truth = synth.make_spectrum(rv=10., resolution=500., snr=50., rng=np.random.default_rng(1))
+    assert C.min_resolution(method) == 1000.
+    opts = {} if method == 'linecentre' else {'template': truth['template']}
+    cfg = injection.cfg_of({'methods': {'options': {method: opts}}})
+    with pytest.raises(ValueError, match='R = 500 is below the minimum R 1000'):
+        REGISTRY[method](spec, injection.full_region(spec), cfg, rng=np.random.default_rng(0))
+
+
+@pytest.mark.parametrize('method', ['template_fit', 'ccf'])
+def test_windows_outside_the_template_are_dropped(method, caplog):
+    """A window the template does not cover is dropped with a WARNING naming it; none covered: a clear ValueError"""
+    from rvfitter.types import Region
+    spec, truth = synth.make_spectrum(rv=10., snr=50., rng=np.random.default_rng(1))
+    w, f = truth['template']
+    tpl = (w[w < 8300.], f[w < 8300.])
+    cfg = injection.cfg_of({'methods': {'options': {method: {'template': tpl}}}})
+    inside, outside = Region('in', method, 7600., 8000.), Region('out', method, 8500., 8900.)
+    res = REGISTRY[method](spec, [inside, outside], cfg, rng=np.random.default_rng(0))
+    assert [m.region for m in res.measurements] == ['in'] and abs(res.rv - 10.) < 5.
+    assert 'dropping out (8500-8900 Å)' in caplog.text
+    with pytest.raises(ValueError, match='contains no window: out'):
+        REGISTRY[method](spec, [outside], cfg, rng=np.random.default_rng(0))

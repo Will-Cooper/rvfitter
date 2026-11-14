@@ -434,3 +434,48 @@ def test_j1745_arc_range_and_mask():
     assert io.read_spectrum(nopipe).meta['arc_range'] == (lo, hi)  # found three levels up
     tell = io.read_spectrum(base / 'Science/DENISJ174534.6-164053_tellcorr.fits')
     assert tell.meta['arc_range'] == (lo, hi)
+    assert tell.meta['wave_rms'] == pytest.approx(0.0714, abs=1e-3)  # arc-fit residual RMS [Å], ~2.5 km/s
+
+
+def _spextool(path: Path, data: np.ndarray, header: dict) -> Path:
+    prim = fits.PrimaryHDU(data)
+    prim.header.update({'NORDERS': data.shape[0] if data.ndim == 3 else 1, 'XUNITS': 'um', 'WAVETYPE': 'Vacuum',
+                        'RP': 2000, 'SLTW_ARC': 0.5, 'OBJECT': 'X', **header})
+    prim.writeto(path)
+    return path
+
+
+def test_spextool_single_and_multi_order(tmp_path):
+    """Spextool 4xN and orders x 4 x N images: µm -> Å, vacuum, R, slit, TCS coordinates, average time, site"""
+    from rvfitter import barycentric
+    um = WAVE / 1e4
+    one = np.vstack([um, FLUX, np.full_like(um, 0.05), np.zeros_like(um)])
+    spec = io.read_spectrum(_spextool(tmp_path / 'sxd.fits', one, {
+        'TELESCOP': 'NASA IRTF', 'TCS_RA': ' 05:08:55.40', 'TCS_DEC': ' 33:19:08.2', 'MJD_OBS': 58912.2375949,
+        'ITOT': 956.}))
+    np.testing.assert_allclose(spec.wave, WAVE)
+    assert spec.resolution == 2000. and spec.meta['medium_in'] == 'vacuum' and spec.meta['reader'] == 'spextool'
+    assert spec.meta['ra'] == pytest.approx(77.2308, abs=1e-4) and spec.meta['dec'] == pytest.approx(33.3189, abs=1e-4)
+    assert spec.meta['mjd_mid'] == 58912.2375949 and spec.meta['slit_width_arcsec'] == 0.5
+    # two overlapping orders (red first): the bluer order's pixels are kept in the overlap; ARCoIRIS: DATE + UT, CTIO
+    blue, red = one[:, :150].copy(), one[:, 100:250].copy()
+    red[1] *= 2.
+    spec = io.read_spectrum(_spextool(tmp_path / 'xtc.fits', np.stack([red, blue]), {
+        'INSTR': 'ARCoIRIS', 'RA': '05:26:50.13', 'DEC': '-50:27:23.7', 'DATE': '2018-04-04', 'UT': '01:34:45.8'}))
+    np.testing.assert_allclose(spec.wave, WAVE[:250])
+    np.testing.assert_allclose(spec.flux, np.concatenate([FLUX[:150], 2. * FLUX[150:250]]))
+    assert spec.meta['site'] == 'ctio' and spec.meta['mjd_source'] == 'DATE+UT (average)'
+    assert spec.meta['mjd_mid'] == pytest.approx(58212.065808, abs=1e-6)
+    assert barycentric.correction(spec, 'auto', 'barycentric')[1] == 'computed'
+
+
+@pytest.mark.data
+@pytest.mark.skipif(not TESTDATA, reason='RVFITTER_TESTDATA not set')
+@pytest.mark.parametrize('name, r, site', [('sxd_J0508+3319', 2000., 'NASA IRTF'),
+                                           ('prism_J1143+5324', 220., 'NASA IRTF'), ('xtc_J0526-5026', 3500., 'ctio')])
+def test_gemma_spextool_files(name, r, site):
+    from rvfitter import barycentric
+    spec = io.read_spectrum(Path(TESTDATA) / f'gemma_spectra/spectra/{name}.fits')
+    assert spec.resolution == r and spec.meta['site'] == site and spec.meta['medium_source'] == 'header:WAVETYPE'
+    assert 6500. < spec.wave[0] < 9000. and 24000. < spec.wave[-1] < 26000.
+    assert barycentric.correction(spec, 'auto', 'barycentric')[1] == 'computed'

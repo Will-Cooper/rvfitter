@@ -90,6 +90,28 @@ def resolution_of(spectrum: Spectrum, cfg: Any, opts: Mapping[str, Any], *, esti
     return _ESTIMATED_R[key]
 
 
+def min_resolution(method: str) -> float:
+    """
+    The lowest resolving power a method accepts: the smallest catalogue ``r_min`` of the features it measures
+    (linecentre: the atomic lines; the template methods: the model_fidelity 'good' features their windows are built
+    on, i.e. atomic lines and CO bandheads). Below it every such feature is unresolved by the catalogue's own
+    criterion (Kirkpatrick et al. 1999; McLean et al. 2003): R 1000 is an instrumental FWHM of 300 km/s, already
+    wider than the alkali line cores, so an RV would come from blends and the broad molecular shape
+    """
+    from ..features import features
+    use = [f.r_min for f in features() if (f.kind == 'line' if method == 'linecentre' else f.model_fidelity == 'good')
+           and np.isfinite(f.r_min)]
+    return float(min(use))
+
+
+def check_resolution(method: str, resolution: float) -> None:
+    """ValueError when `resolution` is below the method's `min_resolution`"""
+    r_min = min_resolution(method)
+    if resolution < r_min:
+        raise ValueError(f'{method}: R = {resolution:.0f} is below the minimum R {r_min:.0f} for this method (the '
+                         'smallest catalogue r_min of the features it measures): refused')
+
+
 def split_regions(regions: Sequence[Region]) -> tuple[list[Region], list[Region]]:
     """The fitting windows (all but telluric and continuum regions) and the telluric regions masked out of them"""
     return [r for r in regions if r.kind not in SKIP_KINDS], [r for r in regions if r.kind in MASK_KINDS]
@@ -229,6 +251,30 @@ class Candidate:
         given = dict(zip(self.grid.axes, self.params, strict=False))  # trailing axes may be omitted: defaults
         return self.grid.params(**given)
 
+    @property
+    def wave_range(self) -> tuple[float, float]:
+        """Vacuum wavelength range [Å] of the template"""
+        if self.spectrum is not None:
+            return float(self.spectrum.wave[0]), float(self.spectrum.wave[-1])
+        return self.grid.wave_range(**self.param_dict)
+
+
+def covered_regions(method: str, regions: Sequence[Region], cands: Sequence[Candidate]) -> list[Region]:
+    """
+    The regions without the fitting windows that are not wholly inside every candidate template's wavelength range
+    (a WARNING names them; e.g. NIR data with an optical grid); ValueError when none remains
+    """
+    lo = max(c.wave_range[0] for c in cands)
+    hi = min(c.wave_range[1] for c in cands)
+    windows, _ = split_regions(regions)
+    dropped = [r for r in windows if not lo <= r.wmin < r.wmax <= hi]
+    if dropped:
+        names = ', '.join(f'{r.name} ({r.wmin:.0f}-{r.wmax:.0f} Å)' for r in dropped)
+        if len(dropped) == len(windows):
+            raise ValueError(f'{method}: the templates cover {lo:.0f}-{hi:.0f} Å, which contains no window: {names}')
+        log.warning('%s: the templates cover %.0f-%.0f Å: dropping %s', method, lo, hi, names)
+    return [r for r in regions if r not in dropped]
+
 
 def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
     """
@@ -358,6 +404,19 @@ def run_chunks(fn: Callable, n_total: int, seeds: Sequence, args: tuple, executo
     return np.concatenate([np.asarray(x, float) for x in pmap(fn, tasks, executor)])
 
 
+def at_bound(v: float, lo: float, hi: float, step: float) -> bool:
+    """An optimum v at, beyond or within half a search step of a search bound [lo, hi]"""
+    return not lo + 0.5 * step < v < hi - 0.5 * step
+
+
+def bound_error(err: float, lo: float, hi: float) -> float:
+    """
+    The error of an optimum at a search bound: at least half the search range, since the optimum may lie anywhere
+    in it or beyond (a covariance error there is 0 or undefined); finite, so it is never mistaken for a precise value
+    """
+    return float(max(err, 0.5 * (hi - lo))) if np.isfinite(err) else 0.5 * float(hi - lo)
+
+
 def window_measurement(method: str, window: Region, rv: float, err: float, flag: int, chi2_red: float,
                        sigma_known: bool, diag: dict) -> Measurement:
     """One window's measurement: fit_failed for a non-finite error, poor_fit for χ²/ν > 3 with known errors"""
@@ -399,17 +458,21 @@ def reject_outliers(measurements: list[Measurement], k: float = 5.) -> list[Meas
     """
     Flag gross outliers among a method's usable measurements (at least three)
 
-    A measurement is an outlier if |rv − median| > k √(s² + σ²), with s = 1.4826 × MAD of the RVs. With k = 5
-    this only catches failures (e.g. a fit locked on a wrong optimum), not ordinary scatter, which the Birge
-    and hierarchical combinations handle. Outliers get the `FLAG_OUTLIER` bit (excluded from the combination).
+    A measurement is an outlier if |rv − median| > k √(s² + σ²), with the median and s = 1.4826 × MAD of the
+    other measurements' RVs (leave-one-out: with few regions, an outlier inflates the MAD it would be judged
+    against and masks itself; task 14, Rb I 7802 on distorted blue ends). With k = 5 this only catches failures
+    (e.g. a fit locked on a wrong optimum or a feature displaced by a bad wavelength solution), not ordinary
+    scatter, which the Birge and hierarchical combinations handle. Outliers get the `FLAG_OUTLIER` bit (excluded
+    from the combination).
     """
     usable = [m for m in measurements if not (m.flag & SERIOUS) and np.isfinite(m.rv) and np.isfinite(m.rv_err)]
     if len(usable) < 3:
         return measurements
     rvs = np.array([m.rv for m in usable])
-    med = float(np.median(rvs))
-    s = 1.4826 * float(np.median(np.abs(rvs - med)))
-    for m in usable:
+    for j, m in enumerate(usable):
+        others = np.delete(rvs, j)
+        med = float(np.median(others))
+        s = 1.4826 * float(np.median(np.abs(others - med)))
         if abs(m.rv - med) > k * np.hypot(s, m.rv_err):
             m.flag |= FLAG_OUTLIER
             log.warning('%s %s: %.1f km/s is a gross outlier (median %.1f, robust scatter %.1f); excluded',

@@ -91,7 +91,8 @@ def _template_row(res: ObjectResult) -> dict[str, Any]:
 
 
 def _quad(*terms: float) -> float:
-    return float(math.sqrt(sum(0.0 if not np.isfinite(t) else t * t for t in terms)))
+    """Quadrature sum; NaN if any term is NaN (unknown), never treated as 0"""
+    return float(math.sqrt(sum(t * t for t in terms)))
 
 
 # Output columns in order. A plain name is computed in `to_table`; a tuple (column, source, key, converter, default)
@@ -178,10 +179,9 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
         else:
             row['rv_mean'] = float(rv_arr.mean()) if len(rv_arr) else _NAN
         row['rv_spread'] = float(np.std(rv_arr, ddof=1)) if len(rv_arr) > 1 else _NAN
-        sysd = src['systematics']
-        row['rv_total_err'] = (_quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'],
-                                     row['sys_star_sky'], _num(sysd.get('floor')))
-                               if np.isfinite(row['rv_adopted_err']) else _NAN)
+        # NaN when a term is unknown (the pipeline warns and sets zp flag total_err_undefined); an absent floor is none
+        row['rv_total_err'] = _quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'], row['sys_star_sky'],
+                                    _num(src['systematics'].get('floor', 0.)))
         row.update(_template_row(res))
         rows.append(row)
     df = pd.DataFrame(rows, columns=_COLUMNS)

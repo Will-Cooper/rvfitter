@@ -1,8 +1,8 @@
 """
 Reading spectra (FITS, text, PypeIt) into `Spectrum` objects.
 
-`read_spectrum` is the single entry point: it tries PypeIt spec1d, PypeIt coadd/tellcorr tables, generic 1D FITS and
-ASCII/CSV/TSV readers in turn, and finally ``specutils``.
+`read_spectrum` is the single entry point: it tries PypeIt spec1d, PypeIt coadd/tellcorr tables, Spextool images
+(SpeX, ARCoIRIS), generic 1D FITS and ASCII/CSV/TSV readers in turn, and finally ``specutils``.
 
 Conventions applied whatever the reader:
 
@@ -11,8 +11,9 @@ Conventions applied whatever the reader:
 * Non-finite or non-positive wavelengths and non-finite fluxes are dropped, the rest is sorted and duplicate
   wavelengths removed (first kept).
 * The wavelength medium is never guessed silently: ``medium='auto'`` reads it from the header (``AIRORVAC``,
-  ``VACUUM``, ``WAVE_MED`` or ``CTYPE1``); PypeIt products are documented to be vacuum (``meta['medium_source']``);
-  anything else raises `ValueError`. Wavelengths are then converted to vacuum with `rvfitter.medium`.
+  ``VACUUM``, ``WAVE_MED``, ``WAVETYPE`` or ``CTYPE1``); PypeIt products are documented to be vacuum
+  (``meta['medium_source']``); anything else raises `ValueError`. Wavelengths are then converted to vacuum with
+  `rvfitter.medium`.
 
 The header keywords behind each `Spectrum.meta` entry are listed in `_meta_from_header` and `_slit_meta`.
 ``meta['velocity_keywords']`` holds any velocity-correction keywords found (``VHELIO``, ``BCV``, ``BERV``,
@@ -22,6 +23,7 @@ import glob
 import gzip
 import logging
 import re
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +32,7 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 from astropy.io.registry import IORegistryError
+from astropy.utils.exceptions import AstropyUserWarning
 
 from .barycentric import vel_corr_to_kms
 from .medium import to_vacuum
@@ -41,6 +44,10 @@ log = logging.getLogger(__name__)
 
 # PypeIt wavelengths are vacuum by default (documented PypeIt behaviour); used only when the header is silent
 PYPEIT_DEFAULT_MEDIUM = 'vacuum'
+# a coadd without its spec1d files: PypeIt corrects each spec1d's wavelengths to WavelengthSolutionPar.refframe,
+# 'heliocentric' by default, and coadd1d keeps them
+PYPEIT_FRAME_NOTE = ("PypeIt's default (refframe 'heliocentric') makes its wavelengths probably heliocentric; if so, "
+                     "set velocity_frame.correction = 'skip' and frame = 'heliocentric'")
 
 _WAVE_NAMES = ('wave', 'wavelength', 'lambda', 'lam', 'wl', 'wavel', 'wavelengths')
 _FLUX_NAMES = ('flux', 'flam', 'flux_density', 'fluxdensity', 'fluxes')
@@ -210,7 +217,7 @@ def _medium_from_header(header: Mapping[str, Any]) -> tuple[str | None, str]:
             return 'air'
         return None
 
-    for key in ('AIRORVAC', 'MEDIUM', 'WAVE_MED', 'WAVEMED', 'WAVE_MEDIUM', 'WAVEMEDIUM', 'WAVMED'):
+    for key in ('AIRORVAC', 'MEDIUM', 'WAVE_MED', 'WAVEMED', 'WAVE_MEDIUM', 'WAVEMEDIUM', 'WAVMED', 'WAVETYPE'):
         if key in header:
             medium = from_text(header[key])
             if medium:
@@ -270,10 +277,11 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     Build the `Spectrum.meta` dictionary from a flat header.
 
     - object: ``OBJECT``, ``TARGNAME``, ``TARGET``, ``OBJNAME`` (first non-empty).
-    - ra, dec: ``RA``/``DEC`` (or ``OBJRA``/``OBJDEC``, ``TELRA``/``TELDEC``); floats are degrees, sexagesimal strings
-      hours (RA) and degrees (Dec).
+    - ra, dec: ``RA``/``DEC`` (or ``OBJRA``/``OBJDEC``, ``TELRA``/``TELDEC``, ``TCS_RA``/``TCS_DEC``); floats are
+      degrees, sexagesimal strings hours (RA) and degrees (Dec).
     - mjd_mid: ``MJD_MID``/``MJD-MID`` (already mid-exposure), else ``MJD``, ``MJD-OBS`` or ``DATE-OBS`` (+
-      ``TIME-OBS``), which mean the exposure start, plus ``EXPTIME``/2; ``mjd_source`` records which.
+      ``TIME-OBS``), which mean the exposure start, plus ``EXPTIME``/2; ``mjd_source`` records which (a reader
+      that sets ``MJD_MID`` names its origin in ``RVF_MJD_SOURCE``).
     - site: ``OBSERVAT``, else ``TELESCOP`` (``telescope`` is always ``TELESCOP``); site_lat/site_lon: ``SITELAT``...
     - exptime: ``EXPTIME``, ``EXPOSURE`` or ``ITIME`` [s]; airmass: ``AIRMASS``, else the mean of ``AMSTART``/``AMEND``.
     - frame_in: ``VEL_TYPE``; vel_corr: ``VEL_CORR`` (PypeIt's factor already applied to the wavelengths) and
@@ -283,8 +291,8 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     obj, _ = _first(header, ('OBJECT', 'TARGNAME', 'TARGET', 'OBJNAME'))
     if obj is not None and str(obj).strip().lower() not in ('none', 'unknown', 'n/a', ''):
         meta['object'] = str(obj)
-    ra, _ = _first(header, ('RA', 'OBJRA', 'TELRA', 'RA_DEG'))
-    dec, _ = _first(header, ('DEC', 'OBJDEC', 'TELDEC', 'DEC_DEG'))
+    ra, _ = _first(header, ('RA', 'OBJRA', 'TELRA', 'RA_DEG', 'TCS_RA'))
+    dec, _ = _first(header, ('DEC', 'OBJDEC', 'TELDEC', 'DEC_DEG', 'TCS_DEC'))
     meta['ra'] = _parse_coord(ra, True)
     meta['dec'] = _parse_coord(dec, False)
     exptime = _as_float(_first(header, ('EXPTIME', 'EXPOSURE', 'ITIME'))[0])
@@ -293,7 +301,7 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     mjd_mid, source = None, None
     mid, key = _first(header, ('MJD_MID', 'MJD-MID', 'MJDMID'))
     if _as_float(mid) is not None:
-        mjd_mid, source = _as_float(mid), key
+        mjd_mid, source = _as_float(mid), header.get('RVF_MJD_SOURCE', key)
     else:
         start, key = _first(header, ('MJD-OBS', 'MJD_OBS', 'MJD'))
         start = _as_float(start)
@@ -325,6 +333,7 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     meta['vel_corr'] = f
     meta['vel_corr_kms'] = None if f is None else vel_corr_to_kms(f)
     meta['velocity_keywords'] = {k: header[k] for k in _VEL_KEYS if k in header}
+    meta['frame_note'] = header.get('RVF_FRAME_NOTE')  # why the input frame is unknown, when a reader knows
     raw = header.get('RVF_RAW_FILES') or header.get('FILENAME')  # PypeIt: the raw frame(s) behind the spectrum
     meta['raw_files'] = [s for s in str(raw).split(',') if s] if raw else []
     meta.update(_slit_meta(header))
@@ -338,24 +347,25 @@ def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
     """
     Slit width, binning, pixel scale, instrument and trace FWHM, for the slit-centring prior
 
-    - ``slit_width_arcsec``: ``SLITW`` (a number, arcsec; OSIRIS raw frames), else the first of ``MASKNAME``,
-      ``DECKER`` (PypeIt), ``SLIT``, ``SLITNAME`` and ``APERTURE`` whose text holds a number followed by
-      'arcsec' (e.g. 'LongSlits1.23Arcsec'); ``slit_width_key`` records which.
+    - ``slit_width_arcsec``: ``SLITW`` (a number, arcsec; OSIRIS raw frames) or ``SLTW_ARC`` (Spextool), else the
+      first of ``MASKNAME``, ``DECKER`` (PypeIt), ``SLIT``, ``SLITNAME`` and ``APERTURE`` whose text holds a number
+      followed by 'arcsec' (e.g. 'LongSlits1.23Arcsec'); ``slit_width_key`` records which.
     - ``binning_spec``, ``binning_spat``: PypeIt's ``BINNING`` 'spectral,spatial', else ``CCDSUM`` when both
       factors are equal (its axis order is instrument-dependent).
     - ``pixscale_arcsec``: ``PIXSCALE``, ``PLATESCL`` or ``SECPIX`` [arcsec per (binned) pixel] if present.
-    - ``instrument``: ``INSTRUME``.
+    - ``instrument``: ``INSTRUME``, else ``INSTR`` (Spextool).
     - ``trace_fwhm_pix``: PypeIt's object FWHM along the slit [binned pixels].
     """
     out: dict[str, Any] = {}
-    inst, _ = _first(header, ('INSTRUME', 'INSTRUMENT'))
+    inst, _ = _first(header, ('INSTRUME', 'INSTRUMENT', 'INSTR'))
     out['instrument'] = None if inst is None else str(inst).strip()
     pyp = header.get('PYP_SPEC')
     out['pypeit_spec'] = None if pyp is None else str(pyp).strip()
     width, key = None, None
-    w = _as_float(header.get('SLITW'))
+    w, wkey = _first(header, ('SLITW', 'SLTW_ARC'))
+    w = _as_float(w)
     if w is not None and w > 0:
-        width, key = w, 'SLITW'
+        width, key = w, wkey
     else:
         for k in ('MASKNAME', 'DECKER', 'SLIT', 'SLITNAME', 'APERTURE'):
             v = header.get(k)
@@ -630,32 +640,57 @@ def find_wvcalib(path: str | Path) -> Path | None:
     return None
 
 
-def arc_line_range(wvcalib: str | Path, extname: str | None = None) -> tuple[float, float] | None:
+def _arc_lines(wvcalib: str | Path, extname: str | None) -> tuple[np.ndarray, np.ndarray]:
     """
-    Span [Å, as stored by PypeIt: vacuum] of the arc lines fitted in a PypeIt ``wvcalib.fits``
+    The fitted arc-line wavelengths [Å] of a PypeIt ``wvcalib.fits`` (``wave_fit`` of the ``SPAT_ID-*_WAVEFIT``
+    tables), and the solution's residuals at them [Å] (``wave_soln`` at ``pixel_fit`` − ``wave_fit``; NaN where a
+    table lacks those columns or the ``SPAT_ID-*_PYPEITFIT`` gpm rejected the line)
 
-    Reads ``wave_fit`` of the ``SPAT_ID-*_WAVEFIT`` tables.
     If ``extname`` is a spec1d table name such as ``SPAT0240-SLIT0457-DET02`` and a table with that spatial ID
     exists, only that slit is used; otherwise (e.g. a long slit whose calibration has a different ID) all tables are.
     """
     spat = re.match(r'SPAT0*(\d+)', str(extname or ''))
-    lines: list[np.ndarray] = []
-    matched: list[np.ndarray] = []
+    lines: list[tuple[np.ndarray, np.ndarray]] = []
+    matched: list[tuple[np.ndarray, np.ndarray]] = []
     with fits.open(wvcalib) as hdul:
         for ext in hdul[1:]:
             m = re.fullmatch(r'SPAT_ID-(\d+)_WAVEFIT', str(ext.name))
-            if not m or 'wave_fit' not in [c.lower() for c in (ext.columns.names or [])]:
+            cols = {c.lower(): c for c in (ext.columns.names or [])} if m else {}
+            if 'wave_fit' not in cols:
                 continue
-            col = next(c for c in ext.columns.names if c.lower() == 'wave_fit')
-            w = np.asarray(ext.data[col], dtype=float).ravel()
-            w = w[np.isfinite(w) & (w > 0)]
-            lines.append(w)
+            w = np.asarray(ext.data[cols['wave_fit']], dtype=float).ravel()
+            res = np.full(len(w), np.nan)
+            if 'pixel_fit' in cols and 'wave_soln' in cols:
+                soln = np.asarray(ext.data[cols['wave_soln']], dtype=float).ravel()
+                pix = np.asarray(ext.data[cols['pixel_fit']], dtype=float).ravel()
+                res = np.interp(pix, np.arange(len(soln)), soln) - w
+                fit = f'SPAT_ID-{m.group(1)}_PYPEITFIT'
+                if fit in hdul and 'gpm' in [c.lower() for c in hdul[fit].columns.names]:
+                    gpm = np.asarray(hdul[fit].data[0]['gpm']).astype(bool).ravel()
+                    res[~gpm[:len(res)]] = np.nan
+            ok = np.isfinite(w) & (w > 0)
+            lines.append((w[ok], res[ok]))
             if spat and int(m.group(1)) == int(spat.group(1)):
-                matched.append(w)
-    pool = np.concatenate(matched or lines) if (matched or lines) else np.array([])
+                matched.append((w[ok], res[ok]))
+    use = matched or lines
+    if not use:
+        return np.array([]), np.array([])
+    return np.concatenate([u[0] for u in use]), np.concatenate([u[1] for u in use])
+
+
+def arc_line_range(wvcalib: str | Path, extname: str | None = None) -> tuple[float, float] | None:
+    """Span [Å, as stored by PypeIt: vacuum] of the arc lines fitted in a PypeIt ``wvcalib.fits`` (`_arc_lines`)"""
+    pool = _arc_lines(wvcalib, extname)[0]
     if len(pool) < 2:
         return None
     return float(pool.min()), float(pool.max())
+
+
+def arc_rms(wvcalib: str | Path, extname: str | None = None) -> float | None:
+    """RMS [Å] of the wavelength solution's residuals at its fitted arc lines (`_arc_lines`); None if unknown"""
+    res = _arc_lines(wvcalib, extname)[1]
+    res = res[np.isfinite(res)]
+    return float(np.sqrt(np.mean(res * res))) if len(res) >= 2 else None
 
 
 def _coadd_hdu(hdul: fits.HDUList, hdu: int | str | None) -> int | None:
@@ -685,7 +720,8 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     coadd1d works on the spec1d wavelengths, which already carry each exposure's ``VEL_CORR``, but writes no
     VEL_CORR itself; without it the zero-point curves would be evaluated in the wrong frame. The spec1d names come
     from the coadd's HISTORY ('From "spec1d_…"'); a tellcorr file (often with an empty header) takes them from the
-    coadd of the same name next to it. Returns {} (with a WARNING) when the spec1d files are not found.
+    coadd of the same name next to it. When the spec1d files are not found the frame is unknown: a WARNING, and
+    ``RVF_FRAME_NOTE`` says so (`rvfitter.barycentric` repeats it instead of calling the frame 'observed').
     """
     def sources(head: fits.Header) -> list[str]:
         return _COADD_FROM_RE.findall(''.join(str(v) for k, v in head.items() if k == 'HISTORY'))
@@ -699,8 +735,9 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     found = [path.parent / n for n in names if (path.parent / n).is_file()]
     if not names or len(found) < len(names):
         log.warning('%s: the spec1d file(s) it was coadded from (%s) are not next to it: the velocity frame '
-                    '(VEL_CORR) is unknown', path.name, ', '.join(names) or 'none named in its HISTORY or a coadd')
-        return out
+                    '(VEL_CORR) is unknown. %s', path.name, ', '.join(names) or 'none named in its HISTORY or a coadd',
+                    PYPEIT_FRAME_NOTE)
+        return {'RVF_FRAME_NOTE': PYPEIT_FRAME_NOTE}
     heads = []
     for p in found:  # PypeIt writes VEL_CORR in the object tables, the raw FILENAME in the primary header
         with fits.open(p) as hl:
@@ -726,13 +763,26 @@ def raw_headers(meta: Mapping[str, Any], pattern: str | None = None, directory: 
     `pattern` (a path or glob, ``input.raw_header``) names them directly: no match raises. Otherwise each raw
     frame in meta['raw_files'] (PypeIt's FILENAME, e.g. '0000809229-20150803-OSIRIS-….fits') is matched by its
     leading frame number (0000809229) against ``<frame>*.fits`` anywhere under `directory`
-    (``input.raw_header_dir``): no match logs a WARNING and returns [], several raise. Each dict holds the
-    header cards and 'RVF_FILE'.
+    (``input.raw_header_dir``): no match logs a WARNING and returns [], several raise. A spectrum that names no
+    raw frame (e.g. a coadd without its spec1d files) takes every frame under `directory` whose ``OBJECT`` is
+    meta['object'] (case and spaces ignored) and that has a slit width (spectra, not acquisition images); this may
+    include other epochs of the object. Each dict holds the header cards and 'RVF_FILE'.
     """
     if pattern:
         files = sorted(Path(p) for p in glob.glob(str(Path(pattern).expanduser())))
         if not files:
             raise FileNotFoundError(f'input.raw_header {pattern!r} matches no file')
+    elif directory and not meta.get('raw_files') and meta.get('object'):
+        key = re.sub(r'\s+', '', str(meta['object'])).lower()
+        files = []
+        for f in sorted(Path(directory).expanduser().rglob('*.fits')):
+            head = _header_dict(fits.getheader(f, 0))
+            if re.sub(r'\s+', '', str(head.get('OBJECT', ''))).lower() == key and _slit_meta(head)['slit_width_arcsec']:
+                files.append(f)
+        if not files:
+            log.warning('%s: no raw spectrum header with OBJECT %r under input.raw_header_dir %s: the slit PA is '
+                        'unknown', meta['object'], meta['object'], directory)
+            return []
     elif directory:
         files = []
         for name in meta.get('raw_files') or []:
@@ -776,7 +826,62 @@ def _read_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any = 
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-# reader 3: generic 1D FITS
+# reader 3: Spextool (SpeX, uSpeX, ARCoIRIS)
+# ----------------------------------------------------------------------------------------------------------------------
+
+#: Spextool ``INSTR`` -> observatory, for files without TELESCOP/OBSERVAT (ARCoIRIS is on the CTIO Blanco 4-m)
+_SPEXTOOL_SITES = {'spex': 'irtf', 'uspex': 'irtf', 'arcoiris': 'ctio'}
+
+
+def _primary_image(path: Path) -> tuple[dict[str, Any], np.ndarray | None]:
+    """The primary header (flat dict) and data"""
+    with fits.open(path, memmap=False) as hdul:
+        return _header_dict(hdul[0].header), None if hdul[0].data is None else np.asarray(hdul[0].data, dtype=float)
+
+
+def _sniff_spextool(path: Path, hdu: int | str | None = None, columns: Any = None) -> bool:
+    if hdu not in (None, 0) or columns is not None or not _is_fits(path):
+        return False
+    head, data = _primary_image(path)
+    shape = np.shape(data) if data is not None else ()
+    return 'NORDERS' in head and 'XUNITS' in head and len(shape) in (2, 3) and shape[-2] in (3, 4)
+
+
+def _read_spextool(path: Path, hdu: int | str | None = None, columns: Any = None) -> RawSpectrum:
+    """
+    A Spextool image: rows wavelength, flux, error (and a quality flag, not used), one block per order (orders × rows
+    × N, concatenated; where orders overlap, the bluer order's pixels are kept, so differently calibrated orders never
+    interleave)
+
+    Spextool writes the time averaged over the combined frames (``AVE_MJD``; ``MJD_OBS`` from the 'Average'
+    ``TIME_OBS`` of SpeX; ARCoIRIS ``DATE`` + 'Average' ``UT``), so it is taken as the mid-exposure time as it stands.
+    ``RP`` is the resolving power. The site comes from ``INSTR`` when TELESCOP/OBSERVAT are absent (ARCoIRIS).
+    """
+    header, arr = _primary_image(path)
+    blocks, top = [], -np.inf
+    for b in sorted(arr.reshape(-1, *arr.shape[-2:]), key=lambda b: np.nanmin(b[0])):
+        blocks.append(b[:3, b[0] > top])
+        top = max(top, np.nanmax(b[0]))
+    wave, flux, sigma = np.concatenate(blocks, axis=1)
+    mid, key = _as_float(header.get('AVE_MJD')), 'AVE_MJD'
+    if mid is None:
+        mid, key = _as_float(header.get('MJD_OBS')), 'MJD_OBS (average)'
+    if mid is None and header.get('DATE') and header.get('UT'):
+        from astropy.time import Time
+        mid, key = float(Time(f"{header['DATE']}T{header['UT']}", format='isot', scale='utc').mjd), 'DATE+UT (average)'
+    if mid is not None:
+        header.update(MJD_MID=mid, RVF_MJD_SOURCE=key)
+    inst = str(header.get('INSTR', '')).strip().lower()
+    if not any(k in header for k in ('OBSERVAT', 'TELESCOP')) and inst in _SPEXTOOL_SITES:
+        header['OBSERVAT'] = _SPEXTOOL_SITES[inst]
+    rp = _as_float(header.get('RP'))
+    medium, source = _medium_from_header(header)
+    return RawSpectrum(_wave_to_angstrom(wave, _image_unit(header), path.name), flux, _clean_sigma(sigma), header,
+                       medium, source, None, rp if rp is not None and rp > 1. else None, 'spextool')
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# reader 4: generic 1D FITS
 # ----------------------------------------------------------------------------------------------------------------------
 
 def _generic_kind(hdu_obj: Any, columns: Any) -> str | None:
@@ -891,7 +996,7 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
 
 
 # ----------------------------------------------------------------------------------------------------------------------
-# reader 4: ASCII / CSV / TSV
+# reader 5: ASCII / CSV / TSV
 # ----------------------------------------------------------------------------------------------------------------------
 
 _SPLIT = re.compile(r'\s*[,;\t]\s*|\s+')
@@ -1068,17 +1173,22 @@ def _clean_sky(sky: np.ndarray | None, name: str = '') -> np.ndarray | None:
 
 
 def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None) -> None:
-    """Set ``meta['arc_range']`` and ``arc_file`` (PypeIt arc solutions are vacuum) from a neighbouring wavecal file"""
+    """
+    Set ``meta['arc_range']``, ``arc_file`` (PypeIt arc solutions are vacuum) and ``wave_rms`` (the arc-fit RMS [Å],
+    the lower bound of sys_wavezp) from a neighbouring wavecal file
+    """
     try:
         calib = find_wvcalib(path)
         span = None if calib is None else arc_line_range(calib, extname)
+        rms = None if span is None else arc_rms(calib, extname)
     except (OSError, ValueError) as exc:
         log.warning('%s: could not read the arc-line range: %s', path.name, exc)
         return
     if span is None:
         return
-    meta.update(arc_range=span, arc_file=str(calib))
-    log.info('%s: arc lines span %.1f-%.1f Å (vacuum) in %s', path.name, *span, calib)
+    meta.update(arc_range=span, arc_file=str(calib), wave_rms=rms)
+    log.info('%s: arc lines span %.1f-%.1f Å (vacuum), fit RMS %s Å, in %s', path.name, *span,
+             'unknown' if rms is None else f'{rms:.3f}', calib)
 
 
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
@@ -1104,15 +1214,17 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
         raise FileNotFoundError(f'Spectrum file not found: {path}')
     errors: list[str] = []
     raw: RawSpectrum | None = None
-    for name, sniff, read in _READERS:
-        try:
-            if sniff is not None and not sniff(path, hdu, columns):
-                continue
-            raw = read(path, hdu, columns)
-            break
-        except (OSError, ValueError, KeyError, IndexError) as exc:
-            log.debug('%s: reader %s failed: %s', path.name, name, exc)
-            errors.append(f'{name}: {exc}')
+    with warnings.catch_warnings():  # Spextool's '#### Xspextool History ####' header dividers are not FITS cards
+        warnings.filterwarnings('ignore', 'The following header keyword is invalid', AstropyUserWarning)
+        for name, sniff, read in _READERS:
+            try:
+                if sniff is not None and not sniff(path, hdu, columns):
+                    continue
+                raw = read(path, hdu, columns)
+                break
+            except (OSError, ValueError, KeyError, IndexError) as exc:
+                log.debug('%s: reader %s failed: %s', path.name, name, exc)
+                errors.append(f'{name}: {exc}')
     if raw is None:
         try:
             raw = _read_specutils(path, hdu, columns)
@@ -1167,6 +1279,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
 _READERS = (
     ('pypeit_spec1d', _sniff_pypeit_spec1d, _read_pypeit_spec1d),
     ('pypeit_coadd', _sniff_pypeit_coadd, _read_pypeit_coadd),
+    ('spextool', _sniff_spextool, _read_spextool),
     ('fits_generic', _sniff_fits_generic, _read_fits_generic),
     ('ascii', None, _read_ascii),
 )

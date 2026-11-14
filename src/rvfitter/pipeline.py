@@ -119,7 +119,11 @@ def _guarded(call: Callable[[], Any], method: str, name: str, failures: Failures
     try:
         return call()
     except Exception as exc:  # noqa: BLE001 - the one (object, method) guard: a failure never stops a batch
-        log.exception('%s: method %s failed', name, method)
+        if isinstance(exc, ValueError):  # a method's documented refusal ("cannot measure"): its message says why
+            log.error('%s: method %s failed: %s', name, method, exc)
+            log.debug('%s: method %s traceback', name, method, exc_info=exc)  # ValueError may also be a bug
+        else:
+            log.exception('%s: method %s failed', name, method)
         failures.append((f'{name} {method}', f'{type(exc).__name__}: {exc}'))
         return _failed(method, exc) if n is None else [_failed(method, exc) for _ in range(n)]
 
@@ -258,12 +262,22 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         bary_info['wavelength_correction_epochs'] = [
             {k: v for k, v in z.items() if k != 'sky_tests'} | {'epoch': lab}
             for z, lab in zip(zp_epochs, labels, strict=True)]
-    sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
-                                                                rng=rng.spawn(1)[0]))
-    sysd['floor'] = float(cfg.combine.systematic_floor)
     if 'linecentre' in results:  # True only with the opt-in, template-calibrated shape correction
         sysd['linecentre_shape_correction'] = any(m.diagnostics.get('shape_correction')
                                                   for m in results['linecentre'].measurements)
+    if set(results) <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
+        sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
+    else:
+        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
+                                                                    rng=rng.spawn(1)[0]))
+    sysd['floor'] = float(cfg.combine.systematic_floor)
+    unknown = [k for k, v in (('the adopted error', adopted.get('err')), ('sys_template', sysd['template_spread']),
+                              ('sys_wavezp', sysd.get('wavelength_zero_point')),
+                              ('sys_star_sky', sysd.get('star_sky_systematic')))
+               if v is None or not np.isfinite(v)]
+    if unknown:  # results._quad never counts an unknown term as 0
+        bary_info['zp_flags'] |= wcorr.ZP_FLAGS['total_err_undefined']
+        log.warning('%s: rv_total_err is NaN: %s unknown (zp flag total_err_undefined)', name, ', '.join(unknown))
     return ObjectResult(object=name, files=[s.source for s in spectra], methods=results, adopted=adopted,
                         systematics=sysd, barycentric=bary_info, binary=binary_info, config_hash=_config_hash(cfg),
                         version=__version__)

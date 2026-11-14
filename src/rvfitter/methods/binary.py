@@ -92,14 +92,16 @@ def test(spectrum: Spectrum, regions: Sequence[Region], cfg: Any) -> dict:
     """
     opts = C.options(cfg, 'template_fit', TF.DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
-    datas, _ = TF._prepare(spectrum, regions, opts, resolution)
+    C.check_resolution('binary', resolution)
+    cands = C.candidates(cfg, opts)
+    datas, _ = TF._prepare(spectrum, C.covered_regions('binary', regions, cands), opts, resolution)
     if not datas:
         raise ValueError(f'binary test: no template-fit window has {opts["poly_degree"] + 10} usable pixels')
     rv_grid = TF._rv_grid(spectrum, opts)
     wave_range = (min(d.wave[0] for d in datas), max(d.wave[-1] for d in datas))
     score = partial(TF._score_candidate, datas=datas, resolution=resolution, wave_range=wave_range, opts=opts,
                     rv_grid=rv_grid)
-    tpl, _, _ = C.choose_template('binary', C.candidates(cfg, opts), score, cfg, opts, resolution, wave_range,
+    tpl, _, _ = C.choose_template('binary', cands, score, cfg, opts, resolution, wave_range,
                                   sum(len(d.wave) for d in datas), None)
     wins = [_Window(d, tpl, opts['poly_degree']) for d in datas]
     n_pix = sum(len(d.wave) for d in datas)

@@ -126,3 +126,22 @@ def test_j1745_star_minus_sky_with_dar(real_telluric_model):
     assert -0.1 < k['zp_dar_s'] < 0. and k['zp_dar_s_err'] < 0.05
     assert f['star_sky']['dar_mode'] == 'fitted' and f['zp_dar_s_err'] > 0.1
     assert f['zp_star_sky_err'] > k['zp_star_sky_err']
+
+
+def test_dar_geometry_numpy_meta_values():
+    """Numpy meta values are merged without an elementwise `!= []`; None and empty lists keep the source's items"""
+    from types import SimpleNamespace
+
+    from rvfitter import config
+    from rvfitter.calibration import wavelength_correction as wcorr
+    from rvfitter.types import Spectrum
+    w = np.linspace(8000., 8100., 50)
+    raw = Spectrum(w, np.ones(50), np.full(50, 0.1), 2500., {'object': 'X', 'airmass': np.float64(1.3),
+                                                             'raw_files': [], 'exptime': None,
+                                                             'extra': np.array([1., 2.])})
+    tsrc = Spectrum(w, np.ones(50), np.full(50, 0.1), 2500., {'airmass': 2., 'exptime': 600.})
+    meta, heads = wcorr._raw_headers(raw, tsrc, config.Config(), 'X')
+    assert meta['exptime'] == 600. and 'raw_files' not in meta and heads == []
+    info = {'zp_flags': 0, 'slit': SimpleNamespace(scale_spec=None)}
+    geo = wcorr._dar_geometry(meta, heads, 'X', info)
+    assert geo['zenith_deg'] == pytest.approx(np.degrees(np.arccos(1. / 1.3)), abs=0.1)

@@ -170,16 +170,17 @@ def fit_peak(v: np.ndarray, c: np.ndarray) -> dict:
     """
     The CCF peak from a parabola through its top (±max(2 steps, 0.2 HWHM) of the maximum): 'rv', 'height'
     C(v̂), 'curvature' C''(v̂) [(km/s)⁻²], 'width' (Gaussian-equivalent σ from the half-maximum width), 'edge'
-    (maximum at the grid edge) and 'ok'
+    (the peak within half a step of, or beyond, the end of the finite grid, or its half-maximum extent reaching
+    it: the peak is not bracketed inside the search range) and 'ok'
     """
     good = np.isfinite(c)
     if good.sum() < 5:
         return dict(rv=np.nan, height=np.nan, curvature=np.nan, width=np.nan, edge=False, ok=False)
     vg, cg = v[good], c[good]
     i = int(np.argmax(cg))
-    edge = i < 2 or i > len(cg) - 3
     lo, hi, _ = _half_max_extent(cg, i)
     step = float(vg[1] - vg[0])
+    edge = lo == 0 or hi == len(cg) - 1
     hwhm = max(0.5 * (vg[hi] - vg[lo]), step)
     width = hwhm / np.sqrt(2. * np.log(2.))
     k = max(2, int(round(0.2 * hwhm / step)))
@@ -187,6 +188,7 @@ def fit_peak(v: np.ndarray, c: np.ndarray) -> dict:
     x0, height, curv = parabola_vertex(vg[sl] - vg[i], cg[sl]) if sl.stop - sl.start >= 3 else (0., 0., 0.)
     if curv >= 0:  # too few points, or not a peak
         return dict(rv=float(vg[i]), height=float(cg[i]), curvature=np.nan, width=width, edge=edge, ok=False)
+    edge |= C.at_bound(float(vg[i] + x0), float(vg[0]), float(vg[-1]), step)
     return dict(rv=float(vg[i] + x0), height=height, curvature=curv, width=float(width), edge=edge,
                 ok=bool(abs(x0) <= (k + 0.5) * step))
 
@@ -283,7 +285,9 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     """
     opts = C.options(cfg, METHOD, DEFAULTS)
     resolution = C.resolution_of(spectrum, cfg, opts)
-    windows, masks = C.split_regions(regions)
+    C.check_resolution(METHOD, resolution)
+    cands = C.candidates(cfg, opts)
+    windows, masks = C.split_regions(C.covered_regions(METHOD, regions, cands))
     if not windows:
         raise ValueError('no CCF windows among the regions')
     windows = C.segment(windows, resolution, opts['segment_res'])
@@ -308,7 +312,7 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
     wave_range = (min(p.wave[0] for p in preps), max(p.wave[-1] for p in preps))
     score = partial(_score_candidate, preps=preps, resolution=resolution, wave_range=wave_range, opts=opts,
                     coarse_step=max(step, dv / 2.))
-    tpl, flag_grid, tdiag = C.choose_template(METHOD, C.candidates(cfg, opts), score, cfg, opts, resolution,
+    tpl, flag_grid, tdiag = C.choose_template(METHOD, cands, score, cfg, opts, resolution,
                                               wave_range, sum(p.n for p in preps), executor, vsini=opts['vsini'])
     rv = np.arange(opts['rv_min'], opts['rv_max'] + 1e-9, step)
     n_chunks = opts['n_chunks']
@@ -357,6 +361,8 @@ def measure(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *, executor
         chi2_scale = 1.
         if opts['chi2_scale'] and prep.sigma_known and np.isfinite(chi2):
             chi2_scale = float(np.sqrt(max(1., chi2 / dof)))
+        if peak['edge']:
+            err = C.bound_error(err * chi2_scale, float(rv[0]), float(rv[-1])) / chi2_scale
         diag = dict(tdiag, rv_grid=rv, ccf=c, peak=peak, zucker_err=zerr, mc_std=mc_std, chi2_scale=chi2_scale,
                     n_mc=int(len(mc)), mc_rvs=mc, chi2=chi2, dof=dof, scale=scale, n_pix=win.prep.n,
                     resolution=resolution, highpass_kms=opts['highpass_kms'], continuum_mode=win.mode,

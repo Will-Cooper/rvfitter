@@ -20,8 +20,10 @@ D(λ) [Å per pixel] of the wavelength solution:
 The pixels are assumed square on the sky and the anamorphic magnification of the grating is ignored.
 
 Inputs:
-- W: the header (``SLITW``, else 'N.NNarcsec' in ``MASKNAME``/``DECKER``…; `rvfitter.io`);
-- F: the object's spatial FWHM along the slit (PypeIt ``FWHMFIT``) times the spatial plate scale;
+- W: the header (``SLITW``, ``SLTW_ARC``, else 'N.NNarcsec' in ``MASKNAME``/``DECKER``…; `rvfitter.io`) of the
+  spectrum or of its raw frames;
+- F: the object's spatial FWHM along the slit (PypeIt ``FWHMFIT``) times the spatial plate scale, else the assumed
+  ``calibration.seeing_fwhm`` (`rvfitter.calibration.wavelength_correction`);
 - the plate scales: ``PIXSCALE``-like header keywords, else the unbinned scale of the instrument in
   ``data/instruments.csv`` times the header binning;
 - D(λ): the spacing of the native wavelength solution of the spectrum that provided the header.
@@ -125,19 +127,19 @@ def _scales(meta: dict) -> tuple[float | None, float | None, str]:
     return unb * bspat, unb * bspec, f'{source} × BINNING {bspec},{bspat} (spectral,spatial)'
 
 
-def inputs(spectra: Sequence[Any]) -> SlitInputs:
+def inputs(spectra: Sequence[Any], headers: Sequence[dict] = ()) -> SlitInputs:
     """
     Collect the prior's inputs from candidate spectra, in order of preference (e.g. the target's own spec1d table,
-    then the input spectrum); each input is taken from the first spectrum that has it, and the dispersion from the
-    first one that gave a slit width (its native wavelength solution), else the first spectrum
+    then the input spectrum), then from `headers` (`io._slit_meta` dicts of the raw frames, with their 'source');
+    each input is taken from the first that has it, and the dispersion from the first spectrum that gave a slit
+    width (its native wavelength solution), else the first spectrum
     """
     out = SlitInputs()
     first_with_width = None
-    for s in spectra:
-        if s is None:
-            continue
-        meta = s.meta if hasattr(s.meta, 'get') else {}
-        src = f"{getattr(s, 'source', '')}" + (f" HDU {meta['hdu']}" if meta.get('hdu') is not None else '')
+    items = [(s, s.meta if hasattr(s.meta, 'get') else {}) for s in spectra if s is not None]
+    for s, meta in [*items, *((None, h) for h in headers)]:
+        src = (str(getattr(s, 'source', '')) if s is not None else str(meta.get('source', ''))) + (
+            f" HDU {meta['hdu']}" if meta.get('hdu') is not None else '')
         if out.width_arcsec is None and meta.get('slit_width_arcsec'):
             out.width_arcsec = float(meta['slit_width_arcsec'])
             out.width_source = f"{meta.get('slit_width_key')} of {src}"
@@ -151,7 +153,7 @@ def inputs(spectra: Sequence[Any]) -> SlitInputs:
             if sp is not None:
                 out.fwhm_arcsec = float(meta['trace_fwhm_pix']) * sp
                 out.fwhm_source = f"trace FWHM {float(meta['trace_fwhm_pix']):.2f} pix × {sp:.3f} arcsec/pix of {src}"
-    disp_spec = first_with_width or next((s for s in spectra if s is not None), None)
+    disp_spec = first_with_width or next((s for s, _ in items), None)
     if disp_spec is not None and len(disp_spec.wave) > 2:
         w = np.asarray(disp_spec.wave, dtype=float)
         out.disp_wave, out.disp = w, np.gradient(w)
