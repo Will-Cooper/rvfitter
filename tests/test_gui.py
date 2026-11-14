@@ -136,6 +136,17 @@ def test_setup_recommends_methods_for_the_detected_r(qtbot, win, backend, spectr
     assert setup.method_note.text() == ''
 
 
+def test_setup_advice_follows_applied_settings(qtbot, win, backend, spectra_dir):
+    """Advanced settings and opened settings files set R without an edit signal; the advice must still follow"""
+    _load(qtbot, win, spectra_dir)
+    cfg = win.current_config()
+    cfg.input.resolution = 60000.
+    win.set_config(cfg)
+    assert win.setup.recommended.text().startswith('Recommended for R 60000, optical: Template fit, Telluric '
+                                                   'reference.')
+    assert win.setup.method_note.text().startswith('CCF: Optional: above R 20000')
+
+
 def test_setup_keeps_boxes_set_by_you_across_a_reload(qtbot, win, backend, spectra_dir):
     from PySide6.QtTest import QTest
     _load(qtbot, win, spectra_dir)

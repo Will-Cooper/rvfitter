@@ -166,6 +166,8 @@ class SetupPanel(QWidget):
             self.sources[path] = sources[path]
             self._show_tag(path)
         self.show_grid_status()
+        if self._detected:  # programmatic sets emit no edit signal: the advice follows the new R and methods here
+            self._show_advice(*self._detected)
 
     def set_config(self, cfg: Any) -> None:
         """Show ``cfg`` (opened settings, the Advanced dialog): boxes whose value changes become 'set by you'"""
