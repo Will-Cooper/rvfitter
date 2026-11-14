@@ -64,6 +64,8 @@ zp_star_sky = −23.8 ± 3.6 km/s from 4 nodes (H2O 8200 −17.3 ± 10.6; H2O 93
 | auto, PA known | sky+star | 41.18 | 3.34 (3.70) | 11.75 (1.25) | 2.7 | 8.8 | 5.6 | 4.3 |
 | auto, PA unknown | sky+star (s +0.20 ± 0.44) | 36.62 | 3.38 (2.55) | 14.05 (0.73) | 2.4 | 8.0 | 5.6 | 9.5 |
 
+**Task 14 fixes (branch task14-fixes; task 14's own run configuration: BT-Settl, teff prior 2102 K, raw headers).** J1745 adopted RVs unchanged in every mode (none 36.63, sky-if-needed 15.24, auto 40.62 km/s). σ_total: none 22.79 → 21.73, sky-if-needed 21.23 → 19.40, auto 12.21 → 8.61 km/s, entirely from sys_template (none 7.42 → 2.22): with the leave-one-out outlier test, the 'full' window-mode variant of the template spread rejects its gross-outlier segments and gives 36.9 instead of 8.3 km/s. GTC, mode none, the 20 objects with literature RVs: robust pull width 1.48 ± 0.24 → 1.21 ± 0.20 (|pull| < 2: 70 → 89 per cent; median σ_total 21 → 26 km/s; 19 finite totals: 2MASS J1333−0215 has no raw header, so W and the total are NaN). The SpeX and ARCoIRIS spectra have no arc RMS and no plate scale in `data/instruments.csv`, so their σ_total is NaN (flag total_err_undefined).
+
 Line centring (Voigt): none 34.99 ± 5.55 (total 22.83), with shape_correction 36.60 ± 6.26; sky-if-needed 13.55 ± 3.62 (19.42), with shape_correction 15.54 ± 4.45 (19.59). Scripts and logs: `tmp/task15fix/` (j1745.py, j1745.json, fam.py, win.py).
 
 **Open items, in order:**
