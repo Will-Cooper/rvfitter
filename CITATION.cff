@@ -1,10 +1,20 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
+title: "rvfitter"
+abstract: "Radial velocities of ultracool dwarfs from reduced 1D spectra, with several independent techniques (line centring, cross-correlation, template fitting, forward-model MCMC, least-squares deconvolution, telluric referencing) combined hierarchically into one adopted value with a full error budget."
 authors:
 - family-names: "Cooper"
   given-names: "W. J."
   orcid: "https://orcid.org/0000-0003-3501-8967"
-title: "rvfitter"
-version: 2.0.0
-date-released: 2024-01-04
+version: 2.1.0  # set at each release (see docs/releasing.md)
+date-released: 2026-11-14  # set at each release
+doi: 10.5281/zenodo.6624927  # concept DOI: resolves to the latest Zenodo release
+license: MIT
 url: "https://github.com/Will-Cooper/rvfitter"
+repository-code: "https://github.com/Will-Cooper/rvfitter"
+keywords:
+- astronomy
+- radial velocity
+- brown dwarfs
+- ultracool dwarfs
+- spectroscopy

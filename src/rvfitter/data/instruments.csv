@@ -1,0 +1,28 @@
+# Slit-spectrograph properties for the slit-centring prior (rvfitter.calibration.slit) and the arc-RMS fallback
+# (rvfitter.calibration.wavelength_correction). `key` is matched case-insensitively against PypeIt's PYP_SPEC header
+# keyword first, then against INSTRUME and INSTR (Spextool). Empty = not sourced, so unknown (never guessed).
+#   pixscale_spat_arcsec: unbinned scale along the slit; pixscale_disp_arcsec: along the dispersion, empty = same
+#     (square pixels). The binned scale is this times the header binning (PypeIt BINNING 'spectral,spatial').
+#   default_binning: binning when the header has none (the NIR arrays are read out unbinned).
+#   wave_rms_kms: typical wavelength-calibration accuracy [km/s], used only when the file records no arc RMS and
+#     calibration.wave_rms_kms is unset (WARNING, zp flag wave_rms_assumed). Km/s, not pixels, because merged
+#     cross-dispersed orders have no single dispersion. No documented value exists for any instrument below (the
+#     published numbers are arc-fit RMS values of one reduction, not a typical accuracy of the instrument), so empty.
+# Sources:
+#   gtc_osiris: GTC OSIRIS user manual (0.127 arcsec/pix unbinned, 0.254 arcsec/pix in the standard 2x2 mode);
+#     PypeIt 2.0.1 pypeit/spectrographs/gtc_osiris.py, GTCOSIRISSpectrograph detectors 1 and 2 (platescale 0.127).
+#   gtc_osiris_plus: PypeIt 2.0.1 gtc_osiris.py, GTCOSIRISPlusSpectrograph (platescale 0.125; the 2023 detector).
+#   OSIRIS (INSTRUME only): taken as the original E2V detectors (gtc_osiris), as for all data before 2023.
+#   uSpeX (INSTR of Spextool files after the 2014 upgrade to the 2048x2048 Hawaii-2RG; SXD and prism share the
+#     spatial scale): IRTF SpeX page https://irtfweb2.ifa.hawaii.edu/~spex (0.10 arcsec, 18 micron pixel after the
+#     upgrade; 0.15 arcsec, 27 micron before) and Rayner et al. 2003, PASP 115, 362 (0.15 arcsec/pix of the original
+#     InSb array); consistent with the SLTW_ARC/SLTW_PIX = 0.3/3 of uSpeX Spextool headers (Cushing et al. 2004).
+#   ARCoIRIS: CTIO/NOIRLab TripleSpec4 (ARCoIRIS) instrument overview, https://www.ctio.noirlab.edu/noao/content/TS4-Instrument-Overview
+#     (about 0.417 arcsec per 18 micron pixel; 0.41 in arXiv:2111.10465). The Spextool header ratio SLTW_ARC/SLTW_PIX
+#     (1.1/2.4) is a rounded slit sampling, not used.
+key,pixscale_spat_arcsec,pixscale_disp_arcsec,default_binning,wave_rms_kms,pixscale_source,wave_rms_source
+gtc_osiris,0.127,,,,"GTC OSIRIS user manual; PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISSpectrograph platescale)",
+gtc_osiris_plus,0.125,,,,"PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISPlusSpectrograph platescale)",
+OSIRIS,0.127,,,,"GTC OSIRIS user manual (original E2V detectors); PypeIt 2.0.1 gtc_osiris.py",
+uSpeX,0.10,,1,,"IRTF SpeX page (0.10 arcsec Hawaii-2RG pixel since the 2014 upgrade); Rayner et al. 2003; Cushing et al. 2004 header SLTW_ARC/SLTW_PIX",
+ARCoIRIS,0.417,,1,,"CTIO/NOIRLab ARCoIRIS (TripleSpec4) instrument overview",

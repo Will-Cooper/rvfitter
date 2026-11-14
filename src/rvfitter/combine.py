@@ -1,0 +1,417 @@
+"""
+Combination of per-region and per-method radial velocities.
+
+- `combine_regions`: one method's regions combined with a random-effects model (`hierarchical` with a single
+  method), so a region-to-region scatter well above the errors does not let one region set the answer.
+- `weighted_mean`: the inverse-variance mean with the formal error inflated by the Birge ratio √(χ²/(N − 1)),
+  kept for comparison (and for a single region).
+- `hierarchical`: the adopted RV from a line × method model, v_{m,i} = μ + δ_i + β_m + ε_{m,i}, with δ and β
+  marginalised analytically (Woodbury identity) and the two scatter terms τ_line and τ_method integrated on a
+  deterministic grid under half-Cauchy priors. The adopted value is the posterior median of μ and its error
+  half the central 68 per cent interval.
+- Epochs (several spectra of one object): `epoch_labels`, `epoch_summaries` (per-epoch RVs and a variability
+  test), `method_over_epochs` and `adopted_over_epochs` (random effects over the epochs' RVs).
+"""
+import logging
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+
+import numpy as np
+from scipy.optimize import brentq
+from scipy.special import ndtr
+from scipy.stats import chi2 as chi2_dist
+
+from .numerics import weighted_mean_chi2
+from .results import EXCLUDE_FLAGS, flag_names
+from .types import Measurement, MethodResult, Spectrum
+
+__all__ = ['weighted_mean', 'combine_regions', 'hierarchical', 'hierarchical_from_methods', 'mixture_pdf',
+           'epoch_labels', 'epoch_summaries', 'method_over_epochs', 'adopted_over_epochs']
+
+log = logging.getLogger(__name__)
+
+_Q16, _Q84 = float(ndtr(-1.)), float(ndtr(1.))
+
+
+def weighted_mean(rvs: Sequence[float], errs: Sequence[float]) -> tuple[float, float]:
+    """
+    Inverse-variance weighted mean with the Birge-ratio error inflation
+
+    Parameters
+    ----------
+    rvs
+        Radial velocities [km/s]; entries that are non-finite, or whose error is non-finite or non-positive,
+        are ignored
+    errs
+        Their 1σ uncertainties [km/s]
+
+    Returns
+    -------
+    rv, err
+        The weighted mean, and its error: the single value's own error for N = 1, otherwise the formal error
+        1/√Σw multiplied by max(1, √(χ²/(N − 1))) with χ² = Σw(v − mean)². NaN, NaN if nothing is usable.
+    """
+    rvs, errs = np.asarray(rvs, dtype=float), np.asarray(errs, dtype=float)
+    good = np.isfinite(rvs) & np.isfinite(errs) & (errs > 0)
+    rvs, errs = rvs[good], errs[good]
+    if not len(rvs):
+        return np.nan, np.nan
+    if len(rvs) == 1:
+        return float(rvs[0]), float(errs[0])
+    rv, formal, chisq = weighted_mean_chi2(rvs, errs)
+    return rv, float(formal * max(1., np.sqrt(chisq / (len(rvs) - 1))))
+
+
+def combine_regions(measurements: Iterable[Measurement], *, details: dict | None = None) -> tuple[float, float]:
+    """
+    Combine one method's per-region measurements with a random-effects (hierarchical) model
+
+    With two or more usable regions, the regions are the "lines" of `hierarchical` with a single method:
+    v_i = μ + δ_i + ε_i, δ_i ~ N(0, τ²) with a half-Cauchy prior on τ, so that when the region-to-region scatter
+    exceeds the errors (τ ≫ σ_i), the regions are weighted almost equally instead of letting the one with the
+    smallest error set the answer (as inverse-variance weights with a Birge inflation would). The result is the
+    posterior median of μ and half its central 68 per cent interval. A single region returns itself.
+
+    Parameters
+    ----------
+    measurements
+        The per-region measurements; every finite one is used, whatever its flag (callers filter first)
+    details
+        If given, filled with 'tau_line', 'birge_rv' and 'birge_err' (the inverse-variance mean with the Birge
+        factor, for comparison) and 'n'
+
+    Returns
+    -------
+    rv, err
+        The combined RV and its error [km/s]
+    """
+    measurements = list(measurements)
+    rvs = [m.rv for m in measurements]
+    errs = [m.rv_err for m in measurements]
+    birge = weighted_mean(rvs, errs)
+    good = [m for m in measurements if np.isfinite(m.rv) and np.isfinite(m.rv_err) and m.rv_err > 0]
+    if len(good) < 2:
+        rv, err, tau = birge[0], birge[1], np.nan
+    else:
+        res = hierarchical([m.rv for m in good], [m.rv_err for m in good], [m.region for m in good],
+                           ['method'] * len(good), tau_method=0.)
+        rv, err, tau = float(res['median']), float(res['err']), float(res['tau_line'])
+    if details is not None:
+        details.update(tau_line=tau, birge_rv=float(birge[0]), birge_err=float(birge[1]), n=len(good))
+    return rv, err
+
+
+def _half_cauchy_logpdf(tau: np.ndarray, scale: float) -> np.ndarray:
+    """Log density of a half-Cauchy distribution of the given scale, for tau ≥ 0"""
+    return np.log(2. / (np.pi * scale)) - np.log1p((tau / scale) ** 2)
+
+
+def _trapezoid_weights(x: np.ndarray) -> np.ndarray:
+    """Trapezoidal quadrature weights for an increasing, possibly non-uniform, grid"""
+    w = np.zeros_like(x)
+    dx = np.diff(x)
+    w[:-1] += dx / 2
+    w[1:] += dx / 2
+    return w
+
+
+def mixture_pdf(x: np.ndarray, means: np.ndarray, sds: np.ndarray, weights: np.ndarray,
+                extra_sd: float = 0.) -> np.ndarray:
+    """
+    Density of a mixture of Gaussians, e.g. the posterior of μ returned by `hierarchical`
+
+    Parameters
+    ----------
+    x
+        Where to evaluate the density
+    means, sds, weights
+        Component means, standard deviations and normalised weights
+    extra_sd
+        An extra standard deviation added in quadrature to every component (e.g. a systematic)
+
+    Returns
+    -------
+    pdf
+        The density at x
+    """
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    sds = np.sqrt(np.asarray(sds, dtype=float) ** 2 + extra_sd ** 2)
+    weights = np.asarray(weights, dtype=float)
+    keep = weights > 1e-12 * np.max(weights)
+    m, s, w = np.asarray(means, dtype=float)[keep], sds[keep], weights[keep]
+    norm = w / (np.sqrt(2 * np.pi) * s)
+    pdf = np.empty(len(x))
+    for start in range(0, len(x), 256):  # chunked over x to bound the memory
+        z = (x[start:start + 256, None] - m[None, :]) / s[None, :]
+        pdf[start:start + 256] = np.sum(norm * np.exp(-0.5 * z ** 2), axis=1)
+    return pdf
+
+
+def hierarchical(values: Sequence[float], errors: Sequence[float], line_ids: Sequence, method_ids: Sequence, *,
+                 tau_scale: float | None = None, ngrid: int = 200, tau_max_factor: float = 10.,
+                 tau_line: float | None = None, tau_method: float | None = None) -> dict:
+    """
+    Adopted RV from a hierarchical line × method model
+
+    The model is v_{m,i} = μ + δ_i + β_m + ε_{m,i}, with δ_i ~ N(0, τ_line²) shared by all methods measuring
+    line (region) i, β_m ~ N(0, τ_method²) shared by all lines measured by method m, and ε ~ N(0, σ²).
+    Marginalising δ and β gives v ~ N(μ1, C), C = diag(σ²) + τ_line² [same line] + τ_method² [same method].
+    With a flat prior on μ, its conditional posterior is Gaussian for fixed τ; the τ have half-Cauchy priors
+    and are integrated on a fixed grid (τ = 0 plus ngrid − 1 log-spaced points from 1e-3 × scale to τ_max,
+    trapezoidal weights), so the posterior of μ is a mixture of Gaussians. No random numbers are used.
+    C⁻¹ and |C| come from the Woodbury identity and the matrix determinant lemma, so memory scales with
+    ngrid × (n_lines + n_methods)² rather than with the number of measurements squared.
+    A factor with a single level (one line, or one method) has an offset that cannot be separated from μ, so
+    its τ is fixed at 0 unless given explicitly, and a warning is logged.
+
+    Parameters
+    ----------
+    values
+        RV measurements [km/s] (entries with non-finite values or non-finite/non-positive errors are dropped)
+    errors
+        Their 1σ uncertainties [km/s]
+    line_ids
+        The line or region of each measurement (hashable labels)
+    method_ids
+        The method of each measurement (hashable labels)
+    tau_scale
+        Scale of both half-Cauchy priors; by default the median measurement error (a mild empirical Bayes)
+    ngrid
+        Grid points per τ axis, including τ = 0
+    tau_max_factor
+        The τ grid reaches at least this many prior scales (and at least three times the range of the values)
+    tau_line, tau_method
+        Fix that τ at this value instead of integrating over it
+
+    Returns
+    -------
+    result
+        'median' and 'err' (half of q84 − q16) are the adopted RV and its error; also 'q16', 'q84', the
+        posterior 'mean' and 'sd' of μ, the posterior medians 'tau_line' and 'tau_method', 'tau_scale', the
+        counts 'n', 'n_lines' and 'n_methods', and the mixture components 'means', 'sds', 'weights'
+    """
+    values, errors = np.asarray(values, dtype=float), np.asarray(errors, dtype=float)
+    line_ids, method_ids = np.asarray(line_ids, dtype=object), np.asarray(method_ids, dtype=object)
+    good = np.isfinite(values) & np.isfinite(errors) & (errors > 0)
+    values, errors, line_ids, method_ids = values[good], errors[good], line_ids[good], method_ids[good]
+    n = len(values)
+    out = dict(median=np.nan, err=np.nan, q16=np.nan, q84=np.nan, mean=np.nan, sd=np.nan, tau_line=np.nan,
+               tau_method=np.nan, tau_scale=np.nan, n=n, n_lines=len(set(line_ids)),
+               n_methods=len(set(method_ids)), means=np.array([]), sds=np.array([]), weights=np.array([]))
+    if not n:
+        return out
+    if tau_scale is None:
+        tau_scale = float(np.median(errors))
+    if not np.isfinite(tau_scale) or tau_scale <= 0:
+        raise ValueError(f'tau_scale must be positive and finite, not {tau_scale}')
+    out['tau_scale'] = tau_scale
+    tau_max = max(tau_max_factor * tau_scale, 3. * float(np.ptp(values)))
+
+    def taugrid(fixed):
+        if fixed is not None:
+            return np.array([float(fixed)]), np.zeros(1), np.ones(1)
+        grid = np.concatenate([[0.], np.logspace(np.log10(1e-3 * tau_scale), np.log10(tau_max), ngrid - 1)])
+        return grid, _half_cauchy_logpdf(grid, tau_scale), _trapezoid_weights(grid)
+
+    if out['n_lines'] == 1 and tau_line is None and n > 1:
+        log.warning('Only one line/region: tau_line is fixed at 0 (the line systematic is not estimable)')
+    if out['n_methods'] == 1 and tau_method is None and n > 1:
+        log.warning('Only one method: tau_method is fixed at 0 (the between-method systematic is not estimable)')
+    if out['n_lines'] == 1 and tau_line is None:
+        tau_line = 0.
+    if out['n_methods'] == 1 and tau_method is None:
+        tau_method = 0.
+    tl, logprior_l, quad_l = taugrid(tau_line)
+    tm, logprior_m, quad_m = taugrid(tau_method)
+    # C = D + U S S U^T, D = diag(σ²), U = [line indicators | method indicators] (n × r), S = diag(τ...).
+    # With W = I + S U^T D^-1 U S (r × r): x^T C^-1 y = x^T D^-1 y − (S U^T D^-1 x)^T W^-1 (S U^T D^-1 y)
+    # and |C| = |D| |W|; τ = 0 is allowed.
+    _, linv = np.unique(line_ids.astype(str), return_inverse=True)
+    _, minv = np.unique(method_ids.astype(str), return_inverse=True)
+    nl, nm = linv.max() + 1, minv.max() + 1
+    umat = np.zeros((n, nl + nm))
+    umat[np.arange(n), linv] = 1.
+    umat[np.arange(n), nl + minv] = 1.
+    dinv = 1. / errors ** 2
+    amat = umat.T @ (dinv[:, None] * umat)
+    p1, pv = umat.T @ dinv, umat.T @ (dinv * values)
+    a0, b0, c0 = np.sum(dinv), np.sum(dinv * values), np.sum(dinv * values ** 2)
+    logdet_d = np.sum(np.log(errors ** 2))
+    a, b, vcv, logdet = (np.empty((len(tl), len(tm))) for _ in range(4))
+    eye = np.eye(nl + nm)
+    for k, tline in enumerate(tl):  # one τ_line at a time keeps the memory at len(tm) × r × r
+        smat = np.concatenate([np.full((len(tm), nl), tline), np.repeat(tm[:, None], nm, axis=1)], axis=1)
+        wmat = eye[None] + smat[:, :, None] * amat[None] * smat[:, None, :]
+        rhs = np.stack([smat * p1, smat * pv], axis=-1)
+        sol = np.linalg.solve(wmat, rhs)
+        a[k] = a0 - np.sum(rhs[..., 0] * sol[..., 0], axis=-1)  # 1^T C^-1 1
+        b[k] = b0 - np.sum(rhs[..., 0] * sol[..., 1], axis=-1)  # 1^T C^-1 v
+        vcv[k] = c0 - np.sum(rhs[..., 1] * sol[..., 1], axis=-1)  # v^T C^-1 v
+        logdet[k] = logdet_d + np.linalg.slogdet(wmat)[1]
+    loglike = -0.5 * (logdet + np.log(a) + vcv - b ** 2 / a)
+    with np.errstate(divide='ignore'):  # guards log(0) (e.g. a fixed tau's weight array)
+        logpost = loglike + (logprior_l + np.log(quad_l))[:, None] + (logprior_m + np.log(quad_m))[None, :]
+    weights = np.exp(logpost - np.max(logpost))
+    weights /= weights.sum()
+    means, sds = b / a, np.sqrt(1. / a)
+
+    mean = float(np.sum(weights * means))
+    sd = float(np.sqrt(np.sum(weights * (sds ** 2 + means ** 2)) - mean ** 2))
+    keep = weights > 1e-12 * weights.max()
+    km, ks, kw = means[keep], sds[keep], weights[keep] / weights[keep].sum()
+
+    def quantile(q):
+        lo, hi = np.min(km - 10 * ks), np.max(km + 10 * ks)
+        return brentq(lambda x: np.sum(kw * ndtr((x - km) / ks)) - q, lo, hi, xtol=1e-10)
+
+    def tau_median(grid, marginal):
+        if len(grid) == 1:
+            return float(grid[0])
+        cdf = np.cumsum(marginal) - marginal / 2  # mid-point rule
+        return float(np.interp(0.5, cdf, grid))
+
+    q16, q84 = quantile(_Q16), quantile(_Q84)
+    out.update(median=quantile(0.5), err=(q84 - q16) / 2., q16=q16, q84=q84, mean=mean, sd=sd,
+               tau_line=tau_median(tl, weights.sum(axis=1)), tau_method=tau_median(tm, weights.sum(axis=0)),
+               means=means.ravel(), sds=sds.ravel(), weights=weights.ravel())
+    return out
+
+
+def hierarchical_from_methods(methods: Mapping[str, MethodResult], *, exclude_flags: int | None = None,
+                              **kwargs) -> dict:
+    """
+    Run `hierarchical` over every usable per-region measurement of every method
+
+    The region name is the line label, so regions shared between methods share a line offset. Measurements
+    with non-finite values or errors, or with any of `exclude_flags` set, are left out and listed (and logged).
+
+    Parameters
+    ----------
+    methods
+        Method name → MethodResult
+    exclude_flags
+        Flag bits that exclude a measurement (default `results.EXCLUDE_FLAGS`: fit_failed, few_regions,
+        not_converged, outlier); 0 keeps every finite measurement
+    **kwargs
+        Passed to `hierarchical`
+
+    Returns
+    -------
+    result
+        As `hierarchical`, plus 'excluded': a list of (method, region, flag, reason)
+    """
+    if exclude_flags is None:
+        exclude_flags = EXCLUDE_FLAGS
+    values, errors, lines, meths, excluded = [], [], [], [], []
+    for name, res in methods.items():
+        for m in res.measurements:
+            if m.flag & exclude_flags:
+                excluded.append((name, m.region, int(m.flag), ','.join(flag_names(m.flag & exclude_flags))))
+                continue
+            if not (np.isfinite(m.rv) and np.isfinite(m.rv_err) and m.rv_err > 0):
+                excluded.append((name, m.region, int(m.flag), 'non-finite'))
+                continue
+            values.append(m.rv)
+            errors.append(m.rv_err)
+            lines.append(m.region)
+            meths.append(name)
+    for name, region, _, why in excluded:
+        log.info('adopted RV: excluding %s %s (%s)', name, region or '(all)', why)
+    out = hierarchical(values, errors, lines, meths, **kwargs)
+    out['excluded'] = excluded
+    return out
+
+
+def epoch_labels(spectra: Sequence[Spectrum]) -> list[str]:
+    """Epoch labels: the file stems, else the mid-exposure MJD, else e1, e2, ... (always unique)"""
+    stems = [Path(s.source).stem or f'e{k + 1}' for k, s in enumerate(spectra)]
+    if len(set(stems)) == len(stems):
+        return stems
+    mjds = [s.meta.get('mjd_mid') for s in spectra]
+    if all(m is not None for m in mjds) and len({f'{m:.5f}' for m in mjds}) == len(mjds):
+        return [f'mjd{m:.5f}' for m in mjds]
+    return [f'e{k + 1}' for k in range(len(spectra))]
+
+
+def method_over_epochs(method: str, lst: list[MethodResult], labels: list[str], name: str) -> MethodResult:
+    """A method over several epochs: random effects over the epochs' own (region-combined) RVs"""
+    per_epoch = [Measurement(method, lab, float(r.rv), float(r.rv_err), 0)
+                 for r, lab in zip(lst, labels, strict=True) if np.isfinite(r.rv) and np.isfinite(r.rv_err)]
+    meas = [x for r in lst for x in r.measurements]
+    details: dict = {}
+    rv, err = combine_regions(per_epoch, details=details)
+    for x in meas:
+        x.diagnostics.update(method_tau_epoch=details['tau_line'])
+    log.info('%s: %s over %d epochs: %.2f ± %.2f km/s (τ_epoch %.1f km/s)', name, method, len(per_epoch), rv, err,
+             details['tau_line'])
+    return MethodResult(method, rv, err, sum(r.n_regions for r in lst), meas)
+
+
+def adopted_over_epochs(epoch_info: dict, tau_scale: float | None, name: str) -> dict:
+    """The adopted RV from the epochs' adopted RVs: random effects over epochs (the second level)"""
+    rv, err = np.asarray(epoch_info['rv'], float), np.asarray(epoch_info['err'], float)
+    ok = np.isfinite(rv) & np.isfinite(err) & (err > 0)
+    if not ok.any():
+        return {}
+    labels = [lab for lab, g in zip(epoch_info['labels'], ok, strict=True) if g]
+    res = hierarchical(rv[ok], err[ok], labels, ['epoch'] * int(ok.sum()), tau_scale=tau_scale)
+    res['tau_epoch'] = res['tau_line']
+    for key in ('tau_line', 'tau_method'):
+        vals = [v for v in epoch_info[key] if np.isfinite(v)]
+        res[key] = float(np.median(vals)) if vals else float('nan')
+    res['n_lines'] = int(np.nansum(epoch_info['n_lines']))
+    res['n_methods'] = int(np.nanmax(epoch_info['n_methods']))
+    log.info('%s: adopted over %d epochs: %.2f ± %.2f km/s (τ_epoch %.1f km/s)', name, int(ok.sum()), res['median'],
+             res['err'], res['tau_epoch'])
+    return res
+
+
+def _chi2_test(v: np.ndarray, e: np.ndarray, ok: np.ndarray) -> tuple[float, float]:
+    """χ² of the values about their weighted mean and its p-value (NaN with fewer than two)"""
+    if ok.sum() < 2:
+        return np.nan, np.nan
+    w = 1. / e[ok] ** 2
+    mean = np.sum(w * v[ok]) / np.sum(w)
+    c2 = float(np.sum(w * (v[ok] - mean) ** 2))
+    return c2, float(chi2_dist.sf(c2, int(ok.sum()) - 1))
+
+
+def epoch_summaries(per_method: dict[str, list[MethodResult]], labels: list[str], tau_scale: float | None,
+                    name: str, sys: Sequence[float]) -> dict:
+    """
+    Per-epoch method and adopted RVs (recorded in each measurement's diagnostics) and a variability test
+
+    The epochs' adopted RVs are compared with their weighted mean, χ² = Σ (v_e − v̄)²/σ_e² with n − 1 degrees of
+    freedom, where σ_e is the epoch's statistical error ⊕ its wavelength zero-point systematic `sys` (each epoch
+    has its own wavelength solution and slit centring); p < 0.001 flags the object as variable (a possible binary
+    or a calibration problem). The statistical-only test is reported too (`pvalue_stat`).
+    """
+    rv_e, err_e, taus_l, taus_m, n_l, n_m = [], [], [], [], [], []
+    for k, label in enumerate(labels):
+        per = {m: lst[k] for m, lst in per_method.items() if np.isfinite(lst[k].rv)}
+        ad = hierarchical_from_methods(per, tau_scale=tau_scale) if per else {}
+        rv, err = float(ad.get('median', np.nan)), float(ad.get('err', np.nan))
+        rv_e.append(rv)
+        err_e.append(err)
+        taus_l.append(float(ad.get('tau_line', np.nan)))
+        taus_m.append(float(ad.get('tau_method', np.nan)))
+        n_l.append(int(ad.get('n_lines', 0)))
+        n_m.append(int(ad.get('n_methods', 0)))
+        for lst in per_method.values():
+            for meas in lst[k].measurements:
+                meas.diagnostics.update(epoch_method_rv=float(lst[k].rv), epoch_method_err=float(lst[k].rv_err),
+                                        epoch_adopted_rv=rv, epoch_adopted_err=err)
+        log.info('%s: epoch %s: adopted %.2f ± %.2f km/s (%s)', name, label, rv, err,
+                 ', '.join(f'{m} {r.rv:.2f} ± {r.rv_err:.2f}' for m, r in per.items()))
+    v, e = np.array(rv_e), np.array(err_e)
+    s = np.array([x if x is not None and np.isfinite(x) else 0. for x in sys], dtype=float)
+    ok = np.isfinite(v) & np.isfinite(e) & (e > 0)
+    chi2_stat, p_stat = _chi2_test(v, e, ok)
+    chi2, pvalue = _chi2_test(v, np.hypot(e, s), ok)
+    variable = bool(np.isfinite(pvalue) and pvalue < 1e-3)
+    log.info('%s: epoch variability: χ² %.1f for %d epochs, p = %.3g with the zero-point systematics (statistical '
+             'errors only: χ² %.1f, p = %.3g)%s', name, chi2, int(ok.sum()), pvalue, chi2_stat, p_stat,
+             ' (variable: p < 0.001)' if variable else '')
+    return dict(n=len(labels), labels=list(labels), rv=[float(x) for x in v], err=[float(x) for x in e],
+                sys_wavezp=[float(x) for x in s], chi2=chi2, pvalue=pvalue, chi2_stat=chi2_stat, pvalue_stat=p_stat,
+                variable=variable, tau_line=taus_l, tau_method=taus_m, n_lines=n_l, n_methods=n_m)
