@@ -15,7 +15,8 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from matplotlib.widgets import SpanSelector
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ AUTO_COLOUR = '#DDAA33'
 SELECT_COLOUR = '#004488'
 GREY = '#777777'
 USER_KIND = 'line'
+EMPTY_TEXT = 'Select an object in the Objects list to see its spectrum and edit its regions.'
 
 Key = tuple[str, str]   # (method, region name)
 
@@ -65,7 +67,9 @@ class RegionEditor(QWidget):
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
-        self.info = QLabel('Select an object to edit its regions.')
+        self.empty = QLabel(EMPTY_TEXT, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.empty.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        self.info = QLabel()
         self.method_box = QComboBox()
         self.method_box.setToolTip('The method that a newly added region applies to.')
         self.add_btn = QPushButton('Add region')
@@ -79,11 +83,17 @@ class RegionEditor(QWidget):
         for b in (self.add_btn, QLabel('for method'), self.method_box, self.rm_btn, self.reset_btn):
             bar.addWidget(b)
         bar.addStretch(1)
+        self.content = QWidget()
+        cl = QVBoxLayout(self.content)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.addLayout(bar)
+        cl.addWidget(self.info)
+        cl.addWidget(self.toolbar)
+        cl.addWidget(self.canvas, 1)
+        self.content.setVisible(False)
         lay = QVBoxLayout(self)
-        lay.addLayout(bar)
-        lay.addWidget(self.info)
-        lay.addWidget(self.toolbar)
-        lay.addWidget(self.canvas, 1)
+        lay.addWidget(self.empty, 1)
+        lay.addWidget(self.content, 1)
 
         self._selector: SpanSelector | None = None
         self.add_btn.toggled.connect(self._toggle_add)
@@ -104,9 +114,17 @@ class RegionEditor(QWidget):
             self._selector = SpanSelector(self.ax, self._on_new_span, 'horizontal', useblit=False, interactive=False,
                                           props={'alpha': 0.25, 'facecolor': SELECT_COLOUR})
 
+    def show_message(self, text: str) -> None:
+        """Replace the editor by ``text`` (the empty state, or why the regions are unavailable)."""
+        self.empty.setText(text)
+        self.empty.setVisible(True)
+        self.content.setVisible(False)
+
     # ---- data in -------------------------------------------------------------------------------------------
     def set_data(self, wave, flux, auto: dict[str, list], effective: dict[str, list] | None = None) -> None:
         """Show a spectrum with the automatic regions per method and the regions in force (with overrides)."""
+        self.empty.setVisible(False)
+        self.content.setVisible(True)
         self.wave = np.asarray(wave, float)
         flux = np.asarray(flux, float)
         med = np.nanmedian(flux) if flux.size else 1.0

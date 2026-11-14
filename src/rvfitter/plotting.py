@@ -23,6 +23,7 @@ from matplotlib.transforms import blended_transform_factory
 
 from . import features
 from .calibration import sky_zeropoint
+from .config import METHOD_LABELS
 from .results import EXCLUDE_FLAGS
 from .types import Measurement, ObjectResult
 
@@ -34,9 +35,6 @@ __all__ = ['style_context', 'plot_line_fits', 'plot_ccf', 'plot_adopted', 'plot_
 COLOURS = ('#000000', '#004488', '#DDAA33')  # black, blue, gold; then the same three dashed
 GREY = '0.45'
 _ANG = r'$\mathrm{\AA}$'  # cmr10 has no Å glyph; mathtext draws it
-# display names of the methods
-METHOD_LABELS = {'ccf': 'CCF', 'template_fit': 'Template fit', 'linecentre': 'Line centring',
-                 'forward_mcmc': 'Forward model', 'lsd': 'LSD', 'telluric_ref': 'Telluric reference'}
 
 
 _PAPER: ContextVar[bool] = ContextVar('rvfitter_paper_plots', default=False)

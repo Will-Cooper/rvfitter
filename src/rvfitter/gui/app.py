@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-INSTALL_HINT = 'The rvfitter GUI needs PySide6. Install it with:  pip install "rvfitter[gui]"'
+INSTALL_HINT = ('The rvfitter GUI needs PySide6. Install it with:  pip install "rvfitter[gui]"\n'
+                'On Linux the Qt xcb platform also needs libxcb-cursor0 (Debian/Ubuntu: apt install libxcb-cursor0; '
+                'Fedora/Arch: xcb-util-cursor); run  rvfitter doctor  to check.')
 
 
 def _qt_available() -> bool:
@@ -25,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(INSTALL_HINT + '\n')
         return 1
     from PySide6.QtWidgets import QApplication
+
+    from . import qtplatform
+    qtplatform.configure_platform()  # before the QApplication exists; never overrides a user-set QT_QPA_PLATFORM
+    if qtplatform.xcb_cursor_missing(os.environ, qtplatform.plugin_names(qtplatform.platforms_dir())):
+        log.warning(qtplatform.XCB_CURSOR_HINT)  # if Qt aborts with "xcb-cursor0 is needed", this is the fix
 
     args = sys.argv[1:] if argv is None else list(argv)
     app = QApplication.instance() or QApplication(['rvfitter'])

@@ -6,31 +6,38 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QPainter, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableView,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from . import theme
 from .backend import Backend, LazyBackend
-from .diagnostics import DiagnosticsPanel
+from .diagnostics import DiagnosticsPanel, rv_text
 from .forms import ConfigForm
 from .logpane import LogPane, QtLogHandler
 from .regions_editor import RegionEditor
@@ -42,21 +49,39 @@ log = logging.getLogger('rvfitter.gui')
 QUICK_START = """
 <h3>Quick start</h3>
 <ol>
-<li><b>Open</b> a spectrum, a folder of spectra, or a zip/tar archive (File menu), or drop them onto the window.
-The spectra are grouped into objects in the list on the left.</li>
+<li>Use <b>Open spectra</b> to add files, a folder of spectra, or a zip/tar archive, or drop them onto the window.
+The spectra are grouped into objects in the <b>Objects</b> list on the left.</li>
 <li>Check the <b>Settings</b> tab. The defaults are sensible; hover over any setting for an explanation.
 Tick the methods you want.</li>
 <li>Optionally open the <b>Regions</b> tab, select an object, and drag, add or remove the shaded spans.
 Your edits are stored in the analysis file.</li>
-<li>Press <b>Run</b>. Each object appears in the <b>Results</b> table as soon as it is measured.
+<li>Press <b>Measure RVs</b>. Each object appears in the <b>Results</b> table as soon as it is measured.
 Press <b>Cancel</b> to stop after the current object.</li>
-<li>Select an object to see its <b>Diagnostics</b>. Use <b>Export…</b> to save the table.</li>
+<li>Select an object to see its <b>Diagnostics</b>. A gold dot in the list marks a result that needs attention,
+a rose dot a failed one. Use <b>Export…</b> to save the table.</li>
 <li><b>File &rarr; Save analysis (TOML)…</b> writes the exact configuration used.
-Re-run it from the command line with <tt>rvfitter run analysis.toml</tt>.</li>
+Repeat it from the command line with <tt>rvfitter run analysis.toml</tt>.</li>
 </ol>
 """
 
 OVERRIDES_PATH = 'regions.overrides'
+TREE_EMPTY = 'Drop spectra, folders or .zip/.tar archives here, or use Open spectra.'
+FLAGGED_TIP = 'Gold dot: needs attention. The best template is at the edge of the searched grid.'
+FAILED_TIP = 'Rose dot: failed. No RV could be measured; see the log.'
+MAX_SIZE = (1280, 800)  # default window size cap [px]
+LOG_HEIGHT = 90  # default log pane height [px]
+
+
+class ObjectTree(QTreeWidget):
+    """The object list; says what to do when it is empty."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self.topLevelItemCount() == 0:
+            p = QPainter(self.viewport())
+            p.setPen(self.palette().color(QPalette.ColorRole.PlaceholderText))
+            p.drawText(self.viewport().rect().adjusted(12, 0, -12, 0),
+                       int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap), TREE_EMPTY)
 
 
 class MainWindow(QMainWindow):
@@ -68,7 +93,6 @@ class MainWindow(QMainWindow):
         self.settings = settings or QSettings()
         self.setWindowTitle(f'rvfitter {self.backend.version()}')
         self.setAcceptDrops(True)
-        self.resize(1300, 850)
 
         self.groups: dict[str, list[str]] = {}
         self.results: list[Any] = []
@@ -83,7 +107,9 @@ class MainWindow(QMainWindow):
         self._build_log()
         self._build_ui()
         self._build_menus()
+        self._restore_layout()
         self.statusBar().showMessage('Open spectra to begin.')
+        self._update_summary()
 
     # ---- construction --------------------------------------------------------------------------------------
     def _build_log(self) -> None:
@@ -98,42 +124,55 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         cfg = self.backend.default_config()
 
-        # left: inputs
-        self.input_tree = QTreeWidget()
-        self.input_tree.setHeaderLabels(['Input files (grouped by object)'])
+        # left: the objects
+        self.input_tree = ObjectTree()
+        self.input_tree.setColumnCount(2)
+        self.input_tree.setHeaderLabels(['Objects', 'Files'])
+        self.input_tree.header().setStretchLastSection(False)
+        self.input_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.input_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.input_tree.setFont(theme.tabular(self.input_tree.font()))
         self.input_tree.setToolTip('Spectra grouped into objects. Drop files, folders or archives here.')
         self.input_tree.itemSelectionChanged.connect(self._tree_selected)
-        btns = QHBoxLayout()
-        for text, slot, tip in (
-            ('Open file…', self.open_file, 'Open one spectrum file.'),
-            ('Open folder…', self.open_folder, 'Open every spectrum in a folder (searched recursively).'),
-            ('Open archive…', self.open_archive, 'Open a .zip or .tar/.tar.gz/.tgz archive of spectra.'),
-        ):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            btns.addWidget(b)
-        left = QWidget()
-        lv = QVBoxLayout(left)
-        lv.addLayout(btns)
-        lv.addWidget(self.input_tree, 1)
 
-        # run controls
-        self.run_btn = QPushButton('Run')
-        self.run_btn.setToolTip('Measure radial velocities for all loaded objects.')
-        self.run_btn.clicked.connect(self.run)
+        # toolbar
+        self.open_btn = QToolButton(text='Open spectra')
+        self.open_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.open_btn.setToolTip('Open spectra from files, a folder or an archive (or drop them on the window).')
+        menu = QMenu(self.open_btn)
+        for text, slot, tip in (
+            ('Files…', self.open_file, 'Open one or more spectrum files.'),
+            ('Folder…', self.open_folder, 'Open every spectrum in a folder (searched recursively).'),
+            ('Archive…', self.open_archive, 'Open a .zip or .tar/.tar.gz/.tgz archive of spectra.'),
+        ):
+            act = menu.addAction(text, slot)
+            act.setToolTip(tip)
+        self.open_btn.setMenu(menu)
+        self.measure_btn = QPushButton('Measure RVs')
+        self.measure_btn.setDefault(True)
+        font = self.measure_btn.font()
+        font.setBold(True)
+        self.measure_btn.setFont(font)
+        pal = self.measure_btn.palette()
+        pal.setColor(QPalette.ColorRole.ButtonText, theme.colour('primary', pal))
+        self.measure_btn.setPalette(pal)
+        self.measure_btn.setToolTip('Measure radial velocities for all loaded objects (Ctrl+Return).')
+        self.measure_btn.clicked.connect(self.run)
         self.cancel_btn = QPushButton('Cancel')
-        self.cancel_btn.setToolTip('Stop after the object currently being measured.')
+        self.cancel_btn.setToolTip('Stop measuring after the object currently being measured.')
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel)
         self.progress = QProgressBar()
-        self.progress.setMaximumWidth(220)
+        self.progress.setMaximumWidth(180)
         self.progress.setVisible(False)
-        tb = QToolBar('Run')
+        self.summary = QLabel()
+        self.summary.setToolTip('Objects loaded, and how many are flagged or failed after measuring.')
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb = QToolBar('Toolbar')
         tb.setMovable(False)
-        tb.addWidget(self.run_btn)
-        tb.addWidget(self.cancel_btn)
-        tb.addWidget(self.progress)
+        for w in (self.open_btn, self.measure_btn, self.cancel_btn, self.progress, spacer, self.summary):
+            tb.addWidget(w)
         self.addToolBar(tb)
 
         # tabs
@@ -154,6 +193,7 @@ class MainWindow(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setSortingEnabled(False)
+        self.table.setFont(theme.tabular(self.table.font()))
         self.table.clicked.connect(self._table_clicked)
         self.export_btn = QPushButton('Export…')
         self.export_btn.setToolTip('Save the results table (csv, json, tsv or html).')
@@ -161,7 +201,7 @@ class MainWindow(QMainWindow):
         res = QWidget()
         rv = QVBoxLayout(res)
         row = QHBoxLayout()
-        self.count_label = QLabel('No results yet.')
+        self.count_label = QLabel('No results yet. Press Measure RVs.')
         row.addWidget(self.count_label)
         row.addStretch(1)
         row.addWidget(self.export_btn)
@@ -174,23 +214,45 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.diagnostics, 'Diagnostics')
         self.tabs.currentChanged.connect(self._tab_changed)
 
-        top = QSplitter(Qt.Orientation.Horizontal)
-        top.addWidget(left)
-        top.addWidget(self.tabs)
-        top.setStretchFactor(1, 4)
-        main = QSplitter(Qt.Orientation.Vertical)
-        main.addWidget(top)
-        main.addWidget(self.log_pane)
-        main.setStretchFactor(0, 4)
-        main.setSizes([620, 200])
-        self.setCentralWidget(main)
+        self.top_split = QSplitter(Qt.Orientation.Horizontal)
+        self.top_split.addWidget(self.input_tree)
+        self.top_split.addWidget(self.tabs)
+        self.top_split.setStretchFactor(1, 1)
+        self.top_split.setCollapsible(1, False)
+        self.main_split = QSplitter(Qt.Orientation.Vertical)
+        self.main_split.addWidget(self.top_split)
+        self.main_split.addWidget(self.log_pane)
+        self.log_pane.toggle.toggled.connect(self._log_toggled)
+        self.main_split.setStretchFactor(0, 1)
+        self.setCentralWidget(self.main_split)
+
+    def _log_toggled(self, on: bool) -> None:
+        total = sum(self.main_split.sizes())
+        self.main_split.setSizes([total - LOG_HEIGHT, LOG_HEIGHT] if on else [total, 0])
+
+    def _restore_layout(self) -> None:
+        """80 per cent of the screen (capped), centred, narrow file list, small log; then the saved state."""
+        area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        w, h = min(int(0.8 * area.width()), MAX_SIZE[0]), min(int(0.8 * area.height()), MAX_SIZE[1])
+        self.resize(w, h)
+        self.move(area.center() - self.rect().center())
+        left = max(220, min(260, w // 4))
+        self.top_split.setSizes([left, w - left])
+        self.main_split.setSizes([h, 0])
+        for name, widget in (('geometry', self), ('top_split', self.top_split), ('main_split', self.main_split)):
+            state = self.settings.value(name)
+            if state is not None:
+                (widget.restoreGeometry if widget is self else widget.restoreState)(state)
 
     def _build_guidance(self, layout: QVBoxLayout) -> None:
         """Banner, details pane and the 'Download grid & refit' controls for the selected object."""
         self.guidance_banner = QLabel()
         self.guidance_banner.setWordWrap(True)
-        self.guidance_banner.setStyleSheet(
-            'background: #fff3cd; color: #000000; padding: 4px; border: 1px solid #DDAA33;')
+        self.guidance_banner.setBackgroundRole(QPalette.ColorRole.ToolTipBase)  # palette-aware note colours
+        self.guidance_banner.setForegroundRole(QPalette.ColorRole.ToolTipText)
+        self.guidance_banner.setAutoFillBackground(True)
+        self.guidance_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.guidance_banner.setMargin(4)
         self.guidance_banner.setVisible(False)
         self.guidance_details = QPlainTextEdit()
         self.guidance_details.setReadOnly(True)
@@ -216,9 +278,11 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         m = self.menuBar().addMenu('&File')
         for text, slot, shortcut in (
-            ('Open file…', self.open_file, QKeySequence.StandardKey.Open),
+            ('Open files…', self.open_file, QKeySequence.StandardKey.Open),
             ('Open folder…', self.open_folder, None),
             ('Open archive (zip/tar)…', self.open_archive, None),
+            (None, None, None),
+            ('Measure RVs', self.run, 'Ctrl+Return'),
             (None, None, None),
             ('Load config…', self.load_config_dialog, None),
             ('Save analysis (TOML)…', self.save_config_dialog, QKeySequence.StandardKey.Save),
@@ -321,12 +385,13 @@ class MainWindow(QMainWindow):
     def _loaded(self, groups: dict[str, list[str]]) -> None:
         if not groups:
             log.warning('No usable spectra found.')
-            self.statusBar().showMessage('No usable spectra found.')
+            self.statusBar().showMessage('No usable spectra found. Check that the files are 1D spectra.')
             return
         for name, files in groups.items():
             known = self.groups.setdefault(name, [])
             known.extend(f for f in files if f not in known)
         self._fill_tree()
+        self._update_summary()
         n = sum(len(v) for v in self.groups.values())
         log.info('Loaded %d file%s in %d object%s.', n, '' if n == 1 else 's', len(self.groups),
                  '' if len(self.groups) == 1 else 's')
@@ -335,8 +400,10 @@ class MainWindow(QMainWindow):
     def _fill_tree(self) -> None:
         self.input_tree.clear()
         for name, files in self.groups.items():
-            top = QTreeWidgetItem([f'{name}  ({len(files)})'])
+            n = len(files)
+            top = QTreeWidgetItem([name, f'{n} file{"" if n == 1 else "s"}'])
             top.setData(0, Qt.ItemDataRole.UserRole, name)
+            top.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             for f in files:
                 child = QTreeWidgetItem([Path(f).name])
                 child.setToolTip(0, str(f))
@@ -344,6 +411,52 @@ class MainWindow(QMainWindow):
                 top.addChild(child)
             self.input_tree.addTopLevelItem(top)
             top.setExpanded(True)
+        self._refresh_rows()
+
+    def _adopted(self, name: str) -> tuple[float, float] | None:
+        """The adopted RV and error [km/s] of ``name`` (NaN where not measured); None before it is measured."""
+        df = self.model.df
+        if len(df) == 0 or 'rv_adopted' not in df:
+            return None
+        rows = df[df['object'] == name]
+        if rows.empty:
+            return None
+        row = rows.iloc[-1]
+        return float(row['rv_adopted']), float(row.get('rv_adopted_err', float('nan')))
+
+    def _state(self, name: str) -> str | None:
+        """'failed' (no RV), 'flagged' (needs attention), 'ok', or None before measuring."""
+        adopted = self._adopted(name)
+        if adopted is None:
+            return None
+        if adopted[0] != adopted[0]:
+            return 'failed'
+        return 'flagged' if name in self.guidance else 'ok'
+
+    def _refresh_rows(self) -> None:
+        """Show each object's adopted RV, with a gold or rose dot where it needs attention or failed."""
+        pal = self.input_tree.palette()
+        self.input_tree.headerItem().setText(1, 'RV [km/s]' if len(self.model.df) else 'Files')
+        for i in range(self.input_tree.topLevelItemCount()):
+            top = self.input_tree.topLevelItem(i)
+            name = top.data(0, Qt.ItemDataRole.UserRole)
+            state = self._state(name)
+            if state is None:
+                continue
+            top.setText(1, rv_text(*self._adopted(name)) or 'failed')
+            top.setForeground(1, theme.colour('failed' if state == 'failed' else 'primary', pal))
+            top.setIcon(0, theme.dot(state, pal) if state in ('flagged', 'failed') else QIcon())
+            top.setToolTip(0, {'flagged': FLAGGED_TIP, 'failed': FAILED_TIP}.get(state, ''))
+            top.setToolTip(1, 'Adopted radial velocity and its error.')
+
+    def _update_summary(self) -> None:
+        n = len(self.groups)
+        states = [self._state(name) for name in self.groups]
+        text = f'{n} object{"" if n == 1 else "s"}' if n else 'No objects loaded'
+        for state in ('flagged', 'failed'):
+            if state in states:
+                text += f', {states.count(state)} {state}'
+        self.summary.setText(text)
 
     # ---- configuration -------------------------------------------------------------------------------------
     def load_config_dialog(self) -> None:
@@ -396,7 +509,7 @@ class MainWindow(QMainWindow):
             effective = self.backend.select_regions(spec, cfg, True) if cfg.regions.overrides else auto
         except Exception as exc:
             log.warning('Could not select regions for %s: %s', name, exc)
-            self.region_editor.info.setText(f'Regions unavailable for {name}: {exc}')
+            self.region_editor.show_message(f'Regions are unavailable for {name}: {exc}')
             return
         self.region_editor.set_data(spec.wave, spec.flux, auto, effective)
 
@@ -405,7 +518,7 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             return None
         if not self.groups:
-            self._error('Nothing to run', 'Open some spectra first.')
+            self._error('No spectra loaded', 'Use Open spectra, or drop files on the window, then press Measure RVs.')
             return None
         try:
             cfg = self.current_config()
@@ -417,20 +530,22 @@ class MainWindow(QMainWindow):
         self.model.clear()
         self.guidance.clear()
         self._show_guidance(None)
-        self.count_label.setText('Running…')
+        self._refresh_rows()
+        self._update_summary()
+        self.count_label.setText('Measuring…')
         self.worker = RunWorker(self.backend, cfg, dict(self.groups), int(n_procs), self)
         self.worker.result.connect(self._on_result)
         self.worker.progress.connect(self._on_progress)
         self.worker.done.connect(self._on_done)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self._worker_finished)
-        self.run_btn.setEnabled(False)
+        self.measure_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress.setRange(0, len(self.groups))
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self._run_cfg = cfg
-        log.info('Starting run: %d object%s, %d process%s.', len(self.groups), '' if len(self.groups) == 1 else 's',
+        log.info('Measuring RVs: %d object%s, %d process%s.', len(self.groups), '' if len(self.groups) == 1 else 's',
                  n_procs, '' if n_procs == 1 else 'es')
         self.worker.start()
         return self.worker
@@ -445,6 +560,8 @@ class MainWindow(QMainWindow):
         self.model.append(self.backend.to_table([res]))
         self.count_label.setText(f'{len(self.results)} object{"" if len(self.results) == 1 else "s"} measured.')
         self._note_guidance(len(self.results) - 1, res)
+        self._refresh_rows()
+        self._update_summary()
         if len(self.results) == 1:
             self.table.selectRow(0)
             self.select_object(getattr(res, 'object', None))
@@ -456,18 +573,21 @@ class MainWindow(QMainWindow):
     def _on_done(self, results: list, cancelled: bool) -> None:
         log.info('%s: %d result%s.', 'Cancelled' if cancelled else 'Finished', len(self.results),
                  '' if len(self.results) == 1 else 's')
-        self.statusBar().showMessage('Cancelled.' if cancelled else 'Finished.')
+        n = len(self.results)
+        _, sep, tail = self.summary.text().partition(',')
+        text = f'{n} object{"" if n == 1 else "s"}{sep}{tail}'
+        self.statusBar().showMessage(f'Cancelled after {text}' if cancelled else f'Measured {text}')
         self._autowrite()
 
     def _on_failed(self, msg: str) -> None:
-        self.statusBar().showMessage('Run failed.')
-        QMessageBox.warning(self, 'Run failed', msg)
+        self.statusBar().showMessage('Measuring failed.')
+        QMessageBox.warning(self, 'Measuring failed', f'{msg}\n\nCheck the log, then press Measure RVs again.')
 
     def _worker_finished(self) -> None:
         if self.worker is not None:
             self.worker.deleteLater()
         self.worker = None
-        self.run_btn.setEnabled(True)
+        self.measure_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress.setVisible(False)
 
@@ -492,7 +612,7 @@ class MainWindow(QMainWindow):
     # ---- results and selection -----------------------------------------------------------------------------
     def export_results(self) -> None:
         if not self.results:
-            self._error('No results', 'There are no results to export yet.')
+            self._error('No results to export', 'Press Measure RVs first, then export the table.')
             return
         start = str(Path(self._last_dir('export')) / 'results.csv')
         name, _ = QFileDialog.getSaveFileName(self, 'Export results', start,
@@ -527,10 +647,16 @@ class MainWindow(QMainWindow):
         self.current_object = name
         res = next((r for r in self.results if getattr(r, 'object', None) == name), None)
         if res is not None:
-            self.diagnostics.show_result(res)
+            self._show_diagnostics(res)
         self._show_guidance(name)
         if self.tabs.currentWidget() is self.region_editor:
             self.load_regions_for(name)
+
+    def _show_diagnostics(self, res: Any) -> None:
+        rv, err = self._adopted(res.object) or (None, None)
+        note = 'Needs attention: the best template is at the edge of the searched grid.' \
+            if res.object in self.guidance else ''
+        self.diagnostics.show_result(res, rv, err, note)
 
     # ---- template guidance and refits ----------------------------------------------------------------------
     def _note_guidance(self, row: int, res: Any) -> None:
@@ -557,7 +683,7 @@ class MainWindow(QMainWindow):
         if not sugg:
             self.guidance_details.clear()
             return
-        self.guidance_banner.setText(f'\u26a0 {name}: the best template is at the edge of the searched parameters '
+        self.guidance_banner.setText(f'{name}: the best template is at the edge of the searched parameters '
                                      f'({len(sugg)} suggestion{"" if len(sugg) == 1 else "s"}).')
         self.guidance_details.setPlainText('\n\n'.join(
             s['message'] + (f'\nCLI: {s["command"]}' if s.get('command') else '') for s in sugg))
@@ -587,7 +713,9 @@ class MainWindow(QMainWindow):
             self._run_cfg = new_cfg
             self.set_config(new_cfg)  # the session config now carries the [[refits]] entry
             self._note_guidance(idx, new_res)
-            self.diagnostics.show_result(new_res)
+            self._refresh_rows()
+            self._update_summary()
+            self._show_diagnostics(new_res)
             self._show_guidance(name)
             self.statusBar().showMessage(f'Refitted {name}.')
             log.info('Refit of %s finished.', name)
@@ -597,7 +725,7 @@ class MainWindow(QMainWindow):
             self._refitting = False
             self._show_guidance(name)
             self.statusBar().showMessage('Refit failed.')
-            self._error('Refit failed', msg)
+            self._error('Refit failed', f'{msg}\n\nCheck the log, then try again.')
 
         return self._job(job, ok, fail)
 
@@ -627,4 +755,6 @@ class MainWindow(QMainWindow):
         if self._logger_level is not None:
             root.setLevel(self._logger_level)
         self.settings.setValue('geometry', self.saveGeometry())
+        self.settings.setValue('top_split', self.top_split.saveState())
+        self.settings.setValue('main_split', self.main_split.saveState())
         super().closeEvent(event)

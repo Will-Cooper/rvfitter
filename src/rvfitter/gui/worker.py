@@ -45,7 +45,7 @@ class RunWorker(QThread):
         try:
             results = self.backend.run(self.cfg, self.groups, self.n_procs, on_result, self._cancel)
         except Exception as exc:
-            log.error('Run failed: %s', exc)
+            log.error('Measuring failed: %s', exc)
             log.debug(traceback.format_exc())
             self.failed.emit(str(exc))
             return
