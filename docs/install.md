@@ -1,32 +1,62 @@
 # Installing rvfitter
 
-rvfitter is installed with `pip` into a conda environment.
-It is **not yet on PyPI**, so use the GitHub command marked "now" below.
-When it is released, use the "after release" command instead; everything else is identical.
+Choose one:
 
-| | Command |
+| You want | Use |
 |---|---|
-| Now (before the PyPI release) | `pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"` |
-| After release on PyPI | `pip install "rvfitter[all]"` |
+| The GUI, without installing Python | [Option 1: standalone app](#option-1-standalone-app-no-python-needed) |
+| The command line, GUI and Python API, with the least fuss | [Option 2: uv](#option-2-uv-recommended-if-you-use-python) |
+| rvfitter inside a conda environment you already use | [Option 3: Miniforge + conda](#option-3-miniforge--conda-environment) |
+| The command line only, with pipx | [Option 4: pipx](#option-4-pipx-command-line-only) |
 
-`[all]` adds the GUI (PySide6) and the MCMC method (emcee, corner).
-Leave it out for a smaller, command-line-only install.
+rvfitter is **not yet on PyPI**, so the Python routes install it from GitHub
+(`"rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"`). After the PyPI release, the same commands
+take plain `"rvfitter[all]"`. `[all]` adds the GUI (PySide6) and the MCMC method (emcee, corner); leave it out for a
+smaller, command-line-only install.
 
-## Option 0: standalone app (no Python needed)
+## Option 1: standalone app (no Python needed)
 
 Each [GitHub release](https://github.com/Will-Cooper/rvfitter/releases/latest) has a ready-to-run GUI for each system:
 
 | System | Download | Run |
 |---|---|---|
 | Windows (64-bit) | `rvfitter-gui-windows-x86_64.zip` | unzip, then double-click `rvfitter-gui\rvfitter-gui.exe` |
-| macOS (Apple Silicon) | `rvfitter-gui-macos-arm64.zip` | unzip, then right-click `rvfitter-gui.app` > Open (the first time only: it is not signed) |
+| macOS (Apple Silicon) | `rvfitter-gui-macos-arm64.zip` | unzip, then right-click `rvfitter-gui.app` > Open (the first time only: it is not signed). If macOS says it is damaged, run `xattr -dr com.apple.quarantine rvfitter-gui.app` once |
 | Linux (x86-64) | `rvfitter-gui-linux-x86_64.tar.gz` | `tar -xzf rvfitter-gui-linux-x86_64.tar.gz && ./rvfitter-gui/rvfitter-gui` |
 
 The app is the full GUI: open spectra, measure, and save the results and the config.
 Each download also contains `examples/`: three example spectra with ready-made configs (see `examples/README.md`); load one with File > Load config….
 For scripting, batch runs or the `inject`/`forecast` tools, install the Python package (below).
 
-## Option 1 (recommended): Miniforge + conda environment
+## Option 2: uv (recommended if you use Python)
+
+[uv](https://docs.astral.sh/uv/) is a fast Python installer that also fetches Python itself.
+Install it (copy the line for your system):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                                   # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" # Windows
+```
+
+Then choose one:
+
+```bash
+# as a tool: rvfitter on your PATH, in its own environment (GUI and MCMC included)
+uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+
+# run once without installing
+uvx --from "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main" rvfitter gui
+
+# in a project environment
+uv venv --python 3.12 && uv pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+```
+
+Installing from GitHub needs `git` on your machine; after the PyPI release, replace `"rvfitter[all] @ git+...@main"`
+with `"rvfitter[all]"` and git is no longer needed.
+If `rvfitter` is not found after `uv tool install`, run `uv tool update-shell` and open a new terminal.
+Check the install with `rvfitter doctor`; update with `uv tool upgrade rvfitter`, and remove with `uv tool uninstall rvfitter`.
+
+## Option 3: Miniforge + conda environment
 
 Miniforge is a free Python installer that needs no admin rights and does not touch your system Python.
 
@@ -105,7 +135,7 @@ Versions and the plugin list differ by system.
 Each failing line prints `FAIL ... -> fix: <what to run>`, and the command exits with status 1.
 Add `--offline` to skip the two network checks.
 
-## Option 2: pipx (command line only)
+## Option 4: pipx (command line only)
 
 Use this if you do not need the GUI and already have Python 3.11 or later.
 pipx puts each tool in its own hidden environment.
@@ -125,32 +155,6 @@ rvfitter --version
 To include the GUI and MCMC, use `"rvfitter[all] @ git+..."` instead.
 After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
 On Windows, use `py -m pip` in place of `python -m pip` if `python` is not found.
-
-## Option 3: uv
-
-[uv](https://docs.astral.sh/uv/) is a fast Python installer that also fetches Python itself.
-Install it (copy the line for your system):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh                                   # macOS / Linux
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" # Windows
-```
-
-Then choose one:
-
-```bash
-# as a tool: rvfitter on your PATH, in its own environment (GUI and MCMC included)
-uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
-
-# run once without installing
-uvx --from "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main" rvfitter gui
-
-# in a project environment
-uv venv --python 3.12 && uv pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
-```
-
-After the PyPI release, replace `"rvfitter[all] @ git+...@main"` with `"rvfitter[all]"`.
-Update with `uv tool upgrade rvfitter`, and remove with `uv tool uninstall rvfitter`.
 
 ## Your first RV in 3 commands
 
@@ -248,7 +252,8 @@ pip install --upgrade --force-reinstall --no-deps "rvfitter @ git+https://github
 ```
 
 After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
-With pipx: `pipx upgrade rvfitter`.
+With uv: `uv tool upgrade rvfitter`. With pipx: `pipx upgrade rvfitter`.
+Standalone app: download the new archive from the [latest release](https://github.com/Will-Cooper/rvfitter/releases/latest) and replace the old folder.
 Then run `rvfitter doctor`.
 
 ## Uninstall
@@ -258,6 +263,6 @@ conda deactivate
 conda env remove -n rvfitter
 ```
 
-With pipx: `pipx uninstall rvfitter`.
+With uv: `uv tool uninstall rvfitter`. With pipx: `pipx uninstall rvfitter`. Standalone app: delete its folder.
 To delete the downloaded templates, remove the cache folder shown by `rvfitter doctor`.
 To remove Miniforge itself, delete its folder (`~/miniforge3`, or use "Uninstall" in the Windows Start menu).
