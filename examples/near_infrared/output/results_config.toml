@@ -1,0 +1,65 @@
+schema_version = 1
+seed = 0
+refits = []
+
+[input]
+paths = [
+    "sxd_J0808+3157.fits",
+    "xtc_J1536+0646.fits",
+]
+medium = "auto"
+medium_method = "ciddor"
+telluric_corrected = false
+
+[grouping]
+
+[velocity_frame]
+correction = "auto"
+frame = "barycentric"
+
+[velocity_frame.overrides]
+
+[templates]
+grid = "bt-settl-cifist"
+
+[templates.ranges]
+
+[methods]
+enabled = [
+    "linecentre",
+]
+binary = false
+
+[methods.options]
+
+[regions]
+min_snr = 5.0
+telluric_strictness = 1.0
+max_regions = 12
+continuum_fwhm = 5.0
+template_windows = "features"
+
+[regions.overrides]
+
+[combine]
+systematic_floor = 0.0
+
+[calibration]
+wavelength_correction = "sky-if-needed"
+slit_prior = "auto"
+seeing_fwhm = 0.8
+zero_point_known = false
+sky_segment_width = 250.0
+telluric_segment_width = 250.0
+telluric_template = true
+
+[parallel]
+
+[output]
+path = "output/results.csv"
+formats = [
+    "csv",
+]
+plots = true
+plot_style = "quick"
+medium = "vacuum"
