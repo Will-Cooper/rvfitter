@@ -27,6 +27,7 @@ The remaining time is spread over many small numpy calls, so further speed-ups n
 Parallelism is within an object (one task per region, Monte Carlo chunk or template variant), and workers are spawned for each object, each importing the scientific stack and starting with cold template caches (${\approx}$2 s).
 For a single object with a handful of windows, as here, `n_procs = 1` is as fast or faster; the wavelength-correction step is serial.
 Use more processes for objects with many regions or epochs, for `forward_mcmc` (2.7 times faster at 8) and for large batches; beyond the number of regions or chains there is no gain.
+The automatic setting (no `--n-procs`, `parallel.n_procs` unset) follows this: serial, unless `forward_mcmc` is enabled, in which case `cpu_count() − 1`.
 Results do not depend on `n_procs` (seeds are per task): `n_procs` 1, 4 and 8 give identical numbers.
 Each worker holds its own template cache (${\approx}$440 MB for this grid), so memory scales with `n_procs`.
 

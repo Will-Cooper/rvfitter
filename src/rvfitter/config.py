@@ -136,7 +136,7 @@ class CombineConfig:
 @dataclass
 class ParallelConfig:
     """Parallelism within an object"""
-    n_procs: int | None = None  # None = os.cpu_count() - 1 (at least 1); 1 = serial
+    n_procs: int | None = None  # None = automatic: serial, or cpu_count() - 1 when forward_mcmc runs; 1 = serial
 
 
 @dataclass

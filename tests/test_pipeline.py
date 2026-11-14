@@ -230,3 +230,18 @@ def test_failed_template_method_leaves_no_template_term(fakes, monkeypatch):
     cfg.methods.enabled = ['linecentre', 'template_fit']
     res = pipeline.run(cfg, INPUTS, n_procs=1, failures=[])
     assert all(r.systematics['template_spread'] == 0. for r in res)
+
+
+@pytest.mark.parametrize('enabled, expected', [(['ccf', 'template_fit'], 1), (['ccf', 'forward_mcmc'], 8)])
+def test_automatic_n_procs(fakes, monkeypatch, enabled, expected):
+    """Automatic n_procs: serial for the default methods (a pool costs more than it saves), cpu_count - 1 for MCMC"""
+    seen = []
+    monkeypatch.setattr(pipeline, '_measure', lambda spectra, cfg, n, rng, **kw: seen.append(n) or
+                        pipeline.measure_object(spectra, cfg, None, rng, **kw))
+    monkeypatch.setattr(pipeline.os, 'cpu_count', lambda: 9)
+    monkeypatch.setitem(pipeline.REGISTRY, 'forward_mcmc', FakeMethod('forward_mcmc'))
+    cfg = config.loads(config.dumps(CFG))
+    cfg.parallel.n_procs = None
+    cfg.methods.enabled = enabled
+    pipeline.run(cfg, INPUTS, failures=[])
+    assert set(seen) == {expected}
