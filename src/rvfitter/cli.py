@@ -185,6 +185,8 @@ def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, str]]:
             'headless machine: set QT_QPA_PLATFORM=offscreen; otherwise reinstall PySide6')
         chosen = os.environ.get('QT_QPA_PLATFORM') or qtplatform.choose_platform(os.environ, plats) or 'Qt default'
         add('Qt platform that would be used', True, chosen)
+        if os.environ.get('XDG_SESSION_TYPE') == 'wayland' and not any(p.startswith('wayland') for p in plats):
+            add('Qt Wayland plugin', False, 'not found (XWayland will be used)', qtplatform.WAYLAND_HINT)
         if qtplatform.xcb_cursor_missing(os.environ, plats):
             add('libxcb-cursor (Qt xcb)', False, 'not found', qtplatform.XCB_CURSOR_HINT)
     except (ImportError, OSError) as exc:

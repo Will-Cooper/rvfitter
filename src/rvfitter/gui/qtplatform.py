@@ -14,6 +14,10 @@ XCB_CURSOR_HINT = ('The Qt xcb platform plugin needs the XCB cursor library: ins
                    '(Debian/Ubuntu: sudo apt install libxcb-cursor0; Fedora: xcb-util-cursor; '
                    'Arch: xcb-util-cursor; conda: xcb-util-cursor)')
 
+WAYLAND_HINT = ('The conda-forge PySide6 build lacks the Qt Wayland plugin: run  pip install --force-reinstall '
+                '"PySide6>=6.6"  (in that environment, after  conda remove --force pyside6  if conda installed it) '
+                'for native Wayland')
+
 
 def plugin_names(platforms_dir: Path) -> list[str]:
     """Platform plugins in a Qt ``plugins/platforms`` directory, e.g. ``['offscreen', 'wayland', 'xcb']``."""
@@ -46,7 +50,8 @@ def configure_platform() -> None:
         return
     os.environ['QT_QPA_PLATFORM'] = choice
     if choice == 'xcb':
-        log.info('No Qt Wayland plugin in this PySide6: running through XWayland (QT_QPA_PLATFORM=xcb)')
+        log.warning('No Qt Wayland plugin in this PySide6: running through XWayland (QT_QPA_PLATFORM=xcb). %s',
+                    WAYLAND_HINT)
     else:  # a harmless Qt/GNOME text-input warning floods the terminal on Wayland; user rules win
         os.environ.setdefault('QT_LOGGING_RULES', 'qt.qpa.wayland.textinput=false')
 
