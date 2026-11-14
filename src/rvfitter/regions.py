@@ -25,6 +25,7 @@ from scipy.ndimage import find_objects, gaussian_filter1d, label
 from .broadening import FWHM_TO_SIGMA
 from .constants import C_KMS
 from .features import Feature, features
+from .io import estimate_resolution
 from .types import Region, Spectrum
 
 __all__ = ['SelectOptions', 'select', 'der_snr', 'rv_precision', 'LINE_METHODS', 'TELLURIC_METHODS']
@@ -210,8 +211,7 @@ class _Context:
             self.R = float(spec.resolution)
             self.r_note = 'given'
         else:
-            # assume the usual ~2.5 pixels per resolution element
-            self.R = float(np.median(self.wave) / (2.5 * step))
+            self.R = estimate_resolution(self.wave)
             self.r_note = 'ESTIMATED from the pixel scale (resolution unknown)'
             log.warning('Spectrum has no resolution; assuming R~%.0f from the pixel scale', self.R)
         sigma_pix = max(opts.smooth_fwhm * float(np.median(self.wave)) / self.R / step * FWHM_TO_SIGMA, 0.5)
