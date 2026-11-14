@@ -154,7 +154,7 @@ def test_cancel_stops_worker(qtbot, win, backend, spectra_dir):
     backend.gate.set()
     qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
     assert win.model.rowCount() == 1
-    assert win.run_btn.isEnabled()
+    assert win.measure_btn.isEnabled()
     assert not win.cancel_btn.isEnabled()
 
 
@@ -313,3 +313,69 @@ def test_window_state_saved(win):
     win.main_split.setSizes([500, 150])
     win.close()
     assert win.settings.value('main_split') is not None
+
+
+def _measure(qtbot, win, d):
+    _load(qtbot, win, d)
+    win.run()
+    qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
+
+
+def test_object_list_shows_rv_after_run(qtbot, win, spectra_dir):
+    assert win.input_tree.topLevelItem(0) is None
+    _load(qtbot, win, spectra_dir)
+    assert win.input_tree.topLevelItem(0).text(1) == '2 files'
+    win.run()
+    qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
+    assert [win.input_tree.topLevelItem(i).text(1) for i in range(2)] == ['10.0 ± 0.5', '11.0 ± 0.5']
+    assert win.summary.text() == '2 objects'
+    assert win.statusBar().currentMessage() == 'Measured 2 objects'
+
+
+def test_flagged_object_gets_gold_dot_and_summary(qtbot, win, backend, spectra_dir):
+    backend.edge_objects = {'beta'}
+    _measure(qtbot, win, spectra_dir)
+    alpha, beta = (win.input_tree.topLevelItem(i) for i in range(2))
+    assert alpha.icon(0).isNull() and not beta.icon(0).isNull()
+    assert 'Gold dot' in beta.toolTip(0)
+    assert win.summary.text() == '2 objects, 1 flagged'
+    assert win.statusBar().currentMessage() == 'Measured 2 objects, 1 flagged'
+
+
+def test_colour_roles_follow_palette_lightness():
+    from PySide6.QtGui import QColor, QPalette
+
+    from rvfitter.gui import theme
+    light, dark = QPalette(), QPalette()
+    light.setColor(QPalette.ColorRole.Window, QColor('#ffffff'))
+    dark.setColor(QPalette.ColorRole.Window, QColor('#202020'))
+    names = {r: (theme.colour(r, light).name().lower(), theme.colour(r, dark).name().lower()) for r in theme.COLOURS}
+    assert names == {'primary': ('#004488', '#6699cc'), 'flagged': ('#ddaa33', '#ddaa33'),
+                     'failed': ('#bb5566', '#ee99aa')}
+
+
+def test_empty_states_give_directions(win):
+    from rvfitter.gui.window import TREE_EMPTY
+    assert TREE_EMPTY == 'Drop spectra, folders or .zip/.tar archives here, or use Open spectra.'
+    assert not win.diagnostics.empty.isHidden() and win.diagnostics.content.isHidden()
+    assert win.diagnostics.empty.text() == 'Select an object to see its fits.'
+    assert not win.region_editor.empty.isHidden() and win.region_editor.content.isHidden()
+
+
+def test_selecting_an_object_replaces_the_empty_state(qtbot, win, spectra_dir):
+    _measure(qtbot, win, spectra_dir)
+    assert win.diagnostics.empty.isHidden()
+    assert win.diagnostics.readout.text() == '10.0 ± 0.5 km s⁻¹'
+    win.tabs.setCurrentWidget(win.region_editor)
+    assert win.region_editor.empty.isHidden()
+
+
+def test_log_is_collapsed_and_counts_warnings(qtbot, win):
+    assert not win.log_pane.toggle.isChecked() and win.log_pane.text.isHidden()
+    assert win.log_pane.warn_label.text() == ''
+    logging.getLogger('rvfitter.test').warning('one')
+    logging.getLogger('rvfitter.test').error('two')
+    qtbot.waitUntil(lambda: win.log_pane.warnings == 2, timeout=2000)
+    assert win.log_pane.warn_label.text() == '2 warnings'
+    win.log_pane.clear()
+    assert win.log_pane.warn_label.text() == ''
