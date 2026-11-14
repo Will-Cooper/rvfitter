@@ -5,6 +5,7 @@ Exit codes: 0 clean, 1 usage, config or runtime error, 2 the run finished but a 
 import argparse
 import importlib
 import logging
+import os
 import sys
 import urllib.request
 from pathlib import Path
@@ -167,13 +168,17 @@ def _doctor_checks(offline: bool) -> list[tuple[str, bool, str, str]]:
         except (ImportError, OSError) as exc:
             add(f'import {mod}', False, f'{type(exc).__name__}: {exc}'.splitlines()[0], hint)
     try:
-        QtCore = importlib.import_module('PySide6.QtCore')
-        plugdir = Path(QtCore.QLibraryInfo.path(QtCore.QLibraryInfo.LibraryPath.PluginsPath)) / 'platforms'
-        plats = sorted(p.stem.removeprefix('libq') for p in plugdir.glob('*q*')) if plugdir.is_dir() else []
-        add('Qt platform plugin', bool(plats), ', '.join(plats) or 'none found',
+        from .gui import qtplatform
+        plugdir = qtplatform.platforms_dir()
+        plats = qtplatform.plugin_names(plugdir)
+        add('Qt platform plugins', bool(plats), ', '.join(plats) or 'none found',
             'headless machine: set QT_QPA_PLATFORM=offscreen; otherwise reinstall PySide6')
+        chosen = os.environ.get('QT_QPA_PLATFORM') or qtplatform.choose_platform(os.environ, plats) or 'Qt default'
+        add('Qt platform that would be used', True, chosen)
+        if qtplatform.xcb_cursor_missing(os.environ, plats):
+            add('libxcb-cursor (Qt xcb)', False, 'not found', qtplatform.XCB_CURSOR_HINT)
     except (ImportError, OSError) as exc:
-        add('Qt platform plugin', False, f'PySide6 unavailable ({type(exc).__name__})', 'pip install "rvfitter[gui]"')
+        add('Qt platform plugins', False, f'PySide6 unavailable ({type(exc).__name__})', 'pip install "rvfitter[gui]"')
     from . import templates
     cache = templates.cache_dir()
     try:
