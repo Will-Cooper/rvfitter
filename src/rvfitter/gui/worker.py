@@ -20,7 +20,7 @@ class RunWorker(QThread):
     done = Signal(object, bool)    # list of results, cancelled
     failed = Signal(str)
 
-    def __init__(self, backend, cfg, groups: dict[str, list[str]], n_procs: int, parent=None):
+    def __init__(self, backend, cfg, groups: dict[str, list[str]], n_procs: int | None, parent=None):
         super().__init__(parent)
         self.backend, self.cfg, self.groups, self.n_procs = backend, cfg, groups, n_procs
         self._cancel = threading.Event()

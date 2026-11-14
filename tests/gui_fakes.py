@@ -46,7 +46,7 @@ class RegionsCfg:
 
 @dataclass
 class ParallelCfg:
-    n_procs: int = 1
+    n_procs: int | None = None  # as rvfitter.config: None = automatic
     seed: int = 42
 
 

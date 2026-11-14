@@ -117,6 +117,14 @@ def test_run_fills_table(qtbot, win, backend, spectra_dir):
     assert 'computed' in win.diagnostics.bary.text()
 
 
+def test_run_with_automatic_processes(qtbot, win, backend, spectra_dir):
+    _load(qtbot, win, spectra_dir)
+    win.form.set_value('parallel.n_procs', None)
+    win.run()
+    qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
+    assert backend.runs[0]['n_procs'] is None and win.model.rowCount() == 2
+
+
 def test_run_without_inputs_does_not_start(win, monkeypatch):
     monkeypatch.setattr(win, '_error', lambda *a: None)
     assert win.run() is None

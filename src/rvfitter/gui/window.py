@@ -533,7 +533,7 @@ class MainWindow(QMainWindow):
         self._refresh_rows()
         self._update_summary()
         self.count_label.setText('Measuring…')
-        self.worker = RunWorker(self.backend, cfg, dict(self.groups), int(n_procs), self)
+        self.worker = RunWorker(self.backend, cfg, dict(self.groups), n_procs, self)
         self.worker.result.connect(self._on_result)
         self.worker.progress.connect(self._on_progress)
         self.worker.done.connect(self._on_done)
@@ -545,8 +545,8 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self._run_cfg = cfg
-        log.info('Measuring RVs: %d object%s, %d process%s.', len(self.groups), '' if len(self.groups) == 1 else 's',
-                 n_procs, '' if n_procs == 1 else 'es')
+        log.info('Measuring RVs: %d object%s, %s.', len(self.groups), '' if len(self.groups) == 1 else 's',
+                 'processes chosen automatically' if n_procs is None else f'{n_procs} process(es)')
         self.worker.start()
         return self.worker
 

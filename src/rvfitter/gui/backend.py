@@ -31,7 +31,7 @@ class Backend(Protocol):
 
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
 
-    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
+    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
             on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]: ...
 
     def to_table(self, results: Sequence[Any]) -> Any: ...
@@ -89,7 +89,7 @@ class LazyBackend:
         from rvfitter import pipeline
         return pipeline.region_selector(cfg, list(cfg.methods.enabled), with_overrides)(spectrum)
 
-    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
+    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
             on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]:
         from rvfitter import pipeline
         files = [Path(f) for fs in groups.values() for f in fs]
