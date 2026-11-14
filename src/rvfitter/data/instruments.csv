@@ -20,9 +20,18 @@
 #   ARCoIRIS: CTIO/NOIRLab TripleSpec4 (ARCoIRIS) instrument overview, https://www.ctio.noirlab.edu/noao/content/TS4-Instrument-Overview
 #     (about 0.417 arcsec per 18 micron pixel; 0.41 in arXiv:2111.10465). The Spextool header ratio SLTW_ARC/SLTW_PIX
 #     (1.1/2.4) is a rounded slit sampling, not used.
-key,pixscale_spat_arcsec,pixscale_disp_arcsec,default_binning,wave_rms_kms,pixscale_source,wave_rms_source
-gtc_osiris,0.127,,,,"GTC OSIRIS user manual; PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISSpectrograph platescale)",
-gtc_osiris_plus,0.125,,,,"PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISPlusSpectrograph platescale)",
-OSIRIS,0.127,,,,"GTC OSIRIS user manual (original E2V detectors); PypeIt 2.0.1 gtc_osiris.py",
-uSpeX,0.10,,1,,"IRTF SpeX page (0.10 arcsec Hawaii-2RG pixel since the 2014 upgrade); Rayner et al. 2003; Cushing et al. 2004 header SLTW_ARC/SLTW_PIX",
-ARCoIRIS,0.417,,1,,"CTIO/NOIRLab ARCoIRIS (TripleSpec4) instrument overview",
+#   resolution_min, resolution_max: range of the documented resolving power R over the instrument's modes, at the
+#     source's reference slit (the narrow slit, about 2 pixels wide, so R is set by the dispersion, as for an R
+#     estimated from the pixel spacing). Used only to sanity-check that estimate (rvfitter.io.estimate_resolution).
+#     Both or neither.
+# Resolution sources:
+#   gtc_osiris, gtc_osiris_plus, OSIRIS: GTC OSIRIS instrument page https://www.gtc.iac.es/instruments/osiris/osiris.php
+#     (grism and VPH table, R at the central wavelength for a 0.6 arcsec slit: R300R 348 to R2500U 2555).
+#   uSpeX: IRTF SpeX page (0.3 arcsec slit: prism R~200, SXD R~2000, LXD R~2500); Rayner et al. 2003, PASP 115, 362.
+#   ARCoIRIS: CTIO/NOIRLab TripleSpec4 (ARCoIRIS) page (R~3500 over all six orders, fixed 1.1 arcsec slit).
+key,pixscale_spat_arcsec,pixscale_disp_arcsec,default_binning,wave_rms_kms,pixscale_source,wave_rms_source,resolution_min,resolution_max,resolution_source
+gtc_osiris,0.127,,,,"GTC OSIRIS user manual; PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISSpectrograph platescale)",,348,2555,"GTC OSIRIS instrument page (grism/VPH table, 0.6 arcsec slit)"
+gtc_osiris_plus,0.125,,,,"PypeIt 2.0.1 gtc_osiris.py (GTCOSIRISPlusSpectrograph platescale)",,348,2555,"GTC OSIRIS instrument page (grism/VPH table, 0.6 arcsec slit)"
+OSIRIS,0.127,,,,"GTC OSIRIS user manual (original E2V detectors); PypeIt 2.0.1 gtc_osiris.py",,348,2555,"GTC OSIRIS instrument page (grism/VPH table, 0.6 arcsec slit)"
+uSpeX,0.10,,1,,"IRTF SpeX page (0.10 arcsec Hawaii-2RG pixel since the 2014 upgrade); Rayner et al. 2003; Cushing et al. 2004 header SLTW_ARC/SLTW_PIX",,200,2500,"IRTF SpeX page (0.3 arcsec slit: prism R~200, SXD R~2000, LXD R~2500)"
+ARCoIRIS,0.417,,1,,"CTIO/NOIRLab ARCoIRIS (TripleSpec4) page (R~3500, fixed slit)",,3500,3500,"CTIO/NOIRLab ARCoIRIS (TripleSpec4) page (R~3500, fixed slit)"

@@ -59,6 +59,9 @@ class Instrument(NamedTuple):
     wave_rms_kms: float | None
     pixscale_source: str
     wave_rms_source: str
+    resolution_min: float | None = None  # documented R range over the instrument's modes
+    resolution_max: float | None = None
+    resolution_source: str = ''
 
 
 @functools.lru_cache(maxsize=1)
@@ -73,9 +76,14 @@ def _table() -> dict[str, Instrument]:
         out = {}
         for r in rows:
             spat = num(r['pixscale_spat_arcsec'])
+            rmin, rmax = num(r['resolution_min']), num(r['resolution_max'])
+            if (rmin is None) != (rmax is None) or (rmin is not None and not 0 < rmin <= rmax):
+                raise ValueError(f'data/instruments.csv[{r["key"]}]: resolution_min/max must both be empty or '
+                                 f'0 < min <= max, not {rmin}, {rmax}')
             out[r['key'].strip().lower()] = Instrument(
                 r['key'].strip(), spat, num(r['pixscale_disp_arcsec']) or spat, num(r['default_binning'], int),
-                num(r['wave_rms_kms']), r['pixscale_source'].strip(), r['wave_rms_source'].strip())
+                num(r['wave_rms_kms']), r['pixscale_source'].strip(), r['wave_rms_source'].strip(), rmin, rmax,
+                r['resolution_source'].strip())
         return out
 
 def instrument(pypeit_spec: str | None, *names: str | None) -> Instrument | None:

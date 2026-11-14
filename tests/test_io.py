@@ -46,7 +46,7 @@ def test_pypeit_spec1d(tmp_path):
     f2 = 0.99993 ** 2
     assert m['vel_corr_kms'] == pytest.approx(299792.458 * (f2 - 1) / (f2 + 1))
     assert m['medium_in'] == 'vacuum' and m['medium_source'] == 'default:pypeit_spec1d'
-    assert spec.resolution is None
+    assert m['resolution_source'] == 'estimated' and spec.resolution == pytest.approx(io.estimate_resolution(WAVE))
 
 
 def test_pypeit_hdu_selection_and_box(tmp_path):

@@ -191,6 +191,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     failures = [] if failures is None else failures
     name = name or str(spectra[0].meta.get('object', Path(spectra[0].source).stem))
     corrected, bary_info = _barycentric(spectra, cfg, bary or cfg.velocity_frame.correction, name)
+    bary_info.update(resolution=spectra[0].resolution, resolution_source=';'.join(
+        s.meta.get('resolution_source', '') for s in spectra))
     select = region_selector(cfg, names)
 
     # wavelength zero point, applied once to the wavelengths; the regions the methods will use (selected before
@@ -215,6 +217,11 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
                         forward.METHOD, name, failures, n=len(corrected))
         for res, fit in zip(per_epoch, fits, strict=True):
             res[forward.METHOD] = fit
+    for res_by_method, spec in zip(per_epoch, corrected, strict=True):  # an estimated R flags every measurement
+        bits = (FLAGS['resolution_estimated'] * (spec.meta.get('resolution_source') == 'estimated')
+                | FLAGS['resolution_implausible'] * bool(spec.meta.get('resolution_implausible')))
+        for meas in (m for r in res_by_method.values() for m in r.measurements):
+            meas.flag |= bits
     zp_epochs = _zero_point_terms(corrected, cal_infos, _uncorrect(per_epoch, corrected), cfg, name)
 
     # several epochs: regions become '<epoch>:<region>', and the epochs are combined in a second level
