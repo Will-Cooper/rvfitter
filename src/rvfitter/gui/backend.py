@@ -29,10 +29,15 @@ class Backend(Protocol):
 
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any: ...
 
+    def default_for(self, spectrum: Any) -> Any: ...
+
+    def regime(self, spectrum: Any) -> str: ...
+
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
-            on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]: ...
+            on_result: Callable[[Any], None], on_step: Callable[[str, str], None],
+            cancel: threading.Event) -> list[Any]: ...
 
     def to_table(self, results: Sequence[Any]) -> Any: ...
 
@@ -73,6 +78,17 @@ class LazyBackend:
         return io.read_spectrum(path, medium=i.medium, medium_method=i.medium_method, hdu=i.hdu,
                                 resolution=i.resolution)
 
+    def default_for(self, spectrum: Any) -> Any:
+        """The regime defaults of ``spectrum`` (``config.default_for``)."""
+        from rvfitter import config
+        return config.default_for(spectrum)
+
+    def regime(self, spectrum: Any) -> str:
+        """E.g. 'low-resolution optical' (``config.regime_for``)."""
+        from rvfitter import config
+        regime, band = config.regime_for(spectrum.resolution, (spectrum.wmin, spectrum.wmax))
+        return f'{regime}-resolution {band}'
+
     def group_objects(self, files: Sequence[Path], cfg: Any) -> dict[str, list[str]]:
         from rvfitter import archives
         spectra = []
@@ -90,10 +106,11 @@ class LazyBackend:
         return pipeline.region_selector(cfg, list(cfg.methods.enabled), with_overrides)(spectrum)
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
-            on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]:
+            on_result: Callable[[Any], None], on_step: Callable[[str, str], None],
+            cancel: threading.Event) -> list[Any]:
         from rvfitter import pipeline
         files = [Path(f) for fs in groups.values() for f in fs]
-        return pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, cancel=cancel)
+        return pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, on_step=on_step, cancel=cancel)
 
     def to_table(self, results: Sequence[Any]) -> Any:
         from rvfitter import results as res_mod
