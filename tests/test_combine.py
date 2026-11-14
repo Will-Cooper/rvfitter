@@ -1,30 +1,11 @@
-"""Tests of rvfitter.combine, ported from tests/legacy/test_a3_errors.py, plus equivalence with the legacy code."""
-import ast
+"""Tests of rvfitter.combine, ported from the earlier Phase A tests."""
 import logging
-import typing
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from rvfitter import combine
 from rvfitter.types import Measurement, MethodResult
-
-LEGACY_UTILS = Path(__file__).resolve().parents[1] / 'legacy' / 'utils.py'
-
-
-def _legacy_functions():
-    """Extract the legacy combination functions from legacy/utils.py without importing its heavy dependencies"""
-    if not LEGACY_UTILS.exists():
-        pytest.skip('legacy/ is not shipped: these equivalence tests run from a source checkout only')
-    tree = ast.parse(LEGACY_UTILS.read_text())
-    wanted = {'combine_rvs', '_half_cauchy_logpdf', '_trapezoid_weights', 'mixture_pdf', 'hierarchical_combine'}
-    body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
-    assert {f.name for f in body} == wanted
-    namespace = {'np': np, 'Tuple': tuple, 'Optional': typing.Optional, 'Sequence': typing.Sequence}
-    exec(compile(ast.Module(body=body, type_ignores=[]), str(LEGACY_UTILS), 'exec'), namespace)  # noqa: S102
-    return namespace
-
 
 LINES = ['k1-a', 'k1-b', 'rb1-a', 'rb1-b', 'na1-a', 'na1-b']
 LINE_OFFSETS = np.array([8., -6., 3., -9., 5., -1.])
@@ -164,52 +145,6 @@ def test_from_methods_skips_flagged():
     assert combine.hierarchical_from_methods(methods)['n'] == 5
     ms_a[2].flag = 128
     assert combine.hierarchical_from_methods(methods)['n'] == 4
-
-
-# ------------------------------------------------------------------------------------------------------------
-# equivalence with the legacy Phase A implementation
-# ------------------------------------------------------------------------------------------------------------
-def _cases():
-    rng = np.random.default_rng(3)
-    nl, nm = 8, 3
-    big = (26. + rng.normal(0, 6, nl)[None] + rng.normal(0, 2, nm)[:, None] + rng.normal(0, 1, (nm, nl))).ravel()
-    return [
-        (*_two_methods(LINE_OFFSETS), {}),
-        (*_two_methods(LINE_OFFSETS, method_offset=6.), {'tau_max_factor': 100.}),
-        (*_two_methods(np.zeros(6)), {'tau_scale': 0.5, 'ngrid': 120}),
-        (np.array([30., 28., 35., 31., 25., 36., 22.]), np.array([5., 3., 4., 5., 5., 5., 5.]),
-         ['a', 'b', 'c', 'a', 'b', 'c', 'd'], ['lc'] * 3 + ['x'] * 4, {}),
-        (np.array([10., 12., 15., 11.]), np.array([1., 2., 3., 1.5]), ['a', 'b', 'a', 'b'], ['m', 'm', 'n', 'n'],
-         {'tau_line': 0., 'tau_meth': 0.}),
-        (np.array([1., 2., 3.]), np.ones(3), ['a', 'b', 'c'], ['m'] * 3, {}),
-        (big, rng.uniform(0.5, 3., nl * nm), np.tile(np.arange(nl), nm), np.repeat(np.arange(nm), nl), {}),
-    ]
-
-
-@pytest.mark.parametrize('case', range(7))
-def test_hierarchical_matches_legacy(case):
-    legacy = _legacy_functions()
-    *args, kwargs = _cases()[case]
-    old = legacy['hierarchical_combine'](*args, **kwargs)
-    new_kwargs = {('tau_method' if k == 'tau_meth' else k): v for k, v in kwargs.items()}
-    new = combine.hierarchical(*args, **new_kwargs)
-    for key_old, key_new in [('mean', 'mean'), ('sd', 'sd'), ('median', 'median'), ('q16', 'q16'), ('q84', 'q84'),
-                             ('tau_line', 'tau_line'), ('tau_meth', 'tau_method'), ('tau_scale', 'tau_scale')]:
-        np.testing.assert_allclose(new[key_new], old[key_old], rtol=0, atol=1e-8, err_msg=key_new)
-    np.testing.assert_allclose(new['err'], (old['q84'] - old['q16']) / 2, atol=1e-8)
-    np.testing.assert_allclose(new['weights'], old['weights'], atol=1e-12)
-    assert (new['n'], new['n_lines'], new['n_methods']) == (old['n'], old['nlines'], old['nmethods'])
-
-
-def test_weighted_mean_matches_legacy():
-    legacy = _legacy_functions()
-    rng = np.random.default_rng(5)
-    for _ in range(20):
-        n = rng.integers(1, 8)
-        rvs, errs = rng.normal(25, 8, n), rng.uniform(0.5, 5, n)
-        if n > 2:
-            rvs[0] = np.nan
-        np.testing.assert_allclose(combine.weighted_mean(rvs, errs), legacy['combine_rvs'](rvs, errs), atol=1e-12)
 
 
 def _brute(values, errors, lines, methods, tau_scale, ngrid=200, tau_max_factor=10.):

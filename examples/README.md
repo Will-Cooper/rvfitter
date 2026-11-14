@@ -19,11 +19,11 @@ rvfitter run examples/near_infrared/rvfitter.toml
 
 ## GUI (or the standalone app)
 
-1. File > Load config… and choose `rvfitter.toml` in one of the folders.
-2. Open the spectra in that folder (Open spectra > Folder…).
+1. Open the spectra in that folder (Open spectra > Folder…). The Setup boxes fill themselves from the data.
+2. Optional: File > Open settings… and choose `rvfitter.toml`, to use the example's own settings (line centring only, no template download).
 3. Press Measure RVs. The adopted RV appears next to each object; the Results and Diagnostics tabs show the fits.
 
 ## Things to try
 - **Template methods:** download a grid once, e.g. `rvfitter templates download --grid bt-settl-cifist --teff 1900 2300`, then add `"ccf"` and `"template_fit"` to `[methods] enabled`. The optical example has the grid's coverage; the near-infrared ones need a near-infrared grid (Sonora Bobcat or SAND, from Zenodo).
-- **Wavelength zero point:** the optical example measures the sky (OH) lines in its `spec1d` file and corrects the wavelength scale (`calibration.wavelength_correction`). Set it to `"none"` to compare. J1745−1640 is a known hard case: its GTC wavelength solution is distorted, and no correction mode reproduces the literature value (see `docs/calibration_audit.md`).
+- **Wavelength zero point:** the optical example measures the sky (OH) lines in its `spec1d` file and corrects the wavelength scale (`calibration.wavelength_correction`). Set it to `"none"` to compare. J1745−1640 is a known hard case: its GTC wavelength solution is distorted, and no correction mode reproduces the literature value (see `docs/methods.md`).
 - **Total error for the near-infrared spectra:** SpeX and ARCoIRIS files do not record a wavelength-calibration accuracy, so `rv_total_err` is left undefined. Add `[calibration] wave_rms_kms = 5.0` (your estimate) to get one.

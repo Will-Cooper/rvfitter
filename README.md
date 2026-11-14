@@ -1,13 +1,10 @@
 # rvfitter
 
 Radial velocities of brown dwarfs from any reduced 1D spectrum, with several independent techniques combined into one adopted RV and an error budget that includes the systematics.
-rvfitter has a command line, a PySide6 GUI and a Python API; the earlier script-based code is kept in `legacy/`.
-Cite the code via the Zenodo DOI below and Cooper et al. (2024, MNRAS 534, 695).
 
-## Install
+## Get started
 
-**Standalone app (no Python needed).** Download the GUI for your system from the
-[latest release](https://github.com/Will-Cooper/rvfitter/releases/latest), unzip it and run it:
+Download the standalone app (no Python needed) from the [latest release](https://github.com/Will-Cooper/rvfitter/releases/latest), unzip it and run it:
 
 | System | Download |
 |---|---|
@@ -15,26 +12,20 @@ Cite the code via the Zenodo DOI below and Cooper et al. (2024, MNRAS 534, 695).
 | macOS (Apple Silicon) | [rvfitter-gui-macos-arm64.zip](https://github.com/Will-Cooper/rvfitter/releases/latest/download/rvfitter-gui-macos-arm64.zip) |
 | Linux (x86-64) | [rvfitter-gui-linux-x86_64.tar.gz](https://github.com/Will-Cooper/rvfitter/releases/latest/download/rvfitter-gui-linux-x86_64.tar.gz) |
 
-**With [uv](https://docs.astral.sh/uv/)** (command line, GUI and Python API):
+1. Press **Open spectra** and choose a file, a folder or a `.zip`.
+2. Look at the **Setup** tab. The boxes (resolving power, wavelength medium, methods, velocity frame, wavelength fix) fill themselves from the data, each tagged with where its value came from. Check them, and change any that are wrong; **Advanced settings…** has everything else.
+3. Press **Measure RVs**. The progress bar shows the object and method being run; the adopted RV appears next to each object, and the **Results** and **Diagnostics** tabs show the fits.
+
+Results are saved as a table together with `results_config.toml`, the settings actually used, so any result can be reproduced (File > Open settings…).
+[examples/](examples/README.md) has three ultracool dwarfs (optical and near-infrared) to try; [docs/install.md](docs/install.md) covers other install routes and troubleshooting; [docs/methods.md](docs/methods.md) describes the methods, the benchmark and the validation.
+
+## Command line and Python
+
+Install with [uv](https://docs.astral.sh/uv/) (or pip, e.g. in a conda environment); rvfitter is not yet on PyPI:
 
 ```bash
 uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
 ```
-
-**With pip,** e.g. in a conda environment:
-
-```bash
-pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
-```
-
-rvfitter is not yet on PyPI; after the release these become `uv tool install "rvfitter[all]"` and
-`pip install "rvfitter[all]"`. Step-by-step instructions for each system, pipx, and troubleshooting (Qt on Wayland or
-remote machines, proxies, Apple Silicon) are in [docs/install.md](docs/install.md); `rvfitter doctor` checks an install.
-
-**Try it:** [examples/](examples/README.md) has three ultracool dwarfs (optical and near-infrared) with ready-made
-configs that run in a few seconds. Coming from the script-based release? See [docs/migration.md](docs/migration.md).
-
-## Quick start
 
 ```bash
 rvfitter doctor                                   # check the installation
@@ -44,9 +35,8 @@ rvfitter gui                                      # the same in a window
 ```
 
 `rvfitter init spectrum.fits` writes a config (`rvfitter.toml`) to edit; `rvfitter run rvfitter.toml` runs it.
-Every `measure` also writes `results_config.toml`, so any result can be reproduced.
-
-Python:
+Exit status: 0 clean, 1 error, 2 finished with a skipped file or failed method.
+In Python:
 
 ```python
 from rvfitter import config, pipeline, results
@@ -56,39 +46,20 @@ print(results.to_table(res)[['object', 'rv_adopted', 'rv_adopted_err']])
 results.write(res, 'results.csv', config=cfg)
 ```
 
-## Methods
+The methods (`template_fit`, `ccf`, `linecentre`, `telluric_ref`, and opt-in `forward_mcmc` and `lsd`) are chosen from the resolving power unless you say otherwise.
 
-Chosen by resolving power R (`rvfitter init` writes the choice) unless `--methods` or `[methods] enabled` says otherwise.
-Details, benchmark and caveats: [docs/methods.md](docs/methods.md); wavelength zero point: [docs/calibration_audit.md](docs/calibration_audit.md).
+### Output columns
 
-| Method | Default | What it does |
-|---|---|---|
-| `template_fit` | yes | forward fit of a model grid in each region (free vsini at R above 4500) |
-| `ccf` | yes (R below 20000) | cross-correlation with the best template |
-| `linecentre` | yes (R below 4500) | model-free line centring on atomic lines (opt-in: template-calibrated shape correction) |
-| `telluric_ref` | yes (R above 20000, in place of `ccf`) | RV against the telluric lines (needs `rvfitter templates telluric --build`) |
-| `forward_mcmc` | opt-in | MCMC forward model (needs `[mcmc]`) |
-| `lsd` | opt-in | least-squares deconvolution: RV from the mean line profile |
+`results.csv` has one row per object; `results_details.csv` has one row per region and method.
+The main columns are `object`, `rv_<method>` with its error and flag per method, the adopted `rv_adopted` and `rv_adopted_err`, the error budget (`sys_template`, `sys_wavezp`, `sys_star_sky`, `rv_total_err`), the best template, the epoch and velocity-frame columns, and the provenance (`config_hash`, `version`).
+`resolution_source` says where the resolving power came from (`header`, `config` or `estimated`).
+If R had to be estimated from the pixel spacing (assuming Nyquist sampling), the result is flagged `resolution_estimated`; treat it as approximate and set R yourself.
+The flag bits are in `rvfitter.results.FLAGS`.
 
-A single- versus two-component fit (`binary_dbic`, `binary_flag`) flags possible spectroscopic binaries when enabled.
-Two planning tools: `rvfitter forecast` (the RV precision each feature and band can give at your R, S/N and vsini) and `rvfitter inject` (bias and error calibration of your configuration on synthetic spectra). See `rvfitter forecast --help` and `rvfitter inject --help`.
+## Coming from the old scripts
 
-Opt-in calibration: `calibration.wavelength_correction = "auto"` applies the star minus sky constant as well as the sky curve (default `sky-if-needed`).
-
-## Output columns (`results.csv`)
-
-One row per object; `results_details.csv` has one row per region and method.
-
-- `object`, `n_spectra`, `files`
-- per method `rv_<method>`, `rv_<method>_err`, `rv_<method>_flag`, `n_<method>` [km/s]
-- adopted: `rv_adopted`, `rv_adopted_err`, `rv_adopted_q16`, `rv_adopted_q84`, `tau_line`, `tau_method`, `n_methods`, `n_lines`
-- error budget: `sys_template`, `sys_wavezp`, `sys_star_sky`, `rv_total_err`; the zero-point terms `zp_*` and `zp_flags`
-- best template: `template_method`, `template_grid`, `template_teff`, `template_logg`, `template_met`, ...
-- epochs and frame: `rv_epoch_pvalue`, `rv_epoch_variable`, `n_epochs`, `bary_kms`, `bary_source`, `frame`
-- provenance: `binary_dbic`, `binary_flag`, `config_hash`, `version`
-
-Flag bits are in `rvfitter.results.FLAGS`.
-Exit status of the CLI: 0 clean, 1 error, 2 finished with a skipped file or failed method.
+The earlier script-based code (`fullrv.py`, `utils.py` and friends) is no longer in the repository; it lives in the git history and in the Zenodo archive of earlier versions.
+Its methods are now `ccf` (replacing the by-eye cross-correlation), `linecentre` and `template_fit`, combined hierarchically with a systematic error budget, and the old Python variables are settings in the GUI or in `rvfitter.toml`.
 
 ## Citing
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.6624927.svg)](https://doi.org/10.5281/zenodo.6624927)

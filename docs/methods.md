@@ -1,7 +1,6 @@
 # Methods and benchmark
 
-This document maps each radial-velocity (RV) technique in [`literature.md`](literature.md) to its implementation in rvfitter, and records results on the primary benchmark.
-The method sections are filled in as each technique lands.
+This document records the radial-velocity (RV) techniques in rvfitter, the results on the primary benchmark, the wavelength zero-point analysis and the validation on published spectra.
 
 ## Benchmark: J1745−1640
 
@@ -88,7 +87,6 @@ The same distortion probably affects other GTC/OSIRIS R2500I spectra reduced thi
 
 ### The star's own zero point from the telluric lines
 
-The audit behind this section is summarised in `docs/calibration_audit.md`.
 We also measured the star's zero point from the telluric absorption in the non-telluric-corrected spec1d of J1745−1640 (the target trace, SPAT0240).
 We fitted each telluric segment with a HITRAN transmission model (built locally; vacuum) multiplied by a BT-Settl 2100/5.0 template, with the stellar and telluric velocities both free.
 Each node's error includes the spread over the neighbouring templates (±100 K).
@@ -96,7 +94,7 @@ Each node's error includes the spread over the neighbouring templates (±100 K).
 - The 9000–9900 Å H2O nodes give −22 to −55 km/s, and the weak H2O 8200 band gives −6 km/s.
 - We did not use the O2 A band. In L dwarfs it is filled by the pressure-broadened K I wings, and an injection test showed template-dependent biases of +5 to +31 km/s there. The catalogue therefore marks O2 A as a zero-point reference only above 2800 K.
 - The sky curve itself has no segment inside the H2O bands, because the absorption there eats the OH emission, so four of the five nodes lie in the curve's unmeasured gap. We therefore measure the sky directly in each node's own window instead (`sky_zeropoint.measure_windows`; the absorption weakens the OH lines there but does not move them). These values are used only for this comparison, never in the curve.
-- Four nodes have a usable sky in the same window (the 9416–9656 Å sky correlates at only 0.56). They give a star − sky offset of **−23.8 ± 3.6 km/s** (H2O 8200: −17.3 ± 10.6; H2O 9300: −24.9 ± 4.9, −23.1 ± 13.8 and −24.5 ± 7.1 km/s; χ² = 0.4 for 3 degrees of freedom, p = 0.93). The star therefore sees the sky's distortion plus a constant, as the audit found for both stars of that night (`docs/calibration_audit.md`). This is probably slit centring: the star sits bluer than the uniformly illuminated sky.
+- Four nodes have a usable sky in the same window (the 9416–9656 Å sky correlates at only 0.56). They give a star − sky offset of **−23.8 ± 3.6 km/s** (H2O 8200: −17.3 ± 10.6; H2O 9300: −24.9 ± 4.9, −23.1 ± 13.8 and −24.5 ± 7.1 km/s; χ² = 0.4 for 3 degrees of freedom, p = 0.93). The star therefore sees the sky's distortion plus a constant, as the audit found for both stars of that night. This is probably slit centring: the star sits bluer than the uniformly illuminated sky.
 - The telluric curve alone cannot correct the alkali lines: Rb I 7802, Rb I 7949 and Cs I 8523 lie 290–430 Å from the nearest telluric node.
 
 ### What rvfitter does
@@ -122,7 +120,7 @@ On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (1
 
 For J1745−1640, all three sky tests pass: 6 segments with every region 100 per cent measured, a mean offset of +14.9 ± 3.6 km/s (4.1σ), a segment variation with χ² = 53 for 5 degrees of freedom (p = 3 × 10⁻¹⁰), and a largest correction of 33.5 km/s at the regions against a floor of 5.8 km/s.
 The sky is therefore applied; the star − sky constant (−23.7 ± 4.3 km/s from four nodes, its error including the 2.3 km/s spread over the telluric-fit star models) is applied with it only in `auto`.
-The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the previous release's RVs about the literature (`docs/calibration_audit.md`).
+The slit prior, reported in every mode, is 18.0 km/s: W = 1.23 arcsec (`DECKER` = 'LongSlits1.23Arcsec'), F = 3.06 binned pixels × 0.254 arcsec = 0.78 arcsec (target trace, HDU 2), σ = 0.092 arcsec = 0.36 pixel at 1.39 Å per pixel. This is close to the ≈20 km/s per-object scatter of the previous release's RVs about the literature.
 
 ### Differential atmospheric refraction across the slit
 
@@ -213,3 +211,47 @@ In the default, the star's slit-centring term enters only through the slit prior
 
 A region that lies on an unmeasured part of the sky curve (held flat, ramped or extrapolated over more than half its width) is dropped from every method when the sky correction is applied, with a WARNING naming it. The correction is refused (`sky_unsafe`) only when such regions are the majority.
 This was decided after line centring added K I 7667, which lies in the O2 A gap of J1745's sky: under the earlier rule that single line refused the correction for every method, silently returning J1745's default to the uncorrected values. With the current rule, J1745's line centring moves from 34.0 (uncorrected) to 15.5 km/s, consistent with the sky-corrected CCF and template fit (≈19 km/s); whether the sky correction itself brings the star closer to its true RV is investigated separately.
+
+## Sky and star zero points across the slit
+
+We audited the GTC/OSIRIS R2500I spectra of J1745−1640 and Ross 640 (night of 2015 August 3) to set the zero-point error budget.
+Four independent measurements of the J1745−1640 sky agree: cross-correlation with the `PypeIt` OH model, cross-correlation with its Paranal sky, Gaussian centroids of 23 vetted lines, and `PypeIt`'s `spec_flex_shift` run in 250 Å windows.
+The sky is +5 to +38 km/s too red over 7700–8950 Å and −17 to −46 km/s too blue over 9000–9450 Å.
+`PypeIt`'s single global flexure shift (≈0 km/s) is the average of this two-signed distortion, so it cannot reveal it.
+Both stars follow the sky's shape plus a constant that depends on where the star sits in the slit, and the constant varies by over 100 km/s between traces in the same slit (the other J1745−1640 trace gives +59 km/s and Ross 640 +140 km/s).
+Consequently, an offset is either applied, with its error carried as a systematic, or unknown, with a prior width; a measured offset's value is never added to the error budget.
+
+## Validation on published spectra
+
+We compared rvfitter with independent literature values and with the previous, script-based release (kept in the git history and the Zenodo archive of earlier versions) for two sets of published spectra.
+The analysis plan and the rule for the default wavelength-correction mode were fixed before any comparison, and nothing was tuned to it.
+The optical set is 56 late-M and L dwarfs observed with GTC/OSIRIS R2500I (Cooper et al. 2024), as telluric-corrected `PypeIt` coadds, run with `template_fit`, `ccf` and `linecentre` and the BT-Settl-CIFIST grid (wavelength correction `none`).
+The near-infrared set is 44 ultracool dwarfs from IRTF/SpeX SXD and Blanco/ARCoIRIS (Cheng et al. 2025), run with `linecentre` only because the optical grid does not cover them; their 8 SpeX prism spectra (R ≈ 80–220) are refused, as intended.
+The pull is ΔRV/√(σ₁² + σ₂²), and a robust pull width of 0.8–1.2 (1.4826 × MAD) counts as honest errors.
+
+| Comparison | N | Weighted mean Δ [km/s] | Robust scatter [km/s] | Robust pull width | \|pull\| < 2 |
+|---|---|---|---|---|---|
+| Optical: rvfitter − literature | 19 | −1.7 ± 6.5 | – | 1.21 ± 0.20 | 89% |
+| Optical: previous release − literature | 17 | −2.7 ± 1.8 | 15.7 | 1.33 | 76% |
+| Optical: rvfitter − previous release, adopted | 47 | +3.5 ± 3.8 | 9.6 | – | – |
+| Optical: rvfitter `ccf` − previous by-eye cross-correlation | 48 | +7.3 ± 1.8 | 21.8 | 1.24 | 79% |
+| Optical: rvfitter `linecentre` − previous line centring | 48 | −0.6 ± 1.9 | 13.5 | 0.98 | 92% |
+| Near-infrared: rvfitter − literature (σ_stat) | 5 | −4.4 ± 2.5 | 12.1 | 0.84 | 80% |
+| Near-infrared: rvfitter − previous release, adopted (σ_stat) | 35 | −3.2 ± 2.9 | 7.2 | – | 100% |
+| Near-infrared: rvfitter `linecentre` − previous line centring (σ_stat) | 35 | −1.0 ± 3.9 | 9.6 | – | 100% |
+
+- The errors are close to honest against the literature (pull width 1.21 ± 0.20); they include a slit-centring term that the previous release lacked.
+- `rv_total_err` is undefined for the near-infrared spectra, because no wavelength-calibration accuracy could be sourced for SpeX or ARCoIRIS; setting `calibration.wave_rms_kms` gives one.
+- The largest outliers are 2MASS J1331+3407 (−97 km/s; the Rb I 7802 line lies where that wavelength solution is distorted) and 2MASS J0940+2946 (+55 km/s; the previous release was also high, so the cause is probably the zero point or the low-resolution literature value).
+- Several optical coadds have solutions distorted blueward of about 7950 Å; a leave-one-out line-outlier test removes the affected lines.
+- Only J1745−1640 has a sky spectrum, so it alone cannot choose a wavelength-correction mode: `sky-if-needed` stays the default on physical grounds, and `auto` stays opt-in.
+
+## References
+
+- Blake, Charbonneau & White 2010, ApJ 723, 684 (arXiv:1008.3874)
+- Burgasser et al. 2015, ApJS 220, 18
+- Cheng et al. 2025 (near-infrared test spectra)
+- Cooper et al. 2024, MNRAS 534, 695 (arXiv:2409.03706)
+- Hsu et al. 2021, ApJS 257, 45 (arXiv:2107.01222)
+- Phan-Bao et al. 2008, MNRAS 383, 831 (discovery of J1745−1640)
+- Rousselot et al. 2000, A&A 354, 1134 (OH line list)
