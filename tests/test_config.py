@@ -198,6 +198,41 @@ def test_default_for_regimes():
         assert config.loads(config.dumps(cfg)) == cfg
 
 
+@pytest.mark.parametrize('R, enabled, options', [
+    (2500., ['template_fit', 'ccf', 'linecentre'], {}),
+    (None, ['template_fit', 'ccf', 'linecentre'], {}),
+    (6000., ['template_fit', 'ccf'], {'template_fit': {'fit_vsini': True}}),
+    (60000., ['template_fit', 'telluric_ref'], {'template_fit': {'fit_vsini': True}}),
+])
+@pytest.mark.parametrize('wr', [(7300., 10150.), (10000., 24000.), (6000., 24000.)])
+def test_default_for_methods_unchanged_in_every_regime_and_band(R, enabled, options, wr):
+    cfg = default_for(_spec(*wr, R))
+    assert cfg.methods.enabled == enabled and cfg.methods.options == options
+
+
+@pytest.mark.parametrize('regime, recommended', [('low', {'template_fit', 'ccf', 'linecentre'}),
+                                                 ('mid', {'template_fit', 'ccf'}),
+                                                 ('high', {'template_fit', 'telluric_ref'})])
+def test_method_advice_covers_every_method_with_a_reason(regime, recommended):
+    advice = config.method_advice(regime)
+    assert set(advice) == set(config.METHOD_NAMES) == set(config.METHOD_LABELS)
+    assert {m for m, a in advice.items() if a.recommended} == recommended
+    assert all(a.reason.startswith('Recommended' if a.recommended else ('Optional', 'Not recommended'))
+               for a in advice.values())
+    assert 'rvfitter templates telluric --build' in advice['telluric_ref'].reason
+    assert 'no templates' in advice['linecentre'].reason and 'slow' in advice['forward_mcmc'].reason
+
+
+def test_method_advice_rejects_an_unknown_regime():
+    with pytest.raises(ValueError, match='regime'):
+        config.method_advice('medium')
+
+
+def test_config_defaults_are_the_low_resolution_advice():
+    advice = config.method_advice('low')
+    assert Config().methods.enabled == [m for m, a in advice.items() if a.recommended]
+
+
 def test_default_for_unknown_resolution_warns(caplog):
     import logging
     with caplog.at_level(logging.WARNING, logger='rvfitter.config'):

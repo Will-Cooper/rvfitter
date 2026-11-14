@@ -20,8 +20,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import METHOD_LABELS, method_advice, regime_for
 from . import theme
-from .forms import TIPS, Editor, make_editor
+from .forms import METHOD_TIPS, TIPS, Editor, make_editor
 
 # (config path, label); the editors are the Advanced form's (`forms.make_editor`), bound to the same fields
 FIELDS = (
@@ -37,6 +38,8 @@ SOURCE_TEXT = {'header': 'from header', 'estimated': 'estimated: check', 'implau
 SOURCE_ROLE = {'estimated': 'flagged', 'implausible': 'failed'}  # theme colour roles of the tags that need a look
 R_PATH = 'input.resolution'
 GRID_PATH = 'templates.grid'
+METHODS_PATH = 'methods.enabled'
+BAND_TEXT = {'optical': 'optical', 'nir': 'near-infrared', 'mixed': 'optical and near-infrared'}
 NO_DATA = 'Open spectra to fill these in from the data.'
 
 
@@ -78,6 +81,11 @@ class SetupPanel(QWidget):
         self._auto_options = copy.deepcopy(cfg.methods.options)  # the method options auto-fill last set
         self.detected = QLabel(NO_DATA)
         self.detected.setWordWrap(True)
+        self.advice: dict[str, Any] = {}  # method -> config.MethodAdvice for the detected spectrum
+        self._detected: tuple[Any, str] | None = None  # (spectrum, where its R came from) of the advice
+        self.recommended = QLabel()  # which methods suit the detected R and band
+        self.method_note = QLabel()  # why a ticked method is not recommended
+        self.method_note.setWordWrap(True)
         form = QFormLayout()
         for path, label in FIELDS:
             tp, f = _field(type(cfg), path)
@@ -89,6 +97,10 @@ class SetupPanel(QWidget):
             row.addWidget(tag)
             if path == GRID_PATH:
                 row.addWidget(self.grid_status)
+            if path == METHODS_PATH:
+                row.addWidget(self.method_note, 1)
+                for box in ed.boxes.values():
+                    box.toggled.connect(self._show_method_note)
             row.addStretch(1)
             form.addRow(label, row)
             self.editors[path], self.tags[path] = ed, tag
@@ -98,6 +110,7 @@ class SetupPanel(QWidget):
         self.advanced_btn.clicked.connect(self.advancedRequested)
         lay = QVBoxLayout(self)
         lay.addWidget(self.detected)
+        lay.addWidget(self.recommended)
         lay.addLayout(form)
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -121,6 +134,11 @@ class SetupPanel(QWidget):
         self._show_tag(path)
         if path == GRID_PATH:
             self.show_grid_status()
+        if path == R_PATH and self._detected:
+            try:
+                self._show_advice(*self._detected)
+            except ValueError:  # not (yet) a number: keep the advice for the last one
+                pass
 
     def show_grid_status(self) -> None:
         """Say whether each selected grid is present locally and over which Teff range"""
@@ -188,3 +206,27 @@ class SetupPanel(QWidget):
                 self._auto_options = copy.deepcopy(defaults.methods.options)
             self.sources['methods.enabled'] = 'default'
             self._show_tag('methods.enabled')
+        self._show_advice(spectrum, r_src)
+
+    def _show_advice(self, spectrum: Any, r_src: str) -> None:
+        """Say which methods suit the R (the box's, else the spectrum's) and band, and why on each method's box"""
+        self._detected = spectrum, r_src
+        R = self.editors[R_PATH].get() if self.sources[R_PATH] == 'user' else None
+        estimated = R is None and r_src == 'estimated'
+        R = spectrum.resolution if R is None else R
+        regime, band = regime_for(R, (spectrum.wmin, spectrum.wmax))
+        self.advice = method_advice(regime)
+        names = [METHOD_LABELS[m] for m, a in self.advice.items() if a.recommended]
+        r_text = 'unknown R' if R is None else f'R {R:.0f}' + (' (estimated)' if estimated else '')
+        self.recommended.setText(f'Recommended for {r_text}, {BAND_TEXT[band]}: {", ".join(names)}. '
+                                 'Hover over a method for why.')
+        for m, box in self.editors[METHODS_PATH].boxes.items():
+            box.setToolTip(f'{METHOD_TIPS[m]}\n{self.advice[m].reason}')
+        self._show_method_note()
+
+    def _show_method_note(self) -> None:
+        """A gold note on each ticked method that is not recommended for the detected spectrum (never blocks it)"""
+        boxes = self.editors[METHODS_PATH].boxes
+        self.method_note.setText('\n'.join(f'{METHOD_LABELS[m]}: {a.reason}' for m, a in self.advice.items()
+                                           if not a.recommended and boxes[m].isChecked()))
+        self.method_note.setStyleSheet(f'color: {theme.colour("flagged", self.method_note.palette()).name()}')

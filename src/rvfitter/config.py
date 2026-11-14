@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, NamedTuple, Union, get_args, get_origin, get_type_hints
 
 import tomli_w
 
@@ -29,7 +29,8 @@ from .types import Spectrum
 
 __all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
            'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
-           'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'SCHEMA_VERSION']
+           'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'method_advice', 'MethodAdvice',
+           'SCHEMA_VERSION']
 
 log = logging.getLogger(__name__)
 
@@ -597,10 +598,56 @@ def regime_for(resolution: float | None, wave_range: tuple[float, float]) -> tup
     return regime, band
 
 
+class MethodAdvice(NamedTuple):
+    """Whether a method is on by default in a regime, why, and its default options there"""
+    recommended: bool
+    reason: str
+    options: dict[str, Any]
+
+
+def method_advice(regime: str) -> dict[str, MethodAdvice]:
+    """
+    Every method's `MethodAdvice` in ``regime`` ('low', 'mid' or 'high', from `regime_for`); the recommended methods,
+    in this order, are the defaults of `default_for`. The advice does not depend on the band.
+    """
+    if regime not in ('low', 'mid', 'high'):
+        raise ValueError(f"regime must be 'low', 'mid' or 'high', not {regime!r}")
+    low, high = regime == 'low', regime == 'high'
+    telluric_model = 'Needs the telluric model (rvfitter templates telluric --build)'
+    advice = {
+        'template_fit': (True, 'Recommended: the most precise RV at low R, a fit of a broadened model template (vsini '
+                               'held at 0, as it is unresolved).' if low else
+                         'Recommended: a fit of a broadened model template, with vsini free, as it is resolved above '
+                         'R 4500.'),
+        'ccf': (False, 'Optional: above R 20000 the template fit (vsini free) and the telluric reference cover it; add '
+                       'it as a cross-check.') if high else
+               (True, 'Recommended: cross-correlation with the model template, one RV per window; a check of the '
+                      'template fit.'),
+        'telluric_ref': (True, 'Recommended: the star against the telluric lines of the same band, free of wavelength-'
+                               f'calibration and slit-centring offsets. {telluric_model} and spectra that are not '
+                               'telluric-corrected.') if high else
+                        (False, f'Not recommended below R 20000: it needs resolved telluric lines. {telluric_model}.'),
+        'linecentre': (True, 'Recommended: the model-free check, line centres against laboratory (NIST) wavelengths; '
+                             'it needs no templates.') if low else
+                      (False, 'Optional: model-free and needs no templates, but above R 4500 the template methods are '
+                              'more precise; add it as a template-independent check.'),
+        'forward_mcmc': (False, 'Optional: slow (MCMC, on all but one CPU core); worth it at high R, especially for '
+                                'several epochs fitted together.' if high else
+                         'Not recommended below R 20000: slow (MCMC), and at low R its vsini and Teff are not '
+                         'physical; it is for high R and several epochs fitted together.'),
+        'lsd': (False, 'Optional: least-squares deconvolution needs the many lines of a high-R spectrum; it gives the '
+                       'RV and vsini from the mean line profile.' if high else
+                'Not recommended below R 20000: the mean line profile needs many resolved lines.'),
+    }
+    return {m: MethodAdvice(ok, why, {'fit_vsini': True} if m == 'template_fit' and not low else {})
+            for m, (ok, why) in advice.items()}
+
+
 def default_for(spectrum: Spectrum) -> Config:
     """
-    Regime defaults for a spectrum, by resolving power: template_fit and ccf at low R (R < 4500); template_fit
-    (free vsini) and ccf at R 4500-20000; template_fit (free vsini) and telluric_ref above.
+    Regime defaults for a spectrum: the methods that `method_advice` recommends at its resolving power, i.e.
+    template_fit, ccf and linecentre at low R (R < 4500); template_fit (free vsini) and ccf at R 4500-20000;
+    template_fit (free vsini) and telluric_ref above.
 
     The spectrum's measured medium and resolution are written into the config, so that re-running it does not
     depend on header sniffing.
@@ -615,8 +662,8 @@ def default_for(spectrum: Spectrum) -> Config:
     log.info('Default settings for the %s-resolution regime, %s band', regime, band)
     cfg.input.resolution = None if R is None else float(R)
     cfg.input.medium = spectrum.meta['medium_in']
-    if regime != 'low':
-        cfg.methods.enabled = ['template_fit', 'ccf' if regime == 'mid' else 'telluric_ref']
-        cfg.methods.options = {'template_fit': {'fit_vsini': True}}
+    advice = method_advice(regime)
+    cfg.methods.enabled = [m for m, a in advice.items() if a.recommended]
+    cfg.methods.options = {m: a.options for m, a in advice.items() if a.recommended and a.options}
     cfg.validate()
     return cfg

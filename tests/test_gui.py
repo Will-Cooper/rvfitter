@@ -109,6 +109,31 @@ def test_setup_estimated_r_is_flagged(qtbot, win, backend, spectra_dir):
     _load(qtbot, win, spectra_dir)
     assert win.setup.tags['input.resolution'].text() == 'estimated: check'
     assert win.input_tree.topLevelItem(0).text(1) == 'R≈3000'
+    assert win.setup.recommended.text().startswith('Recommended for R 3000 (estimated), optical:')
+
+
+def test_setup_recommends_methods_for_the_detected_r(qtbot, win, backend, spectra_dir):
+    from PySide6.QtTest import QTest
+    setup = win.setup
+    boxes = setup.editors['methods.enabled'].boxes
+    assert setup.recommended.text() == '' and setup.method_note.text() == ''  # nothing loaded yet
+    _load(qtbot, win, spectra_dir)
+    assert setup.recommended.text() == ('Recommended for R 3000, optical: Template fit, CCF, Line centring. '
+                                        'Hover over a method for why.')
+    assert 'needs no templates' in boxes['linecentre'].toolTip()
+    assert setup.method_note.text() == ''  # the fake defaults (ccf, template_fit) are both recommended
+    boxes['lsd'].click()  # allowed, with a gold note saying why it is not recommended
+    assert boxes['lsd'].isChecked() and 'lsd' in win.current_config().methods.enabled
+    assert setup.method_note.text() == 'LSD: Not recommended below R 20000: the mean line profile needs many ' \
+                                       'resolved lines.'
+    assert setup.method_note.styleSheet() == 'color: #ddaa33'
+    QTest.keyClicks(setup.editors['input.resolution'].edit, '60000')  # a typed R moves the advice
+    assert setup.recommended.text().startswith('Recommended for R 60000, optical: Template fit, Telluric reference.')
+    assert setup.method_note.text().splitlines()[0].startswith('CCF: Optional: above R 20000')
+    assert setup.method_note.text().splitlines()[1].startswith('LSD: Optional')
+    boxes['lsd'].click()
+    boxes['ccf'].click()
+    assert setup.method_note.text() == ''
 
 
 def test_setup_keeps_boxes_set_by_you_across_a_reload(qtbot, win, backend, spectra_dir):
