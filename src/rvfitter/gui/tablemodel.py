@@ -5,8 +5,9 @@ import math
 
 import pandas as pd
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
+
+from . import theme
 
 
 class PandasModel(QAbstractTableModel):
@@ -30,13 +31,12 @@ class PandasModel(QAbstractTableModel):
         note = self.notes.get(index.row())
         if role == Qt.ItemDataRole.ToolTipRole and note:
             return note
-        if role == Qt.ItemDataRole.BackgroundRole and note:
-            return QApplication.palette().brush(QPalette.ColorRole.ToolTipBase)
-        if role == Qt.ItemDataRole.ForegroundRole and note:
-            return QApplication.palette().brush(QPalette.ColorRole.ToolTipText)
+        if role == Qt.ItemDataRole.DecorationRole and index.column() == 0:
+            rv = self.df.at[self.df.index[index.row()], 'rv_adopted'] if 'rv_adopted' in self.df else 0.0
+            if pd.isna(rv):
+                return theme.dot('failed', QApplication.palette())
+            return theme.dot('flagged', QApplication.palette()) if note else None
         if role == Qt.ItemDataRole.DisplayRole:
-            if index.column() == 0 and note:
-                return f'\u26a0 {value}'
             if isinstance(value, float):
                 return '' if math.isnan(value) else f'{value:.4g}'
             return str(value)
