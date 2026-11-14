@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -57,6 +59,8 @@ Re-run it from the command line with <tt>rvfitter run analysis.toml</tt>.</li>
 """
 
 OVERRIDES_PATH = 'regions.overrides'
+MAX_SIZE = (1280, 800)  # default window size cap [px]
+LOG_HEIGHT = 90  # default log pane height [px]
 
 
 class MainWindow(QMainWindow):
@@ -68,7 +72,6 @@ class MainWindow(QMainWindow):
         self.settings = settings or QSettings()
         self.setWindowTitle(f'rvfitter {self.backend.version()}')
         self.setAcceptDrops(True)
-        self.resize(1300, 850)
 
         self.groups: dict[str, list[str]] = {}
         self.results: list[Any] = []
@@ -83,6 +86,7 @@ class MainWindow(QMainWindow):
         self._build_log()
         self._build_ui()
         self._build_menus()
+        self._restore_layout()
         self.statusBar().showMessage('Open spectra to begin.')
 
     # ---- construction --------------------------------------------------------------------------------------
@@ -105,9 +109,9 @@ class MainWindow(QMainWindow):
         self.input_tree.itemSelectionChanged.connect(self._tree_selected)
         btns = QHBoxLayout()
         for text, slot, tip in (
-            ('Open file…', self.open_file, 'Open one spectrum file.'),
-            ('Open folder…', self.open_folder, 'Open every spectrum in a folder (searched recursively).'),
-            ('Open archive…', self.open_archive, 'Open a .zip or .tar/.tar.gz/.tgz archive of spectra.'),
+            ('File…', self.open_file, 'Open one spectrum file.'),
+            ('Folder…', self.open_folder, 'Open every spectrum in a folder (searched recursively).'),
+            ('Archive…', self.open_archive, 'Open a .zip or .tar/.tar.gz/.tgz archive of spectra.'),
         ):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -115,11 +119,17 @@ class MainWindow(QMainWindow):
             btns.addWidget(b)
         left = QWidget()
         lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
         lv.addLayout(btns)
         lv.addWidget(self.input_tree, 1)
 
         # run controls
         self.run_btn = QPushButton('Run')
+        self.run_btn.setDefault(True)
+        font = self.run_btn.font()
+        font.setBold(True)
+        self.run_btn.setFont(font)
+        self.run_btn.setShortcut('Ctrl+Return')
         self.run_btn.setToolTip('Measure radial velocities for all loaded objects.')
         self.run_btn.clicked.connect(self.run)
         self.cancel_btn = QPushButton('Cancel')
@@ -174,23 +184,39 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.diagnostics, 'Diagnostics')
         self.tabs.currentChanged.connect(self._tab_changed)
 
-        top = QSplitter(Qt.Orientation.Horizontal)
-        top.addWidget(left)
-        top.addWidget(self.tabs)
-        top.setStretchFactor(1, 4)
-        main = QSplitter(Qt.Orientation.Vertical)
-        main.addWidget(top)
-        main.addWidget(self.log_pane)
-        main.setStretchFactor(0, 4)
-        main.setSizes([620, 200])
-        self.setCentralWidget(main)
+        self.top_split = QSplitter(Qt.Orientation.Horizontal)
+        self.top_split.addWidget(left)
+        self.top_split.addWidget(self.tabs)
+        self.top_split.setStretchFactor(1, 1)
+        self.top_split.setCollapsible(1, False)
+        self.main_split = QSplitter(Qt.Orientation.Vertical)
+        self.main_split.addWidget(self.top_split)
+        self.main_split.addWidget(self.log_pane)
+        self.main_split.setStretchFactor(0, 1)
+        self.setCentralWidget(self.main_split)
+
+    def _restore_layout(self) -> None:
+        """80 per cent of the screen (capped), centred, narrow file list, small log; then the saved state."""
+        area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        w, h = min(int(0.8 * area.width()), MAX_SIZE[0]), min(int(0.8 * area.height()), MAX_SIZE[1])
+        self.resize(w, h)
+        self.move(area.center() - self.rect().center())
+        self.top_split.setSizes([min(240, w // 4), w])
+        self.main_split.setSizes([h, LOG_HEIGHT])
+        for name, widget in (('geometry', self), ('top_split', self.top_split), ('main_split', self.main_split)):
+            state = self.settings.value(name)
+            if state is not None:
+                (widget.restoreGeometry if widget is self else widget.restoreState)(state)
 
     def _build_guidance(self, layout: QVBoxLayout) -> None:
         """Banner, details pane and the 'Download grid & refit' controls for the selected object."""
         self.guidance_banner = QLabel()
         self.guidance_banner.setWordWrap(True)
-        self.guidance_banner.setStyleSheet(
-            'background: #fff3cd; color: #000000; padding: 4px; border: 1px solid #DDAA33;')
+        self.guidance_banner.setBackgroundRole(QPalette.ColorRole.ToolTipBase)  # palette-aware note colours
+        self.guidance_banner.setForegroundRole(QPalette.ColorRole.ToolTipText)
+        self.guidance_banner.setAutoFillBackground(True)
+        self.guidance_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.guidance_banner.setMargin(4)
         self.guidance_banner.setVisible(False)
         self.guidance_details = QPlainTextEdit()
         self.guidance_details.setReadOnly(True)
@@ -216,8 +242,8 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         m = self.menuBar().addMenu('&File')
         for text, slot, shortcut in (
-            ('Open file…', self.open_file, QKeySequence.StandardKey.Open),
-            ('Open folder…', self.open_folder, None),
+            ('File…', self.open_file, QKeySequence.StandardKey.Open),
+            ('Folder…', self.open_folder, None),
             ('Open archive (zip/tar)…', self.open_archive, None),
             (None, None, None),
             ('Load config…', self.load_config_dialog, None),
@@ -627,4 +653,6 @@ class MainWindow(QMainWindow):
         if self._logger_level is not None:
             root.setLevel(self._logger_level)
         self.settings.setValue('geometry', self.saveGeometry())
+        self.settings.setValue('top_split', self.top_split.saveState())
+        self.settings.setValue('main_split', self.main_split.saveState())
         super().closeEvent(event)

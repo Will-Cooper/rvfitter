@@ -37,6 +37,11 @@ WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref', 'linecentre', 'forward_mcmc', 'lsd')  # methods.REGISTRY keys
 OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 MEDIA = ('air', 'vacuum')
+INPUT_MEDIA = ('auto', *MEDIA)
+VELOCITY_CORRECTIONS = ('auto', 'apply', 'skip')
+VELOCITY_FRAMES = ('barycentric', 'heliocentric')
+TEMPLATE_WINDOWS = ('features', 'full')
+PLOT_STYLES = ('quick', 'paper')
 
 # Regime boundaries in resolving power (low: R<~4500, e.g. GTC R2500, MagE, SpeX; mid: R~6000; high: R>20000)
 REGIME_EDGES = (4500., 20000.)
@@ -54,8 +59,8 @@ class ConfigError(ValueError):
 class InputConfig:
     """Which spectra to read and how to interpret them"""
     paths: list[str] = field(default_factory=list)
-    medium: str = 'auto'  # 'auto' | 'air' | 'vacuum': medium of the input wavelengths
-    medium_method: str = 'ciddor'  # air↔vacuum formula: 'ciddor' | 'edlen' | 'morton'
+    medium: str = field(default='auto', metadata={'choices': INPUT_MEDIA})  # medium of the input wavelengths
+    medium_method: str = field(default='ciddor', metadata={'choices': tuple(AIR_METHODS)})  # air↔vacuum formula
     hdu: int | str | None = None
     resolution: float | None = None  # R override (applied to every spectrum)
     telluric_corrected: bool = False  # spectra are already telluric-corrected: relax the telluric masking
@@ -68,8 +73,8 @@ class InputConfig:
 @dataclass
 class VelocityFrameConfig:
     """Barycentric (or heliocentric) correction"""
-    correction: str = 'auto'  # 'auto' | 'apply' | 'skip'
-    frame: str = 'barycentric'  # 'barycentric' | 'heliocentric'
+    correction: str = field(default='auto', metadata={'choices': VELOCITY_CORRECTIONS})
+    frame: str = field(default='barycentric', metadata={'choices': VELOCITY_FRAMES})
     # overrides of the header values; allowed keys: ra, dec [deg], mjd (mid-exposure), site (an astropy site name),
     # site_lat, site_lon [deg] (used instead of ``site``)
     overrides: dict[str, Any] = field(default_factory=dict)
@@ -87,7 +92,8 @@ class TemplatesConfig:
     grid: str | list[str] = 'bt-settl-cifist'  # one grid name, or several (searched together; their spread is a
     # systematic)
     local_dir: str | dict[str, str] | None = None  # local template directory (first grid), or {grid: directory}
-    medium: str | None = None  # declared medium of the grid; None = take it from the grid's metadata
+    # declared medium of the grid; None = take it from the grid's metadata
+    medium: str | None = field(default=None, metadata={'choices': MEDIA})
     teff_range: tuple[float, float] | None = None  # [K]
     logg_range: tuple[float, float] | None = None  # [dex, cgs]
     met_range: tuple[float, float] | None = None  # [dex]
@@ -123,7 +129,7 @@ class RegionsConfig:
     continuum_fwhm: float = 5.  # continuum windows extend this many resolution elements around a feature
     # windows for ccf/template_fit at R <= 5000: 'features' (around well-modelled atomic/CO features; the
     # default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric span)
-    template_windows: str = 'features'
+    template_windows: str = field(default='features', metadata={'choices': TEMPLATE_WINDOWS})
 
 
 @dataclass
@@ -146,8 +152,8 @@ class OutputConfig:
     formats: list[str] = field(default_factory=lambda: ['csv'])
     plots: bool = True
     # 'quick': bundled Computer Modern, no LaTeX needed; 'paper': text typeset by LaTeX (usetex; needs latex+dvipng)
-    plot_style: str = 'quick'
-    medium: str = 'vacuum'  # medium of the wavelengths in reports and plots
+    plot_style: str = field(default='quick', metadata={'choices': PLOT_STYLES})
+    medium: str = field(default='vacuum', metadata={'choices': MEDIA})  # medium of the wavelengths in reports and plots
 
 
 @dataclass
@@ -156,7 +162,7 @@ class CalibrationConfig:
     # 'sky-if-needed': apply the OH sky zero point only when it is safe and significant; 'auto' (opt-in): also
     # apply the star - sky constant; 'sky': sky curve alone; 'telluric': the star's telluric curve; 'none': report
     # only. See docs/methods.md. What was applied is logged and recorded (wavelength_correction_applied, zp_flags).
-    wavelength_correction: str = 'sky-if-needed'
+    wavelength_correction: str = field(default='sky-if-needed', metadata={'choices': WAVELENGTH_CORRECTIONS})
     # slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the slit width W and
     # trace FWHM F; a number [km/s]; or 'none' (unconstrained, warned)
     slit_prior: str | float = 'auto'
@@ -348,13 +354,13 @@ def _validate(cfg: Config) -> list[str]:
     if cfg.seed < 0:
         p.append(f'seed = {cfg.seed} must be non-negative')
     i = cfg.input
-    _choice(p, 'input.medium', i.medium, ('auto', *MEDIA))
+    _choice(p, 'input.medium', i.medium, INPUT_MEDIA)
     _choice(p, 'input.medium_method', i.medium_method, tuple(AIR_METHODS))
     if i.resolution is not None and not i.resolution > 1:
         p.append(f'input.resolution = {i.resolution} must be a resolving power R > 1')
     v = cfg.velocity_frame
-    _choice(p, 'velocity_frame.correction', v.correction, ('auto', 'apply', 'skip'))
-    _choice(p, 'velocity_frame.frame', v.frame, ('barycentric', 'heliocentric'))
+    _choice(p, 'velocity_frame.correction', v.correction, VELOCITY_CORRECTIONS)
+    _choice(p, 'velocity_frame.frame', v.frame, VELOCITY_FRAMES)
     allowed = ('ra', 'dec', 'mjd', 'site', 'site_lat', 'site_lon')
     for key, val in v.overrides.items():
         if key not in allowed:
@@ -430,7 +436,7 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f'regions.max_regions = {r.max_regions} must be >= 1')
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
-    _choice(p, 'regions.template_windows', r.template_windows, ('features', 'full'))
+    _choice(p, 'regions.template_windows', r.template_windows, TEMPLATE_WINDOWS)
     _choice(p, 'calibration.wavelength_correction', cfg.calibration.wavelength_correction,
             WAVELENGTH_CORRECTIONS)
     _range(p, 'calibration.wave_valid_range', cfg.calibration.wave_valid_range, positive=True)
@@ -460,7 +466,7 @@ def _validate(cfg: Config) -> list[str]:
     for k, fmt in enumerate(o.formats):
         _choice(p, f'output.formats[{k}]', fmt, OUTPUT_FORMATS)
     _choice(p, 'output.medium', o.medium, MEDIA)
-    _choice(p, 'output.plot_style', o.plot_style, ('quick', 'paper'))
+    _choice(p, 'output.plot_style', o.plot_style, PLOT_STYLES)
     return p
 
 
