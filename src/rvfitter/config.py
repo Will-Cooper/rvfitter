@@ -8,6 +8,7 @@ plus the top-level ``seed`` and ``schema_version``.
 and `Config.hash` is a SHA-256 of the canonical content, stored with every result.
 Unset optional values (``None``) are omitted from the TOML file, which has no null.
 """
+import copy
 import hashlib
 import json
 import logging
@@ -492,8 +493,11 @@ LOCATION_FIELDS = (('input', 'raw_header'), ('input', 'raw_header_dir'), ('templ
                    ('calibration', 'sky_source'), ('calibration', 'telluric_source'))
 
 
-def _resolve_locations(cfg: Config, base: Path) -> Config:
-    """Make the relative file locations of a config loaded from a file relative to that file's folder"""
+def resolve_locations(cfg: Config, base: str | Path) -> Config:
+    """A copy of ``cfg`` with its relative file locations (``input.paths``, ``output.path``, `LOCATION_FIELDS`) made
+    absolute against ``base``; absolute ones are kept."""
+    cfg, base = copy.deepcopy(cfg), Path(base).resolve()
+
     def fix(p):
         return p if p is None or Path(p).is_absolute() else str(base / p)
     cfg.input.paths = [fix(p) for p in cfg.input.paths]
@@ -523,7 +527,7 @@ def load(path: str | Path) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f'{path}: invalid TOML: {exc}') from exc
     try:
-        return _resolve_locations(from_dict(data), path.resolve().parent)
+        return resolve_locations(from_dict(data), path.parent)
     except ConfigError as exc:
         raise ConfigError(f'{path}: {exc}') from exc
 

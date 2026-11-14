@@ -143,3 +143,29 @@ def test_run_writes_pdfs_unless_no_plots(monkeypatch, tmp_path):
     cfg.output.plots = True
     assert cli.main(['run', 'c.toml']) == 0
     assert {p.name for p in tmp_path.glob('*.pdf')} >= {'J0000_ccf.pdf', 'J0000_adopted.pdf'}
+
+
+def test_measure_records_every_choice_in_the_saved_config(monkeypatch, tmp_path):
+    """The results_config.toml of `measure` reproduces the run: inputs, output and overrides are in it, and its file
+    locations are absolute, so `rvfitter run` finds them from any directory"""
+    from plotting_synth import synthetic_result
+    from rvfitter import config, pipeline
+    seen = {}
+
+    def fake_run(cfg, inputs=None, **k):
+        seen['cfg'], seen['inputs'] = cfg, inputs
+        return [synthetic_result()]
+    monkeypatch.setattr(pipeline, 'run', fake_run)
+    monkeypatch.setattr(config, 'default_for', lambda spec: config.Config())
+    monkeypatch.setattr('rvfitter.archives.collect_inputs', lambda p: [p])
+    monkeypatch.setattr('rvfitter.io.read_spectrum', lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(['measure', 'data/s.fits', '--methods', 'linecentre', '--medium', 'air', '--bary', 'skip',
+                     '--out', 'out/results.csv', '--no-plots']) == 0
+    cfg = seen['cfg']
+    assert seen['inputs'] is None and cfg.input.paths == ['data/s.fits'] and cfg.methods.enabled == ['linecentre']
+    assert cfg.input.medium == 'air' and cfg.velocity_frame.correction == 'skip'
+    saved = config.loads((tmp_path / 'out' / 'results_config.toml').read_text())
+    assert saved.input.paths == [str(tmp_path / 'data' / 's.fits')]
+    assert saved.output.path == str(tmp_path / 'out' / 'results.csv')
+    assert saved.methods.enabled == ['linecentre'] and saved.hash() == cfg.hash()
