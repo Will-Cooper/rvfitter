@@ -109,7 +109,7 @@ rvfitter --version
 ```
 
 To include the GUI and MCMC, use `"rvfitter[all] @ git+..."` instead.
-After release: `pipx install rvfitter`.
+After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
 On Windows, use `py -m pip` in place of `python -m pip` if `python` is not found.
 
 ## Your first RV in 3 commands
@@ -207,7 +207,7 @@ conda activate rvfitter
 pip install --upgrade --force-reinstall --no-deps "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@v2-modernise"
 ```
 
-After release: `pip install --upgrade "rvfitter[all]"`.
+After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
 With pipx: `pipx upgrade rvfitter`.
 Then run `rvfitter doctor`.
 

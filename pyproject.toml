@@ -1,19 +1,22 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "rvfitter"
-version = "2.0.0.dev0"
+dynamic = ["version"]
 description = "Radial velocities of brown dwarfs from reduced 1D spectra"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENCE" }
-authors = [{ name = "W. J. Cooper" }]
+license = "MIT"
+license-files = ["LICENCE"]
+keywords = ["astronomy", "brown dwarfs", "radial velocity", "spectroscopy", "ultracool dwarfs"]
+authors = [{ name = "Will Cooper", email = "w.cooper@herts.ac.uk" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Physics",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -34,20 +37,33 @@ dependencies = [
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
 mcmc = ["emcee>=3.1", "corner>=2.2"]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5", "build", "twine"]
 gui-test = ["rvfitter[gui]", "pytest-qt>=4.4"]
 all = ["rvfitter[gui,mcmc]"]
 
 [project.urls]
 Homepage = "https://github.com/Will-Cooper/rvfitter"
+Documentation = "https://github.com/Will-Cooper/rvfitter/tree/main/docs"
+Changelog = "https://github.com/Will-Cooper/rvfitter/releases"
 Repository = "https://github.com/Will-Cooper/rvfitter"
 Issues = "https://github.com/Will-Cooper/rvfitter/issues"
 
 [project.scripts]
 rvfitter = "rvfitter.cli:main"
 
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "2.0.0.dev0"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"  # PyPI rejects +g<hash> local versions
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rvfitter"]
+exclude = ["src/rvfitter/data/telluric_hitran.npz"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["legacy", "src/rvfitter/data/telluric_hitran.npz"]
 
 [tool.ruff]
 line-length = 120
