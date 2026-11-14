@@ -16,20 +16,27 @@ from synth import make_spectrum
 
 
 @dataclass
-class MediumCfg:
+class InputCfg:  # the paths of rvfitter.config that the Setup tab binds to
     medium: Literal['auto', 'air', 'vacuum'] = 'auto'
-    formula: Literal['ciddor', 'edlen', 'morton'] = 'ciddor'
+    medium_method: Literal['ciddor', 'edlen', 'morton'] = 'ciddor'
+    resolution: float | None = None
 
 
 @dataclass
-class BaryCfg:
+class VelocityFrameCfg:
     correction: Literal['auto', 'apply', 'skip'] = 'auto'
     frame: Literal['barycentric', 'heliocentric'] = 'barycentric'
 
 
 @dataclass
+class CalibrationCfg:
+    wavelength_correction: Literal['sky-if-needed', 'sky', 'auto', 'telluric', 'none'] = 'sky-if-needed'
+
+
+@dataclass
 class MethodsCfg:
     enabled: list[str] = field(default_factory=lambda: ['ccf'])
+    options: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,8 +65,9 @@ class OutputCfg:
 
 @dataclass
 class FakeConfig:
-    medium: MediumCfg = field(default_factory=MediumCfg)
-    barycentric: BaryCfg = field(default_factory=BaryCfg)
+    input: InputCfg = field(default_factory=InputCfg)
+    velocity_frame: VelocityFrameCfg = field(default_factory=VelocityFrameCfg)
+    calibration: CalibrationCfg = field(default_factory=CalibrationCfg)
     methods: MethodsCfg = field(default_factory=MethodsCfg)
     templates: TemplatesCfg = field(default_factory=TemplatesCfg)
     regions: RegionsCfg = field(default_factory=RegionsCfg)
@@ -84,10 +92,14 @@ def make_result(name: str, rv: float = 10.0):
 
 
 class FakeBackend:
-    """Satisfies ``gui.backend.Backend``; the run blocks on ``gate`` (if set) before the second object."""
+    """
+    Satisfies ``gui.backend.Backend``; the run blocks on ``gate`` (if set) before the second object. Spectra have
+    R ``resolution`` from ``resolution_source``; the run reports a step per (file, method).
+    """
 
     def __init__(self, tmp: Path | None = None, objects=('alpha', 'beta')):
         self.objects = objects
+        self.resolution, self.resolution_source = 3000., 'header'
         self.gate: threading.Event | None = None
         self.started = threading.Event()
         self.runs: list[dict] = []
@@ -122,9 +134,19 @@ class FakeBackend:
         return out
 
     def read_spectrum(self, path, cfg):
-        spec, _ = make_spectrum(rv=0., resolution=3000., snr=50., wave_range=(7500., 8000.),
+        spec, _ = make_spectrum(rv=0., resolution=self.resolution, snr=50., wave_range=(7500., 8000.),
                                 rng=np.random.default_rng(1))
+        spec.meta.update(resolution_source=self.resolution_source, medium_in='vacuum', medium_source='header:TEST',
+                         resolution_implausible=False)
         return spec
+
+    def default_for(self, spectrum):
+        cfg = FakeConfig()
+        cfg.methods.enabled = ['ccf', 'template_fit']
+        return cfg
+
+    def regime(self, spectrum):
+        return 'low-resolution optical'
 
     def select_regions(self, spectrum, cfg, with_overrides=False):
         regs = {'ccf': [Region('K I 7701', 'line', 7695., 7707., 7701.084, (), 'test'),
@@ -140,7 +162,7 @@ class FakeBackend:
                 regs[method] = list(cur.values())
         return regs
 
-    def run(self, cfg, groups, n_procs, on_result, cancel):
+    def run(self, cfg, groups, n_procs, on_result, on_step, cancel):
         self.runs.append({'cfg': cfg, 'groups': dict(groups), 'n_procs': n_procs})
         self.started.set()
         out = []
@@ -149,6 +171,9 @@ class FakeBackend:
                 self.gate.wait(10)
             if cancel.is_set():
                 break
+            for _f in groups[name]:
+                for m in cfg.methods.enabled:
+                    on_step(name, m)
             res = make_result(name, 10.0 + i)
             out.append(res)
             on_result(res)

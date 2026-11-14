@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -35,12 +37,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import METHOD_LABELS
 from . import theme
 from .backend import Backend, LazyBackend
 from .diagnostics import DiagnosticsPanel, rv_text
 from .forms import ConfigForm
 from .logpane import LogPane, QtLogHandler
 from .regions_editor import RegionEditor
+from .setup import SetupPanel
 from .tablemodel import PandasModel
 from .worker import JobWorker, RunWorker
 
@@ -49,27 +53,30 @@ log = logging.getLogger('rvfitter.gui')
 QUICK_START = """
 <h3>Quick start</h3>
 <ol>
-<li>Use <b>Open spectra</b> to add files, a folder of spectra, or a zip/tar archive, or drop them onto the window.
-The spectra are grouped into objects in the <b>Objects</b> list on the left.</li>
-<li>Check the <b>Settings</b> tab. The defaults are sensible; hover over any setting for an explanation.
-Tick the methods you want.</li>
-<li>Optionally open the <b>Regions</b> tab, select an object, and drag, add or remove the shaded spans.
-Your edits are stored in the analysis file.</li>
-<li>Press <b>Measure RVs</b>. Each object appears in the <b>Results</b> table as soon as it is measured.
-Press <b>Cancel</b> to stop after the current object.</li>
-<li>Select an object to see its <b>Diagnostics</b>. A gold dot in the list marks a result that needs attention,
-a rose dot a failed one. Use <b>Export…</b> to save the table.</li>
-<li><b>File &rarr; Save analysis (TOML)…</b> writes the exact configuration used.
-Repeat it from the command line with <tt>rvfitter run analysis.toml</tt>.</li>
+<li><b>Open spectra</b>: files, a folder or a zip/tar archive (or drop them onto the window).
+They are grouped into objects in the list on the left.</li>
+<li><b>Check the Setup tab</b>. Its boxes are filled in from the spectra, and each says where its value came from.
+A gold <i>estimated: check</i> or rose <i>implausible: check</i> means rvfitter guessed: type the right value if you
+know it.</li>
+<li><b>Measure RVs</b>. The bar shows each method as it runs; each object appears in the <b>Results</b> table when
+it is done. Select an object to see its <b>Diagnostics</b>; a gold dot marks a result that needs attention.</li>
 </ol>
 """
 
-OVERRIDES_PATH = 'regions.overrides'
 TREE_EMPTY = 'Drop spectra, folders or .zip/.tar archives here, or use Open spectra.'
 FLAGGED_TIP = 'Gold dot: needs attention. The best template is at the edge of the searched grid.'
 FAILED_TIP = 'Rose dot: failed. No RV could be measured; see the log.'
 MAX_SIZE = (1280, 800)  # default window size cap [px]
 LOG_HEIGHT = 90  # default log pane height [px]
+PROGRESS_WIDTH = 320  # [px], room for 'J1745-1640 · Template fit (2/3) · object 1/3'
+R_PREFIX = {'header': 'R ', 'config': 'R ', 'estimated': 'R≈'}
+
+
+def _scrolled(widget: QWidget) -> QScrollArea:
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(widget)
+    return scroll
 
 
 class ObjectTree(QTreeWidget):
@@ -103,6 +110,8 @@ class MainWindow(QMainWindow):
         self._run_cfg: Any = None
         self.guidance: dict[str, list[dict]] = {}  # object -> suggested refits
         self._refitting = False
+        self.first_spectra: dict[str, Any] = {}  # object -> its first spectrum (R and where it came from)
+        self._steps: dict[str, Any] = {}  # progress of the run: planned steps per object, done, current object
 
         self._build_log()
         self._build_ui()
@@ -127,7 +136,7 @@ class MainWindow(QMainWindow):
         # left: the objects
         self.input_tree = ObjectTree()
         self.input_tree.setColumnCount(2)
-        self.input_tree.setHeaderLabels(['Objects', 'Files'])
+        self.input_tree.setHeaderLabels(['Objects', 'R'])
         self.input_tree.header().setStretchLastSection(False)
         self.input_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.input_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -163,7 +172,8 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel)
         self.progress = QProgressBar()
-        self.progress.setMaximumWidth(180)
+        self.progress.setFixedWidth(PROGRESS_WIDTH)
+        self.progress.setTextVisible(True)
         self.progress.setVisible(False)
         self.summary = QLabel()
         self.summary.setToolTip('Objects loaded, and how many are flagged or failed after measuring.')
@@ -177,15 +187,9 @@ class MainWindow(QMainWindow):
 
         # tabs
         self.tabs = QTabWidget()
-        self.form = ConfigForm(cfg)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.form)
-        self.tabs.addTab(scroll, 'Settings')
-
-        self.region_editor = RegionEditor()
-        self.region_editor.overridesChanged.connect(self._overrides_changed)
-        self.tabs.addTab(self.region_editor, 'Regions')
+        self.setup = SetupPanel(cfg)
+        self.setup.advancedRequested.connect(self.advanced_settings)
+        self.tabs.addTab(_scrolled(self.setup), 'Setup')
 
         self.model = PandasModel()
         self.table = QTableView()
@@ -212,6 +216,9 @@ class MainWindow(QMainWindow):
 
         self.diagnostics = DiagnosticsPanel()
         self.tabs.addTab(self.diagnostics, 'Diagnostics')
+        self.region_editor = RegionEditor()
+        self.region_editor.overridesChanged.connect(self._overrides_changed)
+        self.tabs.addTab(self.region_editor, 'Regions')
         self.tabs.currentChanged.connect(self._tab_changed)
 
         self.top_split = QSplitter(Qt.Orientation.Horizontal)
@@ -284,8 +291,8 @@ class MainWindow(QMainWindow):
             (None, None, None),
             ('Measure RVs', self.run, 'Ctrl+Return'),
             (None, None, None),
-            ('Load config…', self.load_config_dialog, None),
-            ('Save analysis (TOML)…', self.save_config_dialog, QKeySequence.StandardKey.Save),
+            ('Open settings…', self.load_config_dialog, None),
+            ('Save settings…', self.save_config_dialog, QKeySequence.StandardKey.Save),
             ('Export results…', self.export_results, None),
             (None, None, None),
             ('Quit', self.close, QKeySequence.StandardKey.Quit),
@@ -315,11 +322,29 @@ class MainWindow(QMainWindow):
         self.settings.setValue(f'lastdir/{key}', str(p if p.is_dir() else p.parent))
 
     def current_config(self) -> Any:
-        """The config described by the Settings tab."""
-        return self.form.get_config()
+        """The session config, with the Setup boxes applied."""
+        return self.setup.get_config()
 
     def set_config(self, cfg: Any) -> None:
-        self.form.set_config(cfg)
+        self.setup.set_config(cfg)
+
+    def advanced_settings(self) -> QDialog:
+        """Every setting (the generated form) in a dialog; OK applies it to the session config."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Advanced settings')
+        form = ConfigForm(self.current_config())
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(_scrolled(form), 1)
+        lay.addWidget(buttons)
+        dlg.accepted.connect(lambda: self.set_config(form.get_config()))
+        dlg.finished.connect(dlg.deleteLater)
+        dlg.form = form
+        dlg.resize(720, 640)
+        dlg.open()
+        return dlg
 
     def _error(self, title: str, msg: str) -> None:
         log.error('%s: %s', title, msg)
@@ -364,25 +389,26 @@ class MainWindow(QMainWindow):
             self.load_paths(paths)
 
     def load_paths(self, paths: list[Path]) -> JobWorker:
-        """Collect spectra from files, folders and archives, group them by object and list them."""
+        """Collect spectra from files, folders and archives, group them by object, read each object's first
+        spectrum (for the Setup boxes and the R column) and list them."""
         cfg = self.current_config()
         backend = self.backend
         log.info('Loading %d input%s…', len(paths), '' if len(paths) == 1 else 's')
 
-        def job() -> dict[str, list[str]]:
+        def job() -> tuple[dict[str, list[str]], dict[str, Any]]:
             files: list[Path] = []
             for p in paths:
                 try:
                     files.extend(backend.collect_inputs(p))
                 except (OSError, ValueError) as exc:  # one bad input never stops the others
                     log.warning('Could not read %s: %s', p, exc)
-            if not files:
-                return {}
-            return backend.group_objects(files, cfg)
+            groups = backend.group_objects(files, cfg) if files else {}
+            return groups, {name: backend.read_spectrum(fs[0], cfg) for name, fs in groups.items()}
 
         return self._job(job, self._loaded)
 
-    def _loaded(self, groups: dict[str, list[str]]) -> None:
+    def _loaded(self, loaded: tuple[dict[str, list[str]], dict[str, Any]]) -> None:
+        groups, first = loaded
         if not groups:
             log.warning('No usable spectra found.')
             self.statusBar().showMessage('No usable spectra found. Check that the files are 1D spectra.')
@@ -390,6 +416,8 @@ class MainWindow(QMainWindow):
         for name, files in groups.items():
             known = self.groups.setdefault(name, [])
             known.extend(f for f in files if f not in known)
+        self.first_spectra.update(first)
+        self._autofill(first)
         self._fill_tree()
         self._update_summary()
         n = sum(len(v) for v in self.groups.values())
@@ -397,11 +425,30 @@ class MainWindow(QMainWindow):
                  '' if len(self.groups) == 1 else 's')
         self.statusBar().showMessage(f'{n} files, {len(self.groups)} objects loaded.')
 
+    def _autofill(self, first: dict[str, Any]) -> None:
+        """Fill the Setup boxes from the first object of this load; warn if the objects need different defaults."""
+        regimes = {name: self.backend.regime(spec) for name, spec in first.items()}
+        name, spec = next(iter(first.items()))
+        if len(set(regimes.values())) > 1:
+            log.warning('The objects fall into different regimes (%s); the Setup boxes follow %s. Each spectrum still '
+                        'uses its own R.', ', '.join(f'{n}: {r}' for n, r in regimes.items()), name)
+        meta = spec.meta
+        instrument = meta.get('pypeit_spec') or next(iter(meta.get('instrument_names') or ()), None)
+        description = (f'{instrument or "unknown instrument"}, {spec.wave[0]:,.0f}–{spec.wave[-1]:,.0f} Å (vacuum), '
+                       f'{meta.get("medium_in", "?")} wavelengths in the file, {regimes[name]}')
+        self.setup.autofill(name, spec, self.backend.default_for(spec), description)
+
     def _fill_tree(self) -> None:
         self.input_tree.clear()
+        pal = self.input_tree.palette()
         for name, files in self.groups.items():
-            n = len(files)
-            top = QTreeWidgetItem([name, f'{n} file{"" if n == 1 else "s"}'])
+            spec = self.first_spectra[name]
+            src = 'implausible' if spec.meta.get('resolution_implausible') else spec.meta.get('resolution_source', '')
+            top = QTreeWidgetItem([name, f'{R_PREFIX.get(src, "R≈")}{spec.resolution:.0f}'])
+            top.setToolTip(1, f'Resolving power of {Path(files[0]).name}: {src or "header"}'
+                              f'{"" if src in ("header", "config") else ", check it on the Setup tab"}.')
+            if src in ('estimated', 'implausible'):
+                top.setForeground(1, theme.colour('flagged' if src == 'estimated' else 'failed', pal))
             top.setData(0, Qt.ItemDataRole.UserRole, name)
             top.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             for f in files:
@@ -436,7 +483,7 @@ class MainWindow(QMainWindow):
     def _refresh_rows(self) -> None:
         """Show each object's adopted RV, with a gold or rose dot where it needs attention or failed."""
         pal = self.input_tree.palette()
-        self.input_tree.headerItem().setText(1, 'RV [km/s]' if len(self.model.df) else 'Files')
+        self.input_tree.headerItem().setText(1, 'RV [km/s]' if len(self.model.df) else 'R')
         for i in range(self.input_tree.topLevelItemCount()):
             top = self.input_tree.topLevelItem(i)
             name = top.data(0, Qt.ItemDataRole.UserRole)
@@ -494,7 +541,7 @@ class MainWindow(QMainWindow):
 
     # ---- regions -------------------------------------------------------------------------------------------
     def _overrides_changed(self, overrides: dict) -> None:
-        self.form.set_value(OVERRIDES_PATH, overrides)
+        self.setup.cfg.regions.overrides = overrides
         log.info('Region overrides updated (%d edit%s).', len(overrides), '' if len(overrides) == 1 else 's')
 
     def load_regions_for(self, name: str) -> None:
@@ -530,19 +577,23 @@ class MainWindow(QMainWindow):
         self.model.clear()
         self.guidance.clear()
         self._show_guidance(None)
-        self._refresh_rows()
+        self._fill_tree()  # back to R: the RVs of the last run are gone
         self._update_summary()
         self.count_label.setText('Measuring…')
         self.worker = RunWorker(self.backend, cfg, dict(self.groups), n_procs, self)
         self.worker.result.connect(self._on_result)
-        self.worker.progress.connect(self._on_progress)
+        self.worker.step.connect(self._on_step)
         self.worker.done.connect(self._on_done)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self._worker_finished)
         self.measure_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
-        self.progress.setRange(0, len(self.groups))
+        # one step per (object, epoch, method); a finished object moves the bar to its end in any case
+        planned = {name: len(files) * len(cfg.methods.enabled) for name, files in self.groups.items()}
+        self._steps = {'planned': planned, 'base': 0, 'k': 0, 'object': None, 'n_objects': 0}
+        self.progress.setRange(0, sum(planned.values()))
         self.progress.setValue(0)
+        self.progress.setFormat('Starting…')
         self.progress.setVisible(True)
         self._run_cfg = cfg
         log.info('Measuring RVs: %d object%s, %s.', len(self.groups), '' if len(self.groups) == 1 else 's',
@@ -555,7 +606,23 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
 
+    def _on_step(self, name: str, method: str, i: int, n: int) -> None:
+        """A method is starting: the bar counts the steps done, the label names this one."""
+        s = self._steps
+        if name != s['object']:
+            s['object'], s['k'] = name, 0
+            s['n_objects'] += 1
+        self.progress.setValue(min(s['base'] + s['k'], s['base'] + s['planned'].get(name, 0)))
+        s['k'] += 1
+        text = (f'{name} · {METHOD_LABELS.get(method, method)} ({i}/{n}) · '
+                f'object {s["n_objects"]}/{len(s["planned"])}')
+        self.progress.setFormat(text)
+        self.statusBar().showMessage(f'Measuring {text}')
+
     def _on_result(self, res: Any) -> None:
+        s = self._steps
+        s['base'] += s['planned'].get(getattr(res, 'object', None), 0)
+        self.progress.setValue(s['base'])
         self.results.append(res)
         self.model.append(self.backend.to_table([res]))
         self.count_label.setText(f'{len(self.results)} object{"" if len(self.results) == 1 else "s"} measured.')
@@ -565,10 +632,6 @@ class MainWindow(QMainWindow):
         if len(self.results) == 1:
             self.table.selectRow(0)
             self.select_object(getattr(res, 'object', None))
-
-    def _on_progress(self, done: int, total: int) -> None:
-        self.progress.setValue(done)
-        self.statusBar().showMessage(f'Measured {done} of {total} objects.')
 
     def _on_done(self, results: list, cancelled: bool) -> None:
         log.info('%s: %d result%s.', 'Cancelled' if cancelled else 'Finished', len(self.results),

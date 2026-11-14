@@ -46,7 +46,7 @@ def _load(qtbot, win, d):
 
 def test_window_builds(win):
     assert 'rvfitter' in win.windowTitle()
-    assert [win.tabs.tabText(i) for i in range(win.tabs.count())] == ['Settings', 'Regions', 'Results', 'Diagnostics']
+    assert [win.tabs.tabText(i) for i in range(win.tabs.count())] == ['Setup', 'Results', 'Diagnostics', 'Regions']
 
 
 def test_loading_populates_list(qtbot, win, spectra_dir):
@@ -58,8 +58,8 @@ def test_loading_populates_list(qtbot, win, spectra_dir):
 
 def test_settings_round_trip(win):
     cfg = FakeConfig()
-    cfg.medium.medium = 'air'
-    cfg.barycentric.correction = 'skip'
+    cfg.input.medium = 'air'
+    cfg.velocity_frame.correction = 'skip'
     cfg.methods.enabled = ['template_fit']
     cfg.templates.local_dir = '/data/templates'
     cfg.templates.teff_prior = (1800.0, 2400.0)
@@ -79,7 +79,75 @@ def test_every_setting_has_a_tooltip(win):
             assert ed.widget.toolTip(), name
             if isinstance(ed, GroupEditor):
                 walk(ed)
-    walk(win.form.root)
+    walk(win.advanced_settings().form.root)
+    assert all(ed.widget.toolTip() for ed in win.setup.editors.values())
+
+
+def test_setup_autofill_from_the_spectra(qtbot, win, backend, spectra_dir):
+    r_box = win.setup.editors['input.resolution']
+    assert win.setup.tags['input.resolution'].text() == 'default'
+    _load(qtbot, win, spectra_dir)
+    assert r_box.edit.placeholderText() == '3000' and r_box.get() is None  # each spectrum keeps its own R
+    assert win.setup.tags['input.resolution'].text() == 'from header'
+    assert win.setup.tags['input.medium'].text() == 'from header (vacuum)'
+    assert win.setup.editors['methods.enabled'].get() == ['ccf', 'template_fit']  # backend.default_for
+    assert 'Detected for alpha' in win.setup.detected.text()
+    assert win.current_config().input.resolution is None
+
+
+def test_setup_estimated_r_is_flagged(qtbot, win, backend, spectra_dir):
+    backend.resolution_source = 'estimated'
+    _load(qtbot, win, spectra_dir)
+    assert win.setup.tags['input.resolution'].text() == 'estimated: check'
+    assert win.input_tree.topLevelItem(0).text(1) == 'R≈3000'
+
+
+def test_setup_keeps_boxes_set_by_you_across_a_reload(qtbot, win, backend, spectra_dir):
+    from PySide6.QtTest import QTest
+    _load(qtbot, win, spectra_dir)
+    QTest.keyClicks(win.setup.editors['input.resolution'].edit, '2602')
+    win.setup.editors['methods.enabled'].boxes['linecentre'].click()
+    assert win.setup.tags['input.resolution'].text() == 'set by you'
+    want = win.current_config()
+    backend.resolution, backend.resolution_source = 750., 'estimated'
+    win.groups.clear()
+    _load(qtbot, win, spectra_dir)
+    got = win.current_config()
+    assert got.input.resolution == 2602. and got.methods.enabled == want.methods.enabled
+    assert 'linecentre' in got.methods.enabled
+    assert win.setup.tags['input.resolution'].text() == win.setup.tags['methods.enabled'].text() == 'set by you'
+
+
+def test_advanced_dialog_round_trip_keeps_the_config_hash(qtbot, tmp_path):
+    from rvfitter import config
+    be = FakeBackend(tmp_path)
+    be.default_config = config.Config
+    w = MainWindow(be, QSettings(str(tmp_path / 'a.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    before = w.current_config().hash()
+    w.advanced_settings().accept()
+    assert w.current_config().hash() == before == config.Config().hash()
+    dlg = w.advanced_settings()
+    assert dlg.form.set_value('seed', 7) and dlg.form.set_value('input.medium', 'air')
+    dlg.accept()
+    cfg = w.current_config()
+    assert cfg.seed == 7 and w.setup.tags['input.resolution'].text() == 'default'
+    assert cfg.input.medium == 'air' and w.setup.tags['input.medium'].text() == 'set by you'
+    w.close()
+
+
+def test_progress_bar_steps_per_method(qtbot, win, backend, spectra_dir):
+    _load(qtbot, win, spectra_dir)  # the fake regime defaults: ccf and template_fit
+    messages, values = [], []
+    win.statusBar().messageChanged.connect(messages.append)
+    win.progress.valueChanged.connect(values.append)
+    win.run()
+    qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
+    assert win.progress.maximum() == 6  # alpha: 2 files, beta: 1, times 2 methods
+    labels = [m.removeprefix('Measuring ') for m in messages if m.startswith('Measuring ')]
+    assert labels[0] == 'alpha · CCF (1/2) · object 1/2'
+    assert labels[-1] == 'beta · Template fit (2/2) · object 2/2'
+    assert len(labels) == 6 and values[-1] == 6 and values == sorted(values) and len(set(values)) >= 4
 
 
 def test_save_and_load_config(win, tmp_path):
@@ -108,7 +176,7 @@ def test_optional_count_auto_sentinel_is_next_to_valid_values(win):
 
 def test_run_fills_table(qtbot, win, backend, spectra_dir):
     _load(qtbot, win, spectra_dir)
-    win.form.set_value('parallel.n_procs', 2)
+    win.setup.cfg.parallel.n_procs = 2
     win.run()
     qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
     assert win.model.rowCount() == 2
@@ -119,7 +187,7 @@ def test_run_fills_table(qtbot, win, backend, spectra_dir):
 
 def test_run_with_automatic_processes(qtbot, win, backend, spectra_dir):
     _load(qtbot, win, spectra_dir)
-    win.form.set_value('parallel.n_procs', None)
+    win.setup.cfg.parallel.n_procs = None
     win.run()
     qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
     assert backend.runs[0]['n_procs'] is None and win.model.rowCount() == 2
@@ -232,7 +300,8 @@ def test_lazy_backend_uses_on_object_and_cancel(monkeypatch):
     from rvfitter.gui.backend import LazyBackend
     seen = {}
 
-    def fake_run(cfg, inputs, *, n_procs, on_object=None, cancel=None):
+    def fake_run(cfg, inputs, *, n_procs, on_object=None, on_step=None, cancel=None):
+        seen['on_step'] = on_step
         seen['cancel'] = cancel
         seen['n'] = len(inputs)
         for name in ('a', 'b'):
@@ -241,10 +310,11 @@ def test_lazy_backend_uses_on_object_and_cancel(monkeypatch):
 
     monkeypatch.setattr(pipeline, 'run', fake_run, raising=False)
     got = []
-    out = LazyBackend().run(FakeConfig(), {'x': ['f1', 'f2'], 'y': ['f3']}, 1, got.append, threading.Event())
+    out = LazyBackend().run(FakeConfig(), {'x': ['f1', 'f2'], 'y': ['f3']}, 1, got.append, print, threading.Event())
     assert out == got == ['a', 'b']
     assert seen['n'] == 3
     assert not seen['cancel'].is_set()
+    assert seen['on_step'] is print
 
 
 def test_lazy_backend_honours_config(monkeypatch):
@@ -332,7 +402,7 @@ def _measure(qtbot, win, d):
 def test_object_list_shows_rv_after_run(qtbot, win, spectra_dir):
     assert win.input_tree.topLevelItem(0) is None
     _load(qtbot, win, spectra_dir)
-    assert win.input_tree.topLevelItem(0).text(1) == '2 files'
+    assert win.input_tree.topLevelItem(0).text(1) == 'R 3000'
     win.run()
     qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
     assert [win.input_tree.topLevelItem(i).text(1) for i in range(2)] == ['10.0 ± 0.5', '11.0 ± 0.5']
