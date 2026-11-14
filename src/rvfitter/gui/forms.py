@@ -64,7 +64,8 @@ TIPS = {
     'out_dir': 'Folder where the results tables are written.',
     'formats': 'Results file formats to write.',
     'hdu': 'FITS extension to read (number or name). Leave empty to choose it automatically.',
-    'resolution': 'Resolving power R applied to every spectrum, overriding the header. Leave empty to use the header.',
+    'resolution': 'Resolving power R applied to every spectrum, overriding the header. Leave empty to use each '
+                  'spectrum\'s own (its header, else estimated from the pixel spacing).',
     'telluric_corrected': 'The spectra are already telluric-corrected: relax the telluric masking.',
     'raw_header': 'Raw frame headers (a path or glob), needed for the slit position angle that the reduction drops.',
     'raw_header_dir': 'Folder searched for the raw frames named in the reduced files (PypeIt FILENAME).',

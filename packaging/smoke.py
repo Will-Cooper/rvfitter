@@ -2,8 +2,11 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 exe, wait = sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 30.
+if sys.platform.startswith('linux') and not any(Path(exe).resolve().parent.rglob('libqwayland*')):
+    sys.exit(f'{exe}: the bundle has no Qt Wayland platform plugin (libqwayland*)')
 proc = subprocess.Popen([exe], env={**os.environ, 'QT_QPA_PLATFORM': 'offscreen'},
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 try:

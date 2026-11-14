@@ -60,3 +60,15 @@ def test_wayland_quiets_textinput_warning_unless_user_rules(monkeypatch):
     monkeypatch.setenv('QT_LOGGING_RULES', 'mine')
     qtplatform.configure_platform()
     assert qtplatform.os.environ['QT_LOGGING_RULES'] == 'mine'
+
+
+def test_xcb_fallback_names_the_pyside6_fix(monkeypatch, caplog):
+    from rvfitter.gui import qtplatform
+    monkeypatch.setattr(qtplatform, 'platforms_dir', lambda: None)
+    monkeypatch.setattr(qtplatform, 'plugin_names', lambda d: ['xcb'])
+    monkeypatch.setattr(qtplatform.sys, 'platform', 'linux')
+    monkeypatch.delenv('QT_QPA_PLATFORM', raising=False)
+    monkeypatch.setenv('XDG_SESSION_TYPE', 'wayland')
+    with caplog.at_level('WARNING'):
+        qtplatform.configure_platform()
+    assert 'pip install --force-reinstall "PySide6>=6.6"' in caplog.text

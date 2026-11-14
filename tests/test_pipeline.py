@@ -245,3 +245,26 @@ def test_automatic_n_procs(fakes, monkeypatch, enabled, expected):
     cfg.methods.enabled = enabled
     pipeline.run(cfg, INPUTS, failures=[])
     assert set(seen) == {expected}
+
+
+def test_on_step_before_each_method_with_automatic_processes(fakes):
+    """The GUI bar: on_step runs in the calling process before every (epoch, method), with the default n_procs"""
+    assert CFG.parallel.n_procs is None  # the default: the automatic rule (one process without forward_mcmc)
+    events = []
+    pipeline.run(CFG, INPUTS, on_step=lambda obj, m: events.append((obj, m)),
+                 on_object=lambda res: events.append((res.object, 'done')))
+    methods = CFG.methods.enabled
+    assert events == ([('A', m) for m in methods] * 2 + [('A', 'done')] + [('B', m) for m in methods]
+                      + [('B', 'done')] + [('C', m) for m in methods] + [('C', 'done')])
+
+
+def test_results_record_an_estimated_resolution(fakes, monkeypatch):
+    spectra = fresh_spectra()
+    for s in spectra:
+        s.meta.update(resolution_source='estimated', resolution_implausible=s.meta['object'] == 'C')
+    monkeypatch.setattr(archives, 'read_spectrum', lambda p, **kw: spectra.pop(0))
+    table = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
+    assert list(table['resolution_source']) == ['estimated;estimated', 'estimated', 'estimated']
+    assert (table['rv_ccf_flag'] & results.FLAGS['resolution_estimated']).all()
+    assert list(table['rv_ccf_flag'] & results.FLAGS['resolution_implausible'] > 0) == [False, False, True]
+    assert (table['resolution'] == 5000.).all()

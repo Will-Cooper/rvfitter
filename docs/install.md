@@ -1,20 +1,12 @@
 # Installing rvfitter
 
-Choose one:
+The easiest route is the standalone app: no Python needed.
+Use the Python package for scripting, batch runs or the `inject` and `forecast` tools.
+rvfitter is **not yet on PyPI**, so the Python routes install it from GitHub; after the PyPI release the same commands take plain `"rvfitter[all]"`.
+`[all]` adds the GUI (PySide6) and the MCMC method (emcee, corner); leave it out for a smaller, command-line-only install.
+Check any install with `rvfitter doctor`.
 
-| You want | Use |
-|---|---|
-| The GUI, without installing Python | [Option 1: standalone app](#option-1-standalone-app-no-python-needed) |
-| The command line, GUI and Python API, with the least fuss | [Option 2: uv](#option-2-uv-recommended-if-you-use-python) |
-| rvfitter inside a conda environment you already use | [Option 3: Miniforge + conda](#option-3-miniforge--conda-environment) |
-| The command line only, with pipx | [Option 4: pipx](#option-4-pipx-command-line-only) |
-
-rvfitter is **not yet on PyPI**, so the Python routes install it from GitHub
-(`"rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"`). After the PyPI release, the same commands
-take plain `"rvfitter[all]"`. `[all]` adds the GUI (PySide6) and the MCMC method (emcee, corner); leave it out for a
-smaller, command-line-only install.
-
-## Option 1: standalone app (no Python needed)
+## Standalone app
 
 Each [GitHub release](https://github.com/Will-Cooper/rvfitter/releases/latest) has a ready-to-run GUI for each system:
 
@@ -24,180 +16,35 @@ Each [GitHub release](https://github.com/Will-Cooper/rvfitter/releases/latest) h
 | macOS (Apple Silicon) | `rvfitter-gui-macos-arm64.zip` | unzip, then right-click `rvfitter-gui.app` > Open (the first time only: it is not signed). If macOS says it is damaged, run `xattr -dr com.apple.quarantine rvfitter-gui.app` once |
 | Linux (x86-64) | `rvfitter-gui-linux-x86_64.tar.gz` | `tar -xzf rvfitter-gui-linux-x86_64.tar.gz && ./rvfitter-gui/rvfitter-gui` |
 
-The app is the full GUI: open spectra, measure, and save the results and the config.
-Each download also contains `examples/`: three example spectra with ready-made configs (see `examples/README.md`); load one with File > Load config….
-For scripting, batch runs or the `inject`/`forecast` tools, install the Python package (below).
+Each download also contains `examples/` (see `examples/README.md`).
 
-## Option 2: uv (recommended if you use Python)
+## uv (recommended for Python)
 
-[uv](https://docs.astral.sh/uv/) is a fast Python installer that also fetches Python itself.
-Install it (copy the line for your system):
+[uv](https://docs.astral.sh/uv/) installs Python itself too.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh                                   # macOS / Linux
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" # Windows
+
+uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"   # rvfitter on your PATH
+uvx --from "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main" rvfitter gui   # run once
 ```
 
-Then choose one:
+Installing from GitHub needs `git`.
+If `rvfitter` is not found afterwards, run `uv tool update-shell` and open a new terminal.
+`pipx install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"` works the same way.
 
-```bash
-# as a tool: rvfitter on your PATH, in its own environment (GUI and MCMC included)
-uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+## pip or conda
 
-# run once without installing
-uvx --from "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main" rvfitter gui
-
-# in a project environment
-uv venv --python 3.12 && uv pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
-```
-
-Installing from GitHub needs `git` on your machine; after the PyPI release, replace `"rvfitter[all] @ git+...@main"`
-with `"rvfitter[all]"` and git is no longer needed.
-If `rvfitter` is not found after `uv tool install`, run `uv tool update-shell` and open a new terminal.
-Check the install with `rvfitter doctor`; update with `uv tool upgrade rvfitter`, and remove with `uv tool uninstall rvfitter`.
-
-## Option 3: Miniforge + conda environment
-
-Miniforge is a free Python installer that needs no admin rights and does not touch your system Python.
-
-### 1. Install Miniforge
-
-Download the installer for your system, then run it.
-
-- **Windows:** <https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Windows-x86_64.exe>.
-  Double-click it, accept the defaults, then open **Miniforge Prompt** from the Start menu.
-  Use that prompt for every command below.
-- **macOS, Apple Silicon (M1 or later):** <https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh>
-- **macOS, Intel:** <https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-x86_64.sh>
-- **Linux, x86-64:** <https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh>
-- **Linux, ARM:** <https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh>
-
-On macOS and Linux, open a terminal in the folder with the download and run (use the file name you downloaded):
-
-```bash
-bash Miniforge3-Linux-x86_64.sh
-```
-
-Press Enter through the licence, answer `yes` to the questions (including "initialize conda"), then **close and reopen the terminal**.
-The prompt now starts with `(base)`.
-
-### 2. Create the environment
-
-Windows (Miniforge Prompt), macOS and Linux:
+Any Python 3.11 or later works.
+With conda, [Miniforge](https://github.com/conda-forge/miniforge) needs no admin rights and leaves your system Python alone (on Apple Silicon use the `arm64` installer):
 
 ```bash
 conda create -n rvfitter -c conda-forge python=3.12
-```
-
-Type `y` when asked.
-Expected: the last lines say `# To activate this environment, use #     $ conda activate rvfitter`.
-
-```bash
-conda activate rvfitter
-```
-
-Expected: the prompt changes from `(base)` to `(rvfitter)`.
-Repeat this `conda activate` line in every new terminal before using rvfitter.
-
-### 3. Install rvfitter
-
-```bash
+conda activate rvfitter        # repeat in every new terminal (Windows: use Miniforge Prompt)
 pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
-```
-
-This takes a few minutes and ends with `Successfully installed ... rvfitter-2.0.0.dev0 ...`.
-
-### 4. Check it
-
-```bash
-rvfitter --version
 rvfitter doctor
 ```
-
-Expected:
-
-```text
-rvfitter 2.0.0.dev0
-OK    Python >= 3.11           3.12.15
-OK    import numpy             2.5.4
-...
-OK    import PySide6           6.9.2
-OK    import emcee             3.1.6
-OK    import corner            2.3.0
-OK    Qt platform plugin       eglfs, linuxfb, minimal, ..., offscreen, xcb
-OK    Template cache writable  /home/you/.cache/rvfitter/templates
-OK    SVO reachable            https://svo2.cab.inta-csic.es/theory/newov2/index.php
-OK    Zenodo reachable         https://zenodo.org
-All checks passed
-```
-
-Versions and the plugin list differ by system.
-Each failing line prints `FAIL ... -> fix: <what to run>`, and the command exits with status 1.
-Add `--offline` to skip the two network checks.
-
-## Option 4: pipx (command line only)
-
-Use this if you do not need the GUI and already have Python 3.11 or later.
-pipx puts each tool in its own hidden environment.
-
-```bash
-python -m pip install --user pipx
-python -m pipx ensurepath
-```
-
-Close and reopen the terminal, then:
-
-```bash
-pipx install "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@main"
-rvfitter --version
-```
-
-To include the GUI and MCMC, use `"rvfitter[all] @ git+..."` instead.
-After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
-On Windows, use `py -m pip` in place of `python -m pip` if `python` is not found.
-
-## Your first RV in 3 commands
-
-Activate the environment first (`conda activate rvfitter`).
-
-**1. Download template spectra** (model atmospheres; only needed for the `template_fit`, `ccf` and `forward_mcmc` methods):
-
-```bash
-rvfitter templates download --grid bt-settl-cifist --teff 1500 2500 --logg 4.5 5.5
-```
-
-The flags are `--grid` (one of `bt-settl-agss2009`, `bt-settl-cifist`, `lowz`, `sand`, `sonora-bobcat`, `sonora-diamondback`, `sonora-elfowl`), `--teff MIN MAX` [K], `--logg MIN MAX`, `--met MIN MAX`, `--alpha MIN MAX`, `--range AXIS MIN MAX` for any other axis, `--dir DIR` (default: the cache, see `rvfitter doctor`) and `--source {auto,svo,zenodo}`.
-The defaults are `--teff 1200 3000 --logg 4.5 5.5`, `auto` meaning SVO for the BT-Settl grids and Zenodo for the others.
-Check what you have with `rvfitter templates list`.
-Zenodo grids are large single archives, so choose a narrow range.
-If this command fails, see the FAQ below; you can still run the `linecentre` method, which needs no templates.
-
-**2. Measure.** `my_spectra.zip` can equally be one spectrum file or a folder:
-
-```bash
-rvfitter measure my_spectra.zip --out results.csv
-```
-
-Expected (abridged): one block per object, ending with
-
-```text
-2MASSJ0453-1751_tellcorr: adopted RV 16.26 ± 8.73 km/s
-Wrote results.csv
-Wrote results_details.csv
-Wrote results_config.toml
-```
-
-`results.csv` has one row per object (see the README for the columns), `results_details.csv` one row per region and method, and `results_config.toml` the exact settings, which `rvfitter run results_config.toml` repeats.
-Useful options: `--methods template_fit,ccf,linecentre`, `--no-plots`, `--telluric-corrected` (the spectra are already telluric-corrected), `--bary {auto,apply,skip}`, `--medium {auto,air,vacuum}`, `--config FILE`, `--n-procs N`, `--format csv,json,tsv,html`.
-Exit status is 0 if clean, 1 on an error and 2 if the run finished but a file or method failed.
-
-**3. Open the GUI:**
-
-```bash
-rvfitter gui
-```
-
-A window opens to load spectra, edit regions and run the methods.
 
 ## Troubleshooting
 
@@ -215,6 +62,11 @@ QT_QPA_PLATFORM=offscreen rvfitter gui
 That only makes sense for testing; on a server use the CLI.
 On Linux, `xcb` needs system libraries; if `rvfitter doctor` reports a missing plugin, run `sudo apt install libxcb-cursor0 libxkbcommon-x11-0` (Debian/Ubuntu) or ask your administrator.
 On Windows use `set QT_QPA_PLATFORM=offscreen`.
+
+**Qt on Wayland (Linux).**
+The conda-forge PySide6 build lacks the Qt Wayland plugin, so the GUI runs through XWayland.
+For native Wayland, in that environment run `conda remove --force pyside6` (if conda installed it), then `pip install --force-reinstall "PySide6>=6.6"`.
+The standalone app already includes the plugin.
 
 **Proxies, firewalls and offline machines.**
 Set the proxy before running (Linux/macOS: `export HTTPS_PROXY=http://proxy:8080`; Windows: `set HTTPS_PROXY=http://proxy:8080`).
@@ -251,7 +103,7 @@ conda activate rvfitter
 pip install --upgrade --force-reinstall --no-deps "rvfitter @ git+https://github.com/Will-Cooper/rvfitter@main"
 ```
 
-After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
+After the PyPI release: `pip install --upgrade "rvfitter[all]"`.
 With uv: `uv tool upgrade rvfitter`. With pipx: `pipx upgrade rvfitter`.
 Standalone app: download the new archive from the [latest release](https://github.com/Will-Cooper/rvfitter/releases/latest) and replace the old folder.
 Then run `rvfitter doctor`.

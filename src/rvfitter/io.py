@@ -35,10 +35,12 @@ from astropy.io.registry import IORegistryError
 from astropy.utils.exceptions import AstropyUserWarning
 
 from .barycentric import vel_corr_to_kms
+from .calibration import slit
+from .config import REGIME_EDGES
 from .medium import to_vacuum
 from .types import Spectrum
 
-__all__ = ['read_spectrum', 'RawSpectrum', 'raw_headers']
+__all__ = ['read_spectrum', 'RawSpectrum', 'raw_headers', 'estimate_resolution', 'implausible_resolution']
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +60,15 @@ _VAR_NAMES = ('var', 'variance')
 _SKY_NAMES = ('sky', 'sky_flux', 'skyflux', 'counts_sky', 'sky_counts')
 _ROLE_NAMES = {'wave': _WAVE_NAMES, 'flux': _FLUX_NAMES, 'err': _ERR_NAMES, 'ivar': _IVAR_NAMES, 'var': _VAR_NAMES,
                'sky': _SKY_NAMES}
+
+# R from the pixel spacing, used only when neither the header nor the caller gives R
+SAMPLING_PX = 2.5  # pixels per resolution element assumed (Nyquist sampling, as most reductions deliver)
+# the estimate is trusted to this factor: real sampling is about 2-3.75 px per resolution element, and R varies by
+# about 20 per cent along an order (IRTF spectral library, Rayner et al. 2009), so a documented range is widened by it
+R_ESTIMATE_TOLERANCE = 1.5
+# unknown instrument: an estimate above the low-resolution regime edge would change the regime defaults
+# (`config.regime_for`) on a guess; rebinned or coadded spectra on a finer grid give such values
+R_ESTIMATE_CEILING = REGIME_EDGES[0]
 
 _RES_KEYS = ('RESOLUTION', 'SPECRES', 'SPEC_RES', 'RESOLVING', 'RESPOWER', 'RESOLPOW')
 _VEL_KEYS = ('VHELIO', 'VBARY', 'VLSR', 'BCV', 'BERV', 'BARYCORR', 'HELIOCOR', 'BARY_CORR', 'VELOSYS', 'HELCORR',
@@ -396,6 +407,35 @@ def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
 def _header_resolution(header: Mapping[str, Any]) -> float | None:
     value = _as_float(_first(header, _RES_KEYS)[0])
     return value if value is not None and value > 1. else None
+
+
+def estimate_resolution(wave: np.ndarray) -> float:
+    """R ≈ median(λ / (`SAMPLING_PX` Δλ)) over the pixels, assuming Nyquist sampling; `ValueError` if no spacing"""
+    wave = np.asarray(wave, dtype=float)
+    d = np.diff(wave)
+    good = np.isfinite(d) & (d > 0)
+    if not good.any():
+        raise ValueError('cannot estimate the resolving power: no increasing wavelength steps')
+    return float(np.median(wave[1:][good] / (SAMPLING_PX * d[good])))
+
+
+def implausible_resolution(r: float, meta: Mapping[str, Any]) -> str | None:
+    """
+    Why an R estimated from the pixel spacing is implausible for the instrument of ``meta``, else None
+
+    Known instrument (``data/instruments.csv`` row by PYP_SPEC, INSTRUME, INSTR, with an R range): outside the
+    documented range widened by `R_ESTIMATE_TOLERANCE`. Otherwise: above `R_ESTIMATE_CEILING`.
+    """
+    row = slit.instrument(meta.get('pypeit_spec'), *meta.get('instrument_names', ()))
+    if row is not None and row.resolution_min is not None:
+        lo, hi = row.resolution_min / R_ESTIMATE_TOLERANCE, row.resolution_max * R_ESTIMATE_TOLERANCE
+        if lo <= r <= hi:
+            return None
+        return (f'outside {lo:.0f}-{hi:.0f}, the documented range of {row.key} ({row.resolution_min:g}-'
+                f'{row.resolution_max:g}, {row.resolution_source}) widened by a factor {R_ESTIMATE_TOLERANCE:g}')
+    if r <= R_ESTIMATE_CEILING:
+        return None
+    return f'above {R_ESTIMATE_CEILING:g} for an instrument without a documented R range'
 
 
 def _role_lookup(names: list[str], columns: Mapping[str, str | int] | None) -> dict[str, int]:
@@ -1204,7 +1244,10 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     'vacuum' (overrides the header, a conflict is logged); ``medium_method`` is the air formula of `rvfitter.medium`.
     ``hdu`` selects an HDU (default: the first suitable; for a multi-object PypeIt spec1d the table matching the
     target name, else the highest-S/N science object, which is logged). ``columns`` maps the roles 'wave', 'flux' and
-    one of 'err', 'ivar', 'var' to a column name or index. ``resolution`` (R = λ/Δλ) overrides the header's.
+    one of 'err', 'ivar', 'var' to a column name or index. ``resolution`` (R = λ/Δλ) overrides the header's;
+    without either, R is estimated from the pixel spacing (`estimate_resolution`, WARNING), and checked against the
+    instrument (`implausible_resolution`). ``meta['resolution_source']`` is 'config', 'header' or 'estimated';
+    ``meta['resolution_implausible']`` is True for an estimate that fails the check.
 
     Raises `ValueError` if the file cannot be read or the medium cannot be determined.
     """
@@ -1267,14 +1310,28 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     for key, out in (('RVF_HDU', 'hdu'), ('RVF_EXTNAME', 'extname'), ('RVF_NOBJ', 'n_objects')):
         if key in raw.header:  # which table of a multi-object file was read
             meta[out] = raw.header[key]
-    r = resolution if resolution is not None else raw.resolution
+    r, meta['resolution_source'] = ((resolution, 'config') if resolution is not None else
+                                    (raw.resolution, 'header') if raw.resolution is not None else (None, 'estimated'))
     if r is not None and not (np.isfinite(r) and r > 0):
         raise ValueError(f'resolution must be positive, not {r}')
+    meta['resolution_implausible'] = False
+    if r is None:
+        r = estimate_resolution(wave)
+        why = implausible_resolution(r, meta)
+        meta['resolution_implausible'] = why is not None
+        if why:
+            log.warning('%s: no resolving power in the header; the R ≈ %.0f estimated from the pixel spacing is %s; '
+                        'the spectrum may be rebinned: type the resolving power in the Setup tab (input.resolution).',
+                        path.name, r, why)
+        else:
+            log.warning('%s: no resolving power in the header; estimated R ≈ %.0f from the pixel spacing (assuming '
+                        '%g pixels per resolution element). Set input.resolution if you know R.', path.name, r,
+                        SAMPLING_PX)
     if raw.reader in ('pypeit_spec1d', 'pypeit_coadd'):
         _attach_arc_range(meta, path, raw.header.get('RVF_EXTNAME'))
     log.debug('%s: %d pixels, %.1f-%.1f Å (vacuum), medium_in=%s (%s)', path.name, len(wave), wave[0], wave[-1],
               medium_in, source)
-    return Spectrum(wave, flux, sigma, None if r is None else float(r), meta, str(path), sky)
+    return Spectrum(wave, flux, sigma, float(r), meta, str(path), sky)
 
 
 # (name, sniff, read) in the order tried; ASCII has no sniffer (its reader raises for anything else) and `specutils`

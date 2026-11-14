@@ -30,6 +30,7 @@ __all__ = ['run', 'measure_object', 'refit_object', 'enabled_methods', 'region_s
 log = logging.getLogger(__name__)
 
 Failures = list[tuple[str, str]]
+StepCallback = Callable[[str, str], None]  # (object, method), called just before the method starts
 
 
 class NoMethodsError(ValueError):
@@ -92,11 +93,13 @@ def _drop_uncovered(sel: dict, info: dict) -> dict:
 
 def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor: Executor | None,
                  rngs: dict[str, np.random.Generator], name: str, cancel: threading.Event | None,
-                 failures: Failures) -> dict[str, MethodResult]:
+                 failures: Failures, on_step: StepCallback | None = None) -> dict[str, MethodResult]:
     out = {}
     for m in names:
         if cancel is not None and cancel.is_set():
             raise _Cancelled
+        if on_step is not None:
+            on_step(name, m)
         out[m] = _guarded(lambda m=m: REGISTRY[m](spec, sel.get(m, []), cfg, executor=executor, rng=rngs[m]),
                           m, name, failures)
     return out
@@ -176,14 +179,17 @@ def _zero_point_terms(corrected: list[Spectrum], infos: list[dict], waves: list[
 
 def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | None, rng: np.random.Generator, *,
                    name: str | None = None, methods: Sequence[str] | None = None, bary: str | None = None,
-                   cancel: threading.Event | None = None, failures: Failures | None = None) -> ObjectResult:
+                   cancel: threading.Event | None = None, failures: Failures | None = None,
+                   on_step: StepCallback | None = None) -> ObjectResult:
     """
     Measure one object (one or more spectra)
 
     Runs the barycentric correction, the wavelength zero point, region selection, each enabled method, the
     combination and the systematics. A method that raises is logged with its traceback, recorded as a failed
     measurement (flag fit_failed) and appended to ``failures``; the object carries on. If ``cancel`` is set
-    between methods, ``_Cancelled`` is raised (handled by ``run``). Several spectra are epochs: each is measured
+    between methods, ``_Cancelled`` is raised (handled by ``run``). ``on_step(name, method)`` is called in this
+    process just before each method of each epoch (the methods run one after another here; ``executor`` only
+    parallelises inside a method). Several spectra are epochs: each is measured
     on its own and the epochs are combined in a second level (random effects over the epochs' RVs), so a common
     per-epoch offset is not averaged down by the number of regions.
     """
@@ -191,6 +197,8 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     failures = [] if failures is None else failures
     name = name or str(spectra[0].meta.get('object', Path(spectra[0].source).stem))
     corrected, bary_info = _barycentric(spectra, cfg, bary or cfg.velocity_frame.correction, name)
+    bary_info.update(resolution=spectra[0].resolution, resolution_source=';'.join(
+        s.meta.get('resolution_source', '') for s in spectra))
     select = region_selector(cfg, names)
 
     # wavelength zero point, applied once to the wavelengths; the regions the methods will use (selected before
@@ -205,16 +213,23 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     sels = [_drop_uncovered(select(spec), info) for spec, info in zip(corrected, cal_infos, strict=True)]
     joint = forward.METHOD in names and len(corrected) > 1  # one forward model shared by the epochs
     per_epoch = [_run_methods(spec, sel, [m for m in names if not (joint and m == forward.METHOD)], cfg, executor,
-                              method_rngs, name, cancel, failures)
+                              method_rngs, name, cancel, failures, on_step)
                  for spec, sel in zip(corrected, sels, strict=True)]
     if joint:
         if cancel is not None and cancel.is_set():
             raise _Cancelled
+        if on_step is not None:
+            on_step(name, forward.METHOD)
         fits = _guarded(lambda: forward.fit_epochs(corrected, [s.get(forward.METHOD, []) for s in sels], cfg,
                                                    executor=executor, rng=method_rngs[forward.METHOD]),
                         forward.METHOD, name, failures, n=len(corrected))
         for res, fit in zip(per_epoch, fits, strict=True):
             res[forward.METHOD] = fit
+    for res_by_method, spec in zip(per_epoch, corrected, strict=True):  # an estimated R flags every measurement
+        bits = (FLAGS['resolution_estimated'] * (spec.meta.get('resolution_source') == 'estimated')
+                | FLAGS['resolution_implausible'] * bool(spec.meta.get('resolution_implausible')))
+        for meas in (m for r in res_by_method.values() for m in r.measurements):
+            meas.flag |= bits
     zp_epochs = _zero_point_terms(corrected, cal_infos, _uncorrect(per_epoch, corrected), cfg, name)
 
     # several epochs: regions become '<epoch>:<region>', and the epochs are combined in a second level
@@ -316,12 +331,13 @@ def _measure(spectra: Sequence[Spectrum], cfg: Any, n_procs: int | None, rng: np
 def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_procs: int | None = None,
         medium: str | None = None, methods: Sequence[str] | None = None, bary: str | None = None,
         on_object: Callable[[ObjectResult], None] | None = None, cancel: threading.Event | None = None,
-        failures: Failures | None = None) -> list[ObjectResult]:
+        failures: Failures | None = None, on_step: StepCallback | None = None) -> list[ObjectResult]:
     """
     Run the analysis on all spectra found in ``inputs`` (default ``cfg.input.paths``)
 
     Objects are processed one after another (``[i/N] name``). ``n_procs``, ``medium``, ``methods`` and ``bary``
-    override the config. ``on_object`` is called with each finished object; if ``cancel`` is set (checked between
+    override the config. ``on_object`` is called with each finished object, ``on_step(object, method)`` (in this
+    process) just before each method of each epoch; if ``cancel`` is set (checked between
     objects and between methods) the results so far are returned and the interrupted object is dropped. Every
     skipped file and failed (object, method) is appended to ``failures`` as ``(what, why)`` and summarised at
     ERROR at the end.
@@ -329,7 +345,7 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     names_enabled = enabled_methods(cfg, methods)  # fail before reading anything
     failures = [] if failures is None else failures
     n_procs = cfg.parallel.n_procs if n_procs is None else n_procs
-    if n_procs is None:  # automatic: a pool only pays off for the MCMC (docs/performance.md)
+    if n_procs is None:  # automatic: a pool only pays off for the MCMC
         n_procs = max(1, (os.cpu_count() or 1) - 1) if 'forward_mcmc' in names_enabled else 1
     spectra = _read_all(cfg, cfg.input.paths if inputs is None else inputs, medium or cfg.input.medium, failures)
     groups = archives.group_by_object(spectra, cfg.grouping.override)
@@ -344,7 +360,7 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
         obj_cfg = config_for_object(cfg, name)
         try:
             res = _measure(groups[name], obj_cfg, n_procs, np.random.default_rng(object_seed(cfg.seed, name)),
-                           name=name, methods=methods, bary=bary, cancel=cancel, failures=failures)
+                           name=name, methods=methods, bary=bary, cancel=cancel, failures=failures, on_step=on_step)
         except _Cancelled:
             log.warning('Cancelled during %s', name)
             break

@@ -199,9 +199,11 @@ def _telluric_coverage(tzp: Any, spec: Spectrum, regions: Sequence) -> tuple[boo
     return True, 'ok'
 
 
-def _read_source(path: str, cfg: Any, hdu: int | None = None) -> Spectrum:
-    """Read a calibration file the user named (sky_source, telluric_source); a failure raises"""
-    return io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method, hdu=hdu)
+def _read_source(path: str, cfg: Any, resolution: float, hdu: int | None = None) -> Spectrum:
+    """Read a calibration file the user named (sky_source, telluric_source) at the science spectrum's
+    ``resolution`` (same exposure: no second header lookup or estimate); a failure raises"""
+    return io.read_spectrum(path, medium=cfg.input.medium, medium_method=cfg.input.medium_method, hdu=hdu,
+                            resolution=resolution)
 
 
 def _object_tables(spec: Spectrum, cfg: Any) -> list[tuple[int, Spectrum]]:
@@ -217,7 +219,7 @@ def _object_tables(spec: Spectrum, cfg: Any) -> list[tuple[int, Spectrum]]:
             out.append((k, spec))
             continue
         try:
-            out.append((k, _read_source(spec.source, cfg, hdu=k)))
+            out.append((k, _read_source(spec.source, cfg, spec.resolution, hdu=k)))
         except (ValueError, KeyError) as exc:  # not an object table
             log.debug('object table %d of %s unreadable: %s', k, spec.source, exc)
     return out
@@ -276,7 +278,7 @@ def matching_object(path: str, raw: Spectrum, cfg: Any, name: str, what: str = '
     The object of a calibration file whose flux best matches the input (a PypeIt spec1d holds one table per
     object in the slit, and the highest-S/N one is not necessarily the input's target)
     """
-    first = _read_source(path, cfg)
+    first = _read_source(path, cfg, raw.resolution)
     found = _object_tables(first, cfg)
     if len(found) == 1:
         return first
@@ -365,7 +367,7 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     zp = None
     src = raw if raw.sky is not None else None
     if src is None and cal.sky_source:
-        other = _read_source(cal.sky_source, cfg)
+        other = _read_source(cal.sky_source, cfg, raw.resolution)
         if other.sky is None:
             log.warning('%s: calibration.sky_source %s has no sky spectrum', name, cal.sky_source)
         else:

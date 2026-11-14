@@ -303,3 +303,11 @@ def test_model_fidelity_column():
     assert f['K I 7667'].model_fidelity == 'good' and f['TiO 7591'].model_fidelity == 'poor'
     assert f['O2 A'].model_fidelity == 'n/a'
     assert {x.model_fidelity for x in features()} == {'good', 'poor', 'n/a'}
+
+
+def test_unknown_resolution_is_estimated_as_io_does():
+    from rvfitter import io
+    from rvfitter.regions import _Context
+    spec = _synth((7600., 7800.))
+    spec = Spectrum(spec.wave, spec.flux, spec.sigma, None, spec.meta)
+    assert _Context(spec, SelectOptions()).R == io.estimate_resolution(spec.wave)

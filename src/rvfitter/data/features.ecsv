@@ -18,8 +18,7 @@
 # - {description: 'rvfitter feature catalogue; vacuum wavelengths; NaN = not applicable; depth = approximate telluric absorption depth
 #     (R~2000, airmass 1); model_fidelity = how well synthetic grids (BT-Settl, Sonora) reproduce the feature for late-M/L/T dwarfs: good
 #     (atomic lines with laboratory wavelengths; CO overtone bandheads), poor (TiO, VO, CrH, FeH, H2O, CH4 bands, whose incomplete or
-#     inaccurate molecular opacities shift fitted RVs: deep-research-report.md, "Synthetic versus empirical templates" and the "Synthetic-template
-#     mismatch" row of the systematics table; Hsu et al. 2021), n/a (telluric)'}
+#     inaccurate molecular opacities shift fitted RVs; Hsu et al. 2021), n/a (telluric)'}
 # schema: astropy-2.0
 name species kind wave_vac wmin wmax teff_min teff_max r_min rest_ref caveat depth model_fidelity
 "K I 7667" "K I" line 7667.0089 nan nan 1200.0 3000.0 1000.0 "NIST ASD (Ritz)" "core-only window: pressure-broadened wings span tens to hundreds of km/s (Hsu et al. 2021; McLean et al. 2007); Teff, R ref: Kirkpatrick et al. 1999, ApJ 519, 802" nan good

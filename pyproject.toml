@@ -63,20 +63,18 @@ packages = ["src/rvfitter"]
 exclude = ["src/rvfitter/data/telluric_hitran.npz"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["legacy", "src/rvfitter/data/telluric_hitran.npz"]
+exclude = ["src/rvfitter/data/telluric_hitran.npz"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 src = ["src", "tests"]
-extend-exclude = ["legacy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "NPY"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--ignore=tests/legacy"
 markers = [
     "data: needs local test data (not available in CI)",
     "gui: needs PySide6 and a (possibly offscreen) Qt platform",

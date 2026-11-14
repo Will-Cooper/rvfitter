@@ -25,8 +25,10 @@ log = logging.getLogger(__name__)
 #: nearest point was used), telluric_contaminated, not_converged (optimum at the edge of the search range or an
 #: unconverged sampler), poor_fit (reduced χ² > 3; the error has been scaled by √(χ²/ν), but check the
 #: template), outlier (a gross outlier among the method's regions) and template_param_edge (the best template is
-#: at the edge of the searched parameter range or of the grid; see the logged guidance) and template_grid_hole (a
-#: requested template lies in a hole of the grid, i.e. a missing corner file: the nearest point was used)
+#: at the edge of the searched parameter range or of the grid; see the logged guidance), template_grid_hole (a
+#: requested template lies in a hole of the grid, i.e. a missing corner file: the nearest point was used),
+#: resolution_estimated (no R in the header or config: R was estimated from the pixel spacing) and
+#: resolution_implausible (that estimate is outside the instrument's documented range; the spectrum may be rebinned)
 FLAGS: dict[str, int] = {
     'fit_failed': 1,
     'few_regions': 2,
@@ -38,6 +40,8 @@ FLAGS: dict[str, int] = {
     'outlier': 128,
     'template_param_edge': 256,
     'template_grid_hole': 512,
+    'resolution_estimated': 1024,
+    'resolution_implausible': 2048,
 }
 
 #: Flags that exclude a measurement from a method's combination and from the adopted RV
@@ -130,6 +134,8 @@ _SPEC: tuple[str | tuple, ...] = (
     ('zp_flags', 'barycentric', 'zp_flags', int, 0),  # pipeline.ZP_FLAGS bits
     ('rv_epoch_pvalue', 'epochs', 'pvalue', _num, None), ('rv_epoch_variable', 'epochs', 'variable', bool, False),
     ('n_epochs', 'epochs', 'n', int, 1),
+    ('resolution', 'barycentric', 'resolution', _num, None),  # R of the first epoch
+    ('resolution_source', 'barycentric', 'resolution_source', str, ''),  # header, config or estimated (per epoch)
     ('bary_kms', 'barycentric', 'applied_kms', _num, None), ('bary_source', 'barycentric', 'source', str, ''),
     ('frame', 'barycentric', 'frame', str, ''),
     ('binary_dbic', 'binary', 'dbic', _num, None), ('binary_flag', 'binary', 'flag', bool, False),

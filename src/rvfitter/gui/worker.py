@@ -16,11 +16,11 @@ class RunWorker(QThread):
     """Runs the backend pipeline. Any process pool lives inside ``backend.run``, so the UI never blocks."""
 
     result = Signal(object)        # one ObjectResult as soon as it is finished
-    progress = Signal(int, int)    # done, total
+    step = Signal(str, str, int, int)  # object, method starting, its position i of n in cfg.methods.enabled
     done = Signal(object, bool)    # list of results, cancelled
     failed = Signal(str)
 
-    def __init__(self, backend, cfg, groups: dict[str, list[str]], n_procs: int, parent=None):
+    def __init__(self, backend, cfg, groups: dict[str, list[str]], n_procs: int | None, parent=None):
         super().__init__(parent)
         self.backend, self.cfg, self.groups, self.n_procs = backend, cfg, groups, n_procs
         self._cancel = threading.Event()
@@ -33,17 +33,13 @@ class RunWorker(QThread):
         return self._cancel.is_set()
 
     def run(self) -> None:
-        n_done = 0
-        total = len(self.groups)
+        names = list(self.cfg.methods.enabled)
 
-        def on_result(res: Any) -> None:
-            nonlocal n_done
-            n_done += 1
-            self.result.emit(res)
-            self.progress.emit(n_done, total)
+        def on_step(obj: str, method: str) -> None:  # called in this thread, just before each method
+            self.step.emit(obj, method, names.index(method) + 1, len(names))
 
         try:
-            results = self.backend.run(self.cfg, self.groups, self.n_procs, on_result, self._cancel)
+            results = self.backend.run(self.cfg, self.groups, self.n_procs, self.result.emit, on_step, self._cancel)
         except Exception as exc:
             log.error('Measuring failed: %s', exc)
             log.debug(traceback.format_exc())

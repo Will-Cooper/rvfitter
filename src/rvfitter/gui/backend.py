@@ -29,10 +29,15 @@ class Backend(Protocol):
 
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any: ...
 
+    def default_for(self, spectrum: Any) -> Any: ...
+
+    def regime(self, spectrum: Any) -> str: ...
+
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
 
-    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
-            on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]: ...
+    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
+            on_result: Callable[[Any], None], on_step: Callable[[str, str], None],
+            cancel: threading.Event) -> list[Any]: ...
 
     def to_table(self, results: Sequence[Any]) -> Any: ...
 
@@ -41,6 +46,12 @@ class Backend(Protocol):
     def suggested_refits(self, result: Any) -> list[dict]: ...
 
     def refit(self, result: Any, cfg: Any, suggestion: Mapping[str, Any]) -> tuple[Any, Any]: ...
+
+    def template_status(self, cfg: Any) -> dict[str, tuple[float, float] | None]: ...
+
+    def template_methods(self, cfg: Any) -> list[str]: ...
+
+    def download_templates(self, cfg: Any, grids: Sequence[str]) -> None: ...
 
 
 class LazyBackend:
@@ -73,6 +84,17 @@ class LazyBackend:
         return io.read_spectrum(path, medium=i.medium, medium_method=i.medium_method, hdu=i.hdu,
                                 resolution=i.resolution)
 
+    def default_for(self, spectrum: Any) -> Any:
+        """The regime defaults of ``spectrum`` (``config.default_for``)."""
+        from rvfitter import config
+        return config.default_for(spectrum)
+
+    def regime(self, spectrum: Any) -> str:
+        """E.g. 'low-resolution optical' (``config.regime_for``)."""
+        from rvfitter import config
+        regime, band = config.regime_for(spectrum.resolution, (spectrum.wmin, spectrum.wmax))
+        return f'{regime}-resolution {band}'
+
     def group_objects(self, files: Sequence[Path], cfg: Any) -> dict[str, list[str]]:
         from rvfitter import archives
         spectra = []
@@ -89,11 +111,12 @@ class LazyBackend:
         from rvfitter import pipeline
         return pipeline.region_selector(cfg, list(cfg.methods.enabled), with_overrides)(spectrum)
 
-    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int,
-            on_result: Callable[[Any], None], cancel: threading.Event) -> list[Any]:
+    def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
+            on_result: Callable[[Any], None], on_step: Callable[[str, str], None],
+            cancel: threading.Event) -> list[Any]:
         from rvfitter import pipeline
         files = [Path(f) for fs in groups.values() for f in fs]
-        return pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, cancel=cancel)
+        return pipeline.run(cfg, files, n_procs=n_procs, on_object=on_result, on_step=on_step, cancel=cancel)
 
     def to_table(self, results: Sequence[Any]) -> Any:
         from rvfitter import results as res_mod
@@ -120,3 +143,42 @@ class LazyBackend:
             templates.download(**suggestion['download'])
             log.info('Download finished.')
         return pipeline.refit_object(result, cfg, suggestion['cfg_patch'], n_procs=cfg.parallel.n_procs)
+
+    def template_status(self, cfg: Any) -> dict[str, tuple[float, float] | None]:
+        """Each configured grid → the Teff range [K] present locally (``templates.local_dir`` or the cache), or None"""
+        from rvfitter import templates
+        from rvfitter.methods import _common as C
+        out: dict[str, tuple[float, float] | None] = {}
+        for name in C.grid_names(cfg.templates):
+            directory = C.grid_directory(cfg.templates, name)
+            out[name] = None if directory is None else \
+                templates.TemplateGrid(directory, grid=name, verify=False).bounds()['teff']
+        return out
+
+    def template_methods(self, cfg: Any) -> list[str]:
+        """
+        The enabled methods that read the template grid: all but linecentre (unless its shape_correction is on), and
+        none given its own template by the method option ``template``/``templates``
+        """
+        out = []
+        for m in cfg.methods.enabled:
+            opts = cfg.methods.options.get(m, {})
+            if opts.get('template') is not None or opts.get('templates'):
+                continue
+            if m != 'linecentre' or opts.get('shape_correction'):
+                out.append(m)
+        return out
+
+    def download_templates(self, cfg: Any, grids: Sequence[str]) -> None:
+        """Download ``grids`` into the cache over the configured parameter ranges (unset: ``templates.download``'s)"""
+        from rvfitter import templates
+        t = cfg.templates
+        ranges: dict[str, Any] = {k: tuple(v) for k, v in (('teff_range', t.teff_range), ('logg_range', t.logg_range),
+                                                           ('met_range', t.met_range), ('alpha_range', t.alpha_range))
+                                  if v is not None}
+        if t.ranges:
+            ranges['ranges'] = {k: tuple(v) for k, v in t.ranges.items()}
+        for grid in grids:
+            log.info('Downloading template grid %s (%s).', grid, ranges or 'default ranges')
+            templates.download(grid, **ranges)
+            log.info('Download of %s finished.', grid)
