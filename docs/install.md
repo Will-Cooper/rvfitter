@@ -12,6 +12,19 @@ When it is released, use the "after release" command instead; everything else is
 `[all]` adds the GUI (PySide6) and the MCMC method (emcee, corner).
 Leave it out for a smaller, command-line-only install.
 
+## Option 0: standalone app (no Python needed)
+
+Each [GitHub release](https://github.com/Will-Cooper/rvfitter/releases/latest) has a ready-to-run GUI for each system:
+
+| System | Download | Run |
+|---|---|---|
+| Windows (64-bit) | `rvfitter-gui-windows-x86_64.zip` | unzip, then double-click `rvfitter-gui\rvfitter-gui.exe` |
+| macOS (Apple Silicon) | `rvfitter-gui-macos-arm64.zip` | unzip, then right-click `rvfitter-gui.app` > Open (the first time only: it is not signed) |
+| Linux (x86-64) | `rvfitter-gui-linux-x86_64.tar.gz` | `tar -xzf rvfitter-gui-linux-x86_64.tar.gz && ./rvfitter-gui/rvfitter-gui` |
+
+The app is the full GUI: open spectra, measure, and save the results and the config.
+For scripting, batch runs or the `inject`/`forecast` tools, install the Python package (below).
+
 ## Option 1 (recommended): Miniforge + conda environment
 
 Miniforge is a free Python installer that needs no admin rights and does not touch your system Python.
@@ -111,6 +124,32 @@ rvfitter --version
 To include the GUI and MCMC, use `"rvfitter[all] @ git+..."` instead.
 After release: `pip install --upgrade "rvfitter[all]"`; maintainers see [releasing.md](releasing.md).
 On Windows, use `py -m pip` in place of `python -m pip` if `python` is not found.
+
+## Option 3: uv
+
+[uv](https://docs.astral.sh/uv/) is a fast Python installer that also fetches Python itself.
+Install it (copy the line for your system):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                                   # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" # Windows
+```
+
+Then choose one:
+
+```bash
+# as a tool: rvfitter on your PATH, in its own environment (GUI and MCMC included)
+uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+
+# run once without installing
+uvx --from "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main" rvfitter gui
+
+# in a project environment
+uv venv --python 3.12 && uv pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+```
+
+After the PyPI release, replace `"rvfitter[all] @ git+...@main"` with `"rvfitter[all]"`.
+Update with `uv tool upgrade rvfitter`, and remove with `uv tool uninstall rvfitter`.
 
 ## Your first RV in 3 commands
 

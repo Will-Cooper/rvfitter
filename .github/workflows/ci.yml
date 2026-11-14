@@ -50,3 +50,17 @@ jobs:
           pip install -e ".[all,dev,gui-test]"
       - name: GUI tests
         run: pytest -m gui
+
+  uv:  # the uv routes documented in docs/install.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: uv tool install
+        run: |
+          uv tool install ".[all]"
+          rvfitter --version
+      - name: uvx
+        run: uvx --from ".[all]" rvfitter --version

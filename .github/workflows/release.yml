@@ -1,9 +1,15 @@
-name: Release
+name: Publish to PyPI
 
+# Manual only: Actions > "Publish to PyPI" > Run workflow, choosing TestPyPI or PyPI.
+# A GitHub release does not upload to PyPI; it builds the standalone apps (bundles.yml).
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Where to upload
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
 
 jobs:
   build:
@@ -25,25 +31,10 @@ jobs:
           name: dist
           path: dist/
 
-  publish-pypi:
+  publish:
     needs: build
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
-  publish-testpypi:
-    needs: build
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    environment: testpypi
+    environment: ${{ inputs.target }}
     permissions:
       id-token: write
     steps:
@@ -53,4 +44,4 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          repository-url: https://test.pypi.org/legacy/
+          repository-url: ${{ inputs.target == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
