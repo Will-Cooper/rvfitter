@@ -1,0 +1,16 @@
+# Two near-infrared spectra in Spextool format (Cheng et al. 2025):
+#   sxd_J0808+3157.fits  IRTF/SpeX SXD, R ~ 2000
+#   xtc_J1536+0646.fits  Blanco/ARCoIRIS, R ~ 3500
+# Run from this folder:  rvfitter run rvfitter.toml
+# Model-free line centring on the J-band K I lines needs no templates. The barycentric correction is computed from
+# each file's header. SpeX and ARCoIRIS files do not record a wavelength-calibration accuracy, so the total error
+# is left undefined unless you set calibration.wave_rms_kms below.
+
+[input]
+paths = ["sxd_J0808+3157.fits", "xtc_J1536+0646.fits"]
+
+[methods]
+enabled = ["linecentre"]
+
+[output]
+path = "output/results.csv"  # results, details, config used, log and figures

@@ -4,8 +4,35 @@ Radial velocities of brown dwarfs from any reduced 1D spectrum, with several ind
 rvfitter has a command line, a PySide6 GUI and a Python API; the earlier script-based code is kept in `legacy/`.
 Cite the code via the Zenodo DOI below and Cooper et al. (2024, MNRAS 534, 695).
 
-**Install: see [docs/install.md](docs/install.md)** (Miniforge or pipx, with a copy-paste first RV and troubleshooting).
-Coming from the script-based release? See [docs/migration.md](docs/migration.md).
+## Install
+
+**Standalone app (no Python needed).** Download the GUI for your system from the
+[latest release](https://github.com/Will-Cooper/rvfitter/releases/latest), unzip it and run it:
+
+| System | Download |
+|---|---|
+| Windows (64-bit) | [rvfitter-gui-windows-x86_64.zip](https://github.com/Will-Cooper/rvfitter/releases/latest/download/rvfitter-gui-windows-x86_64.zip) |
+| macOS (Apple Silicon) | [rvfitter-gui-macos-arm64.zip](https://github.com/Will-Cooper/rvfitter/releases/latest/download/rvfitter-gui-macos-arm64.zip) |
+| Linux (x86-64) | [rvfitter-gui-linux-x86_64.tar.gz](https://github.com/Will-Cooper/rvfitter/releases/latest/download/rvfitter-gui-linux-x86_64.tar.gz) |
+
+**With [uv](https://docs.astral.sh/uv/)** (command line, GUI and Python API):
+
+```bash
+uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+```
+
+**With pip,** e.g. in a conda environment:
+
+```bash
+pip install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@main"
+```
+
+rvfitter is not yet on PyPI; after the release these become `uv tool install "rvfitter[all]"` and
+`pip install "rvfitter[all]"`. Step-by-step instructions for each system, pipx, and troubleshooting (Qt on Wayland or
+remote machines, proxies, Apple Silicon) are in [docs/install.md](docs/install.md); `rvfitter doctor` checks an install.
+
+**Try it:** [examples/](examples/README.md) has three ultracool dwarfs (optical and near-infrared) with ready-made
+configs that run in a few seconds. Coming from the script-based release? See [docs/migration.md](docs/migration.md).
 
 ## Quick start
 

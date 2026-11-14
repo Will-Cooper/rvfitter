@@ -103,14 +103,24 @@ def _cmd_measure(args) -> int:
             log.error('No spectra found in %s', args.path)
             return 1
         cfg = config.default_for(io.read_spectrum(first[0], medium=args.medium or 'auto'))
+    # every command-line choice goes into the config, so the saved results_config.toml reproduces this run
+    cfg.input.paths = [args.path]
+    cfg.output.path = str(out)
+    if args.formats:
+        cfg.output.formats = [f for f in args.formats.split(',') if f]
     if args.telluric_corrected:
         cfg.input.telluric_corrected = True
     if args.no_plots:
         cfg.output.plots = False
-    methods = [m for m in args.methods.split(',') if m] if args.methods else None
+    if args.methods:
+        cfg.methods.enabled = [m for m in args.methods.split(',') if m]
+    if args.medium:
+        cfg.input.medium = args.medium
+    if args.bary:
+        cfg.velocity_frame.correction = args.bary
+    cfg.validate()
     failures: list[tuple[str, str]] = []
-    res = pipeline.run(cfg, args.path, n_procs=args.n_procs, medium=args.medium, methods=methods, bary=args.bary,
-                       failures=failures)
+    res = pipeline.run(cfg, n_procs=args.n_procs, failures=failures)
     return _finish(res, failures, out, args.formats, cfg)
 
 

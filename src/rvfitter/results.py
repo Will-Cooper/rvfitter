@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .config import METHOD_NAMES, OUTPUT_FORMATS, dump
+from .config import METHOD_NAMES, OUTPUT_FORMATS, dump, resolve_locations
 from .types import ObjectResult
 
 __all__ = ['FLAGS', 'EXCLUDE_FLAGS', 'TEMPLATE_COLUMNS', 'flag_names', 'to_table', 'details_table',
@@ -297,7 +297,7 @@ def write(results: Sequence[ObjectResult], path: str | Path, formats: str | Sequ
     written.append(det)
     if config is not None:
         cfgpath = Path(f'{stem}_config.toml')
-        dump(config, cfgpath)
+        dump(resolve_locations(config, Path.cwd()), cfgpath)  # absolute, so it re-runs from anywhere
         written.append(cfgpath)
     for w in written:
         log.info('Wrote %s', w)

@@ -1,0 +1,26 @@
+# DENIS J174534.6-164053 (L1.5): GTC/OSIRIS R2500I, telluric-corrected PypeIt coadd (Cooper et al. 2024).
+# Run from this folder:  rvfitter run rvfitter.toml
+# Model-free line centring needs no templates. For the template methods, download a grid first
+# (rvfitter templates download --grid bt-settl-cifist --teff 1900 2300) and add "ccf", "template_fit" below.
+
+[input]
+paths = ["DENISJ174534.6-164053_tellcorr.fits"]
+telluric_corrected = true
+resolution = 2602.0
+
+[velocity_frame]
+correction = "skip"  # the coadd is already heliocentric (PypeIt)
+frame = "heliocentric"
+
+[templates]
+teff_prior = 2100.0
+
+[methods]
+enabled = ["linecentre"]
+
+[calibration]
+# the spec1d holds the sky spectrum, used to measure the wavelength zero point
+sky_source = "spec1d_0000809229-20150803-OSIRIS-OsirisLongSlitSpectroscopy-DENISJ174534.6-164053_OSIRIS_20150804T003233.951.fits"
+
+[output]
+path = "output/results.csv"  # results, details, config used, log and figures

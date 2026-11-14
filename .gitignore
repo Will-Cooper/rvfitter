@@ -130,3 +130,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 src/rvfitter/data/telluric_hitran.npz
+
+# outputs of the examples
+examples/*/output/

@@ -8,6 +8,7 @@ plus the top-level ``seed`` and ``schema_version``.
 and `Config.hash` is a SHA-256 of the canonical content, stored with every result.
 Unset optional values (``None``) are omitted from the TOML file, which has no null.
 """
+import copy
 import hashlib
 import json
 import logging
@@ -209,11 +210,14 @@ class Config:
         """
         SHA-256 (hex) of the canonical JSON dump (sorted keys) of the analysis.
 
-        ``input.paths`` and the whole ``output`` section are excluded: they say where data come from and where
-        results go, not how the analysis is done (the results record input-file checksums separately).
+        ``input.paths``, the other file locations (`LOCATION_FIELDS`) and the whole ``output`` section are excluded:
+        they say where data come from and where results go, not how the analysis is done (the results record
+        input-file checksums separately).
         """
         plain = self.to_dict(drop_none=False)
         plain['input'].pop('paths')
+        for section, name in LOCATION_FIELDS:
+            plain[section].pop(name)
         plain.pop('output')
         plain.pop('refits', None)  # the per-object configuration (patches applied) is what is hashed
         canonical = json.dumps(plain, sort_keys=True, separators=(',', ':'), allow_nan=False)
@@ -492,9 +496,38 @@ def loads(text: str) -> Config:
     return from_dict(data)
 
 
+# file locations besides input.paths and output.path: relative ones in a TOML file are relative to that file
+LOCATION_FIELDS = (('input', 'raw_header'), ('input', 'raw_header_dir'), ('templates', 'local_dir'),
+                   ('calibration', 'sky_source'), ('calibration', 'telluric_source'))
+
+
+def resolve_locations(cfg: Config, base: str | Path) -> Config:
+    """A copy of ``cfg`` with its relative file locations (``input.paths``, ``output.path``, `LOCATION_FIELDS`, also
+    inside ``[[refits]]`` patches, and ``grouping.override`` keys that contain a folder) made absolute against
+    ``base``; absolute ones, and override keys that are a file name, stem or object name, are kept."""
+    cfg, base = copy.deepcopy(cfg), Path(base).resolve()
+
+    def fix(p):
+        if isinstance(p, dict):
+            return {k: fix(v) for k, v in p.items()}
+        return p if p is None or Path(p).is_absolute() else str(base / p)
+    cfg.input.paths = [fix(p) for p in cfg.input.paths]
+    cfg.output.path = fix(cfg.output.path)
+    for section, name in LOCATION_FIELDS:
+        setattr(getattr(cfg, section), name, fix(getattr(getattr(cfg, section), name)))
+        for r in cfg.refits:
+            sub = r.get('patch', {}).get(section, {})
+            if name in sub:
+                sub[name] = fix(sub[name])
+    if cfg.grouping.override:
+        cfg.grouping.override = {fix(k) if Path(k).parent != Path('.') else k: v
+                                 for k, v in cfg.grouping.override.items()}
+    return cfg
+
+
 def load(path: str | Path) -> Config:
     """
-    Read and validate a TOML configuration file.
+    Read and validate a TOML configuration file; relative file locations in it are taken relative to its folder.
 
     Raises
     ------
@@ -511,7 +544,7 @@ def load(path: str | Path) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f'{path}: invalid TOML: {exc}') from exc
     try:
-        return from_dict(data)
+        return resolve_locations(from_dict(data), path.parent)
     except ConfigError as exc:
         raise ConfigError(f'{path}: {exc}') from exc
 
