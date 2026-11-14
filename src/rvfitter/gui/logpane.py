@@ -4,16 +4,8 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QColor, QTextCharFormat
+from PySide6.QtGui import QFont, QTextCharFormat
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
-
-COLOURS = {
-    logging.DEBUG: '#888888',
-    logging.INFO: '#222222',
-    logging.WARNING: '#b36b00',
-    logging.ERROR: '#cc0000',
-    logging.CRITICAL: '#990000',
-}
 
 
 class _Emitter(QObject):
@@ -67,9 +59,11 @@ class LogPane(QWidget):
             self._append(levelno, message)
 
     def _append(self, levelno: int, message: str) -> None:
-        fmt = QTextCharFormat()
-        colour = COLOURS[max((k for k in COLOURS if k <= levelno), default=logging.DEBUG)]
-        fmt.setForeground(QColor(colour))
+        fmt = QTextCharFormat()  # palette colours only: dim for DEBUG, bold for WARNING and above
+        if levelno < logging.INFO:
+            fmt.setForeground(self.palette().placeholderText())
+        elif levelno >= logging.WARNING:
+            fmt.setFontWeight(QFont.Weight.Bold)
         cursor = self.text.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         cursor.insertText(message + '\n', fmt)

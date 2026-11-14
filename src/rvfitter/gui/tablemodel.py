@@ -5,7 +5,8 @@ import math
 
 import pandas as pd
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication
 
 
 class PandasModel(QAbstractTableModel):
@@ -30,9 +31,9 @@ class PandasModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ToolTipRole and note:
             return note
         if role == Qt.ItemDataRole.BackgroundRole and note:
-            return QBrush(QColor('#fff3cd'))
+            return QApplication.palette().brush(QPalette.ColorRole.ToolTipBase)
         if role == Qt.ItemDataRole.ForegroundRole and note:
-            return QBrush(QColor('#000000'))
+            return QApplication.palette().brush(QPalette.ColorRole.ToolTipText)
         if role == Qt.ItemDataRole.DisplayRole:
             if index.column() == 0 and note:
                 return f'\u26a0 {value}'

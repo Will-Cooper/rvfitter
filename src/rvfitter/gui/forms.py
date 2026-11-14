@@ -14,11 +14,13 @@ import types
 import typing
 from typing import Any, Literal, Union, get_args, get_origin
 
+from PySide6.QtCore import QMargins, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
@@ -28,8 +30,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import METHOD_NAMES
-from .backend import FORMATS
+from ..config import METHOD_NAMES, OUTPUT_FORMATS
+from ..templates import KNOWN_GRIDS
 
 TIPS = {
     'medium': 'Wavelength medium of the input files. "auto" reads the header; otherwise air or vacuum is forced.',
@@ -60,11 +62,26 @@ TIPS = {
     'output_dir': 'Folder where the results tables are written.',
     'out_dir': 'Folder where the results tables are written.',
     'formats': 'Results file formats to write.',
+    'hdu': 'FITS extension to read (number or name). Leave empty to choose it automatically.',
+    'resolution': 'Resolving power R applied to every spectrum, overriding the header. Leave empty to use the header.',
+    'telluric_corrected': 'The spectra are already telluric-corrected: relax the telluric masking.',
+    'raw_header': 'Raw frame headers (a path or glob), needed for the slit position angle that the reduction drops.',
+    'raw_header_dir': 'Folder searched for the raw frames named in the reduced files (PypeIt FILENAME).',
+    'wavelength_correction': 'Wavelength zero-point correction: sky-if-needed (OH sky lines when safe), auto, sky, '
+                             'telluric or none.',
+    'plot_style': 'quick: bundled fonts, no LaTeX needed. paper: text typeset by LaTeX (needs latex and dvipng).',
     'overrides': 'Region overrides (JSON). Edit them graphically on the Regions tab.',
 }
 
-_PATH_NAMES = {'output_dir', 'out_dir', 'local_dir', 'template_dir', 'cache_dir', 'logfile'}
-_CHOICE_LISTS = {'methods': METHOD_NAMES, 'enabled': METHOD_NAMES, 'formats': FORMATS}
+_PATH_NAMES = {'output_dir', 'out_dir', 'local_dir', 'template_dir', 'cache_dir', 'logfile', 'raw_header_dir'}
+_CHOICE_LISTS = {'methods': METHOD_NAMES, 'enabled': METHOD_NAMES, 'formats': OUTPUT_FORMATS,
+                 'grid': tuple(KNOWN_GRIDS)}
+LABELS = {'seed': 'Random seed', 'hdu': 'FITS HDU', 'raw_header_dir': 'Raw header folder', 'n_procs': 'Processes',
+          'raw_header': 'Raw header file', 'medium_method': 'Air/vacuum formula', 'enabled': 'Methods',
+          'telluric_corrected': 'Telluric corrected'}
+HIDDEN = {'config.schema_version'}  # internal: kept from the loaded config, never shown
+OPEN_SECTIONS = {'input', 'methods', 'velocity_frame', 'calibration', 'output'}  # the common settings
+NUMBER_WIDTH, CHOICE_WIDTH, TEXT_WIDTH = 120, 180, 320  # maximum widths [px]; paths and lists stretch
 
 
 def _unwrap_optional(tp: Any) -> tuple[Any, bool]:
@@ -100,20 +117,31 @@ class BoolEditor(Editor):
 
 
 class IntEditor(Editor):
-    def __init__(self):
+    """Spin box; if optional, the minimum is the sentinel for ``None``, shown as "auto"."""
+
+    LIMIT = 2_000_000_000
+
+    def __init__(self, optional: bool = False):
+        self.optional = optional
         self.widget = QSpinBox()
-        self.widget.setRange(-2_000_000_000, 2_000_000_000)
+        self.widget.setRange(-self.LIMIT - optional, self.LIMIT)
+        self.widget.setMaximumWidth(NUMBER_WIDTH)
+        if optional:
+            self.widget.setSpecialValueText('auto')
 
     def get(self):
+        if self.optional and self.widget.value() == self.widget.minimum():
+            return None
         return int(self.widget.value())
 
     def set(self, value):
-        self.widget.setValue(int(value))
+        self.widget.setValue(self.widget.minimum() if value is None else int(value))
 
 
 class ChoiceEditor(Editor):
     def __init__(self, choices: list[Any], optional: bool = False):
         self.widget = QComboBox()
+        self.widget.setMaximumWidth(CHOICE_WIDTH)
         self.optional = optional
         if optional:
             self.widget.addItem('(none)', None)
@@ -139,6 +167,10 @@ class TextEditor(Editor):
     def __init__(self, kind: type | str = str, optional: bool = False, browse: bool = False):
         self.kind, self.optional = kind, optional
         self.edit = QLineEdit()
+        if kind in (int, float):
+            self.edit.setMaximumWidth(NUMBER_WIDTH)
+        elif not browse and kind is str:
+            self.edit.setMaximumWidth(TEXT_WIDTH)
         if browse:
             self.widget = QWidget()
             lay = QHBoxLayout(self.widget)
@@ -186,6 +218,7 @@ class SeqEditor(Editor):
     def __init__(self, container: type, elem: type, optional: bool = False):
         self.container, self.elem, self.optional = container, elem, optional
         self.widget = QLineEdit()
+        self.widget.setPlaceholderText('comma-separated')
 
     def get(self):
         text = self.widget.text().strip()
@@ -200,28 +233,39 @@ class SeqEditor(Editor):
 
 
 class CheckListEditor(Editor):
-    """A row of check boxes for a list of names (methods, formats)."""
+    """Check boxes (three per row) for a list of names (methods, formats, grids).
 
-    def __init__(self, choices: tuple[str, ...], container: type = list):
-        self.container = container
+    With ``scalar_ok`` a single ticked name is returned as a plain string (the config accepts either).
+    """
+
+    COLUMNS = 3
+
+    def __init__(self, choices: tuple[str, ...], container: type = list, scalar_ok: bool = False):
+        self.container, self.scalar_ok = container, scalar_ok
+        self._order: list[str] = []
         self.widget = QWidget()
         self.boxes: dict[str, QCheckBox] = {}
-        self._lay = QHBoxLayout(self.widget)
+        self._lay = QGridLayout(self.widget)
         self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.addStretch(1)
         for c in choices:
             self._add(c)
 
     def _add(self, name: str):
         box = QCheckBox(name)
+        n = len(self.boxes)
         self.boxes[name] = box
-        self._lay.insertWidget(self._lay.count() - 1, box)
+        self._lay.addWidget(box, n // self.COLUMNS, n % self.COLUMNS)
+
+    def _rank(self, name: str) -> int:
+        return self._order.index(name) if name in self._order else len(self._order)
 
     def get(self):
-        return self.container(n for n, b in self.boxes.items() if b.isChecked())
+        names = sorted((n for n, b in self.boxes.items() if b.isChecked()), key=self._rank)  # keep loaded order
+        return names[0] if self.scalar_ok and len(names) == 1 else self.container(names)
 
     def set(self, value):
-        value = list(value or [])
+        value = [value] if isinstance(value, str) else list(value or [])
+        self._order = value
         for v in value:
             if v not in self.boxes:
                 self._add(v)
@@ -230,23 +274,39 @@ class CheckListEditor(Editor):
 
 
 class GroupEditor(Editor):
-    """A nested dataclass: a group box holding one editor per field."""
+    """A nested dataclass: a group box holding one editor per field.
+
+    A section (one level below the root) is collapsible: its title is a check box that shows or hides the fields.
+    """
 
     def __init__(self, cls: type, path: str, tooltips: dict[str, str]):
         self.cls, self.path = cls, path
-        self.widget = QGroupBox(path.rsplit('.', 1)[-1].replace('_', ' '))
-        self.layout = QFormLayout(self.widget)
+        title = LABELS.get(path.rsplit('.', 1)[-1], path.rsplit('.', 1)[-1].replace('_', ' ').capitalize())
+        self.widget = QGroupBox(title)
+        self.body = QWidget()
+        self.layout = QFormLayout(self.body)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)  # same on every OS
+        outer = QVBoxLayout(self.widget)
+        outer.addWidget(self.body)
+        self._margins = outer.contentsMargins()
+        if path.count('.') == 1:
+            self.widget.setCheckable(True)
+            self.widget.setChecked(path.rsplit('.', 1)[-1] in OPEN_SECTIONS)
+            self.widget.toggled.connect(self._expand)
+            self._expand(self.widget.isChecked())
         self.children: dict[str, Editor] = {}
         hints = typing.get_type_hints(cls)
         for f in dataclasses.fields(cls):
-            if not f.init:
+            if not f.init or f'{path}.{f.name}' in HIDDEN:
                 continue
             sub = f'{path}.{f.name}'
             ed = make_editor(hints.get(f.name, f.type), f, sub, tooltips)
             self.children[f.name] = ed
             tip = f.metadata.get('help') or tooltips.get(f.name) or f'Config option "{sub}".'
             ed.widget.setToolTip(tip)
-            label = f.name.replace('_', ' ')
+            label = LABELS.get(f.name, f.name.replace('_', ' ').capitalize())
             if isinstance(ed, GroupEditor):
                 self.layout.addRow(ed.widget)
             else:
@@ -254,6 +314,10 @@ class GroupEditor(Editor):
                 lab = self.layout.labelForField(ed.widget)
                 if lab is not None:
                     lab.setToolTip(tip)
+
+    def _expand(self, on: bool) -> None:
+        self.body.setVisible(on)
+        self.widget.layout().setContentsMargins(self._margins if on else QMargins(0, 0, 0, 0))
 
     def get(self, base: Any = None) -> Any:
         base = base if base is not None else self.cls()
@@ -283,9 +347,11 @@ def make_editor(tp: Any, f: dataclasses.Field, path: str, tooltips: dict[str, st
         return ChoiceEditor(list(tp), optional)
     if tp is bool:
         return BoolEditor()
-    if tp is int and not optional:
-        return IntEditor()
-    if tp in (int, float):
+    if name == 'grid':
+        return CheckListEditor(_CHOICE_LISTS['grid'], list, scalar_ok=True)
+    if tp is int:
+        return IntEditor(optional)
+    if tp is float:
         return TextEditor(tp, optional=True)
     if tp is str:
         return TextEditor(str, optional=optional, browse=name in _PATH_NAMES)
@@ -296,7 +362,7 @@ def make_editor(tp: Any, f: dataclasses.Field, path: str, tooltips: dict[str, st
         if name in _CHOICE_LISTS and elem is str:
             return CheckListEditor(_CHOICE_LISTS[name], container)
         return SeqEditor(container, elem, optional)
-    return TextEditor('json', optional=optional)
+    return TextEditor('json', optional=optional or type(None) in get_args(tp))  # e.g. hdu: int | str | None
 
 
 class ConfigForm(QWidget):
