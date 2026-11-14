@@ -15,6 +15,8 @@ LEGACY_UTILS = Path(__file__).resolve().parents[1] / 'legacy' / 'utils.py'
 
 def _legacy_functions():
     """Extract the legacy combination functions from legacy/utils.py without importing its heavy dependencies"""
+    if not LEGACY_UTILS.exists():
+        pytest.skip('legacy/ is not shipped: these equivalence tests run from a source checkout only')
     tree = ast.parse(LEGACY_UTILS.read_text())
     wanted = {'combine_rvs', '_half_cauchy_logpdf', '_trapezoid_weights', 'mixture_pdf', 'hierarchical_combine'}
     body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
