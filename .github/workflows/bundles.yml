@@ -43,13 +43,24 @@ jobs:
         run: >
           pyinstaller --noconfirm --windowed --name rvfitter-gui
           --collect-data rvfitter --collect-data astropy --collect-data astropy_iers_data
-          --collect-submodules rvfitter --copy-metadata rvfitter packaging/launch_gui.py
-      - name: Smoke test (Linux)
+          --collect-submodules rvfitter --copy-metadata rvfitter
+          --collect-all asdf --collect-all asdf_astropy --collect-all asdf_standard
+          --collect-all asdf_coordinates_schemas --collect-all asdf_transform_schemas --collect-all asdf_wcs_schemas
+          --collect-all gwcs --collect-all specutils
+          packaging/launch_gui.py
+      - name: Qt libraries (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libdbus-1-3 libfontconfig1
-          QT_QPA_PLATFORM=offscreen timeout 30 dist/rvfitter-gui/rvfitter-gui || [ $? -eq 124 ]
+      - name: Smoke test (the app must still be running after 30 s)
+        run: |
+          case "${{ runner.os }}" in
+            Linux) exe=dist/rvfitter-gui/rvfitter-gui ;;
+            macOS) exe=dist/rvfitter-gui.app/Contents/MacOS/rvfitter-gui ;;
+            Windows) exe=dist/rvfitter-gui/rvfitter-gui.exe ;;
+          esac
+          python packaging/smoke.py "$exe" 30
       - name: Archive
         run: |
           case "${{ runner.os }}" in
