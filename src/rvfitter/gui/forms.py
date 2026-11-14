@@ -118,14 +118,15 @@ class BoolEditor(Editor):
 
 
 class IntEditor(Editor):
-    """Spin box; if optional, the minimum is the sentinel for ``None``, shown as "auto"."""
+    """Spin box; if optional (only counts such as ``n_procs``, valid from 1), 0 is the sentinel for ``None``, shown
+    as "auto", so one arrow click moves between automatic and an explicit value."""
 
     LIMIT = 2_000_000_000
 
     def __init__(self, optional: bool = False):
         self.optional = optional
         self.widget = QSpinBox()
-        self.widget.setRange(-self.LIMIT - optional, self.LIMIT)
+        self.widget.setRange(0 if optional else -self.LIMIT, self.LIMIT)
         self.widget.setMaximumWidth(NUMBER_WIDTH)
         if optional:
             self.widget.setSpecialValueText('auto')

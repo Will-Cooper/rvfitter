@@ -52,7 +52,11 @@ def configure_platform() -> None:
 
 
 def xcb_cursor_missing(env: Mapping[str, str], plugins: list[str], system: str = sys.platform) -> bool:
-    """True if Qt would use the xcb plugin but ``libxcb-cursor`` cannot be found (Qt 6 then aborts at start-up)."""
-    wanted = env.get('QT_QPA_PLATFORM', '')
+    """True if Qt would use the xcb plugin but ``libxcb-cursor`` cannot be found (Qt 6 then aborts at start-up).
+
+    The platform is the effective one: the user's ``QT_QPA_PLATFORM``, else what :func:`choose_platform` picks
+    (so a Wayland session with the Wayland plugin does not need the XCB-only library).
+    """
+    wanted = env.get('QT_QPA_PLATFORM') or choose_platform(env, plugins, system) or ''
     return (system.startswith('linux') and 'xcb' in plugins and wanted in ('', 'xcb')
             and ctypes.util.find_library('xcb-cursor') is None)

@@ -94,6 +94,18 @@ def test_save_and_load_config(win, tmp_path):
     assert win.current_config() == cfg
 
 
+def test_optional_count_auto_sentinel_is_next_to_valid_values(win):
+    """n_procs: 'auto' (None) sits just below 1, so one arrow click switches between automatic and explicit"""
+    from rvfitter.gui.forms import IntEditor
+    ed = IntEditor(optional=True)
+    ed.set(None)
+    assert ed.get() is None and ed.widget.text() == 'auto'
+    ed.widget.stepUp()
+    assert ed.get() == 1
+    ed.widget.stepDown()
+    assert ed.get() is None
+
+
 def test_run_fills_table(qtbot, win, backend, spectra_dir):
     _load(qtbot, win, spectra_dir)
     win.form.set_value('parallel.n_procs', 2)
