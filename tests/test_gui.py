@@ -272,3 +272,32 @@ def test_diagnostic_figures_render(qtbot, win):
     tabs.currentWidget().layout().itemAt(1).widget().draw()
     win.diagnostics.clear()
     assert tabs.count() == 0
+
+
+def test_choice_fields_are_combo_boxes_from_config(qtbot):
+    from PySide6.QtWidgets import QCheckBox, QComboBox
+
+    from rvfitter import config
+    from rvfitter.gui.forms import ConfigForm
+    form = ConfigForm(config.Config())
+    for path, choices in {
+        'input.medium': config.INPUT_MEDIA, 'input.medium_method': tuple(config.AIR_METHODS),
+        'velocity_frame.correction': config.VELOCITY_CORRECTIONS, 'velocity_frame.frame': config.VELOCITY_FRAMES,
+        'calibration.wavelength_correction': config.WAVELENGTH_CORRECTIONS,
+        'regions.template_windows': config.TEMPLATE_WINDOWS, 'output.plot_style': config.PLOT_STYLES,
+        'output.medium': config.MEDIA,
+    }.items():
+        widget = form.editor(path).widget
+        assert isinstance(widget, QComboBox), path
+        assert [widget.itemText(i) for i in range(widget.count())] == list(choices)
+    assert set(form.editor('output.formats').boxes) == set(config.OUTPUT_FORMATS)
+    assert set(form.editor('methods.enabled').boxes) == set(config.METHOD_NAMES)
+    assert isinstance(form.editor('input.telluric_corrected').widget, QCheckBox)
+    assert form.editor('schema_version') is None
+    assert form.get_config() == config.Config()
+
+
+def test_window_state_saved(win):
+    win.main_split.setSizes([500, 150])
+    win.close()
+    assert win.settings.value('main_split') is not None
