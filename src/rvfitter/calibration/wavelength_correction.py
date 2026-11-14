@@ -49,6 +49,7 @@ ZP_FLAGS: dict[str, int] = {
     'dar_unknown': 8192,  # no zenith distance or plate scale: the DAR across the slit is not modelled
     'sky_window_fallback': 16384,  # a region's own sky window failed: the sky curve is used there instead
     'seeing_assumed': 32768,  # no trace FWHM: the slit prior uses calibration.seeing_fwhm
+    'wave_rms_assumed': 131072,  # no arc RMS in the file: calibration.wave_rms_kms or the instrument-typical value
     'total_err_undefined': 65536,  # a term of rv_total_err is NaN (unknown), so the total is NaN (results.to_table)
 }
 
@@ -67,9 +68,34 @@ def zp_flag_names(flags: int) -> list[str]:
 
 
 def arc_kms(spec: Spectrum) -> float:
-    """The arc-solution RMS (``meta['wave_rms']``, Å) as a velocity [km/s] at the median wavelength; NaN if unknown"""
+    """
+    The arc-solution RMS as a velocity [km/s]: ``meta['wave_rms']`` (Å, at the median wavelength), else the assumed
+    ``meta['wave_rms_kms']`` (`_assume_arc`); NaN if unknown
+    """
     r = spec.meta.get('wave_rms')
-    return float(C_KMS * r / np.median(spec.wave)) if r is not None and np.isfinite(r) else float('nan')
+    if r is not None and np.isfinite(r):
+        return float(C_KMS * r / np.median(spec.wave))
+    return float(spec.meta.get('wave_rms_kms') or float('nan'))
+
+def _assume_arc(spec: Spectrum, cfg: Any, name: str, info: dict) -> Spectrum:
+    """
+    A file with no arc RMS gets ``calibration.wave_rms_kms``, else the instrument-typical value of
+    ``data/instruments.csv`` (WARNING naming value and source, zp flag wave_rms_assumed); neither: unchanged (NaN)
+    """
+    r = spec.meta.get('wave_rms')
+    if r is not None and np.isfinite(r):
+        return spec
+    if cfg.calibration.wave_rms_kms is not None:
+        value, source = float(cfg.calibration.wave_rms_kms), 'calibration.wave_rms_kms'
+    else:
+        row = slit.instrument(spec.meta.get('pypeit_spec'), *spec.meta.get('instrument_names', ()))
+        if row is None or row.wave_rms_kms is None:
+            return spec
+        value, source = row.wave_rms_kms, f'data/instruments.csv[{row.key}]: {row.wave_rms_source}'
+    info['zp_flags'] |= ZP_FLAGS['wave_rms_assumed']
+    log.warning('%s: the file records no arc RMS: assuming a wavelength-calibration accuracy of %.2f km/s (%s)',
+                name, value, source)
+    return replace(spec, meta={**spec.meta, 'wave_rms_kms': value, 'wave_rms_source': source})
 
 
 def _region_list(sel: dict | Sequence | None) -> list:
@@ -334,6 +360,7 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     info: dict[str, Any] = {'mode': mode, 'applied': 'none', 'zp_flags': 0, 'sky_tests': {},
                             'star_sky_applied': False, 'star_sky': {}, 'slit': None, **dict.fromkeys(ZP_KEYS, nan)}
     regions = _region_list(regions)
+    spec = _assume_arc(spec, cfg, name, info)
     # sky: the shape of the wavelength solution
     zp = None
     src = raw if raw.sky is not None else None
