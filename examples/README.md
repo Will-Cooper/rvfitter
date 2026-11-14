@@ -21,7 +21,7 @@ rvfitter run examples/near_infrared/rvfitter.toml
 
 1. File > Load config… and choose `rvfitter.toml` in one of the folders.
 2. Open the spectra in that folder (Open spectra > Folder…).
-3. Measure. The Results and Diagnostics tabs show the fits; the adopted RV is next to each object.
+3. Press Measure RVs. The adopted RV appears next to each object; the Results and Diagnostics tabs show the fits.
 
 ## Things to try
 - **Template methods:** download a grid once, e.g. `rvfitter templates download --grid bt-settl-cifist --teff 1900 2300`, then add `"ccf"` and `"template_fit"` to `[methods] enabled`. The optical example has the grid's coverage; the near-infrared ones need a near-infrared grid (Sonora Bobcat or SAND, from Zenodo).
