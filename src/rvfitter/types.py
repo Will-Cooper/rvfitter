@@ -1,5 +1,5 @@
 """
-Core data types shared by every rvfitter module (see docs/architecture.md).
+Core data types shared by every rvfitter module.
 
 Wavelengths are vacuum Ångström and velocities km/s throughout.
 """

@@ -345,7 +345,7 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     names_enabled = enabled_methods(cfg, methods)  # fail before reading anything
     failures = [] if failures is None else failures
     n_procs = cfg.parallel.n_procs if n_procs is None else n_procs
-    if n_procs is None:  # automatic: a pool only pays off for the MCMC (docs/performance.md)
+    if n_procs is None:  # automatic: a pool only pays off for the MCMC
         n_procs = max(1, (os.cpu_count() or 1) - 1) if 'forward_mcmc' in names_enabled else 1
     spectra = _read_all(cfg, cfg.input.paths if inputs is None else inputs, medium or cfg.input.medium, failures)
     groups = archives.group_by_object(spectra, cfg.grouping.override)

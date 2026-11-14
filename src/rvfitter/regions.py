@@ -107,7 +107,7 @@ class SelectOptions:
         ±``template_window_resel`` resolution elements around catalogue features with ``model_fidelity ==
         'good'`` (atomic lines, CO bandheads), merged where they overlap, when R <= ``template_windows_r_max``.
         Synthetic grids reproduce molecular bands (TiO, VO, CrH, FeH, H2O) poorly in late-M/L dwarfs, which
-        shifts template RVs band by band (deep-research-report.md, "Synthetic versus empirical templates").
+        shifts template RVs band by band.
         'full' uses every non-telluric span. Above ``template_windows_r_max`` the full spans are always used
         (at high R the forward model handles mismatch with many resolved lines)
     template_window_resel, template_windows_r_max

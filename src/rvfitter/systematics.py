@@ -1,6 +1,6 @@
 """
-Systematic error terms, kept separate from the statistical errors (deep-research-report.md: statistical,
-template-spread and wavelength zero-point terms are reported separately, plus their quadrature total).
+Systematic error terms, kept separate from the statistical errors: the statistical,
+template-spread and wavelength zero-point terms are reported separately, plus their quadrature total.
 
 - `template_spread`: the RV spread over plausible template choices: every grid candidate within the prior,
   each enabled grid, and the other template-window mode (features vs full spans), measured with a template
