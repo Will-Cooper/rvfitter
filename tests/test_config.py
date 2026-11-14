@@ -41,8 +41,9 @@ def test_round_trip(tmp_path):
     cfg = _full()
     config.dump(cfg, tmp_path / 'c.toml')
     back = config.load(tmp_path / 'c.toml')
-    assert back == cfg
-    assert back.hash() == cfg.hash()
+    assert config.loads(config.dumps(cfg)) == cfg  # the text round trip is exact
+    assert back.input.paths == [str(tmp_path / p) for p in cfg.input.paths]  # file locations: relative to the TOML
+    assert back.hash() == cfg.hash()  # ...and not part of the analysis hash
     assert isinstance(back.templates.teff_range, tuple)
     assert back.regions.overrides['ccf'][0]['continuum'] == [[7600., 7650.], [7720., 7760.]]
     assert back.grouping.override == {'a.fits': 'Star A', 'b': 'Star A'}
@@ -51,9 +52,24 @@ def test_round_trip(tmp_path):
 def test_default_round_trip_and_loads(tmp_path):
     cfg = Config()
     config.dump(cfg, tmp_path / 'd.toml')
-    assert config.load(tmp_path / 'd.toml') == cfg
+    back = config.load(tmp_path / 'd.toml')
+    assert back.output.path == str(tmp_path / 'results.csv') and back.hash() == cfg.hash()
     assert config.loads(config.dumps(cfg)) == cfg
     assert config.loads('') == cfg  # everything has a default
+
+
+def test_relative_locations_follow_the_toml(tmp_path):
+    (tmp_path / 'run').mkdir()
+    (tmp_path / 'run' / 'c.toml').write_text('[input]\npaths = ["s.fits", "/abs/t.fits"]\n'
+                                            '[calibration]\nsky_source = "sky.fits"\n'
+                                            '[templates]\nlocal_dir = {bt = "grids/bt"}\n')
+    cfg = config.load(tmp_path / 'run' / 'c.toml')
+    base = tmp_path / 'run'
+    assert cfg.input.paths == [str(base / 's.fits'), '/abs/t.fits']
+    assert cfg.calibration.sky_source == str(base / 'sky.fits')
+    assert cfg.templates.local_dir == {'bt': str(base / 'grids/bt')}
+    moved = config.loads((tmp_path / 'run' / 'c.toml').read_text())
+    assert moved.hash() == cfg.hash()  # where the files are does not change the analysis
 
 
 def test_hash_properties():

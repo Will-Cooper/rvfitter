@@ -23,6 +23,7 @@ Each [GitHub release](https://github.com/Will-Cooper/rvfitter/releases/latest) h
 | Linux (x86-64) | `rvfitter-gui-linux-x86_64.tar.gz` | `tar -xzf rvfitter-gui-linux-x86_64.tar.gz && ./rvfitter-gui/rvfitter-gui` |
 
 The app is the full GUI: open spectra, measure, and save the results and the config.
+Each download also contains `examples/`: three example spectra with ready-made configs (see `examples/README.md`); load one with File > Load config….
 For scripting, batch runs or the `inject`/`forecast` tools, install the Python package (below).
 
 ## Option 1 (recommended): Miniforge + conda environment

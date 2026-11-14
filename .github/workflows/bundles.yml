@@ -7,7 +7,7 @@ on:
     types: [published]
   workflow_dispatch:
   pull_request:
-    paths: [packaging/**, .github/workflows/bundles.yml, pyproject.toml]
+    paths: [packaging/**, examples/**, .github/workflows/bundles.yml, pyproject.toml]
 
 permissions:
   contents: write
@@ -61,12 +61,18 @@ jobs:
             Windows) exe=dist/rvfitter-gui/rvfitter-gui.exe ;;
           esac
           python packaging/smoke.py "$exe" 30
-      - name: Archive
+      - name: Archive (the app plus the example spectra)
         run: |
+          mkdir -p package
           case "${{ runner.os }}" in
-            Linux) tar -C dist -czf "${{ matrix.asset }}" rvfitter-gui ;;
-            macOS) ditto -c -k --keepParent dist/rvfitter-gui.app "${{ matrix.asset }}" ;;
-            Windows) python -c "import shutil; shutil.make_archive('${{ matrix.asset }}'[:-4], 'zip', 'dist', 'rvfitter-gui')" ;;
+            macOS) cp -R dist/rvfitter-gui.app package/ ;;
+            *) cp -R dist/rvfitter-gui package/ ;;
+          esac
+          cp -R examples package/examples
+          case "${{ runner.os }}" in
+            Linux) tar -C package -czf "${{ matrix.asset }}" . ;;
+            macOS) ditto -c -k package "${{ matrix.asset }}" ;;
+            Windows) python -c "import shutil; shutil.make_archive('${{ matrix.asset }}'[:-4], 'zip', 'package')" ;;
           esac
       - name: Attach to release
         if: github.event_name == 'release'

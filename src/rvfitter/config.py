@@ -201,11 +201,14 @@ class Config:
         """
         SHA-256 (hex) of the canonical JSON dump (sorted keys) of the analysis.
 
-        ``input.paths`` and the whole ``output`` section are excluded: they say where data come from and where
-        results go, not how the analysis is done (the results record input-file checksums separately).
+        ``input.paths``, the other file locations (`LOCATION_FIELDS`) and the whole ``output`` section are excluded:
+        they say where data come from and where results go, not how the analysis is done (the results record
+        input-file checksums separately).
         """
         plain = self.to_dict(drop_none=False)
         plain['input'].pop('paths')
+        for section, name in LOCATION_FIELDS:
+            plain[section].pop(name)
         plain.pop('output')
         plain.pop('refits', None)  # the per-object configuration (patches applied) is what is hashed
         canonical = json.dumps(plain, sort_keys=True, separators=(',', ':'), allow_nan=False)
@@ -484,9 +487,26 @@ def loads(text: str) -> Config:
     return from_dict(data)
 
 
+# file locations besides input.paths and output.path: relative ones in a TOML file are relative to that file
+LOCATION_FIELDS = (('input', 'raw_header'), ('input', 'raw_header_dir'), ('templates', 'local_dir'),
+                   ('calibration', 'sky_source'), ('calibration', 'telluric_source'))
+
+
+def _resolve_locations(cfg: Config, base: Path) -> Config:
+    """Make the relative file locations of a config loaded from a file relative to that file's folder"""
+    def fix(p):
+        return p if p is None or Path(p).is_absolute() else str(base / p)
+    cfg.input.paths = [fix(p) for p in cfg.input.paths]
+    cfg.output.path = fix(cfg.output.path)
+    for section, name in LOCATION_FIELDS:
+        sub, value = getattr(cfg, section), getattr(getattr(cfg, section), name)
+        setattr(sub, name, {k: fix(v) for k, v in value.items()} if isinstance(value, dict) else fix(value))
+    return cfg
+
+
 def load(path: str | Path) -> Config:
     """
-    Read and validate a TOML configuration file.
+    Read and validate a TOML configuration file; relative file locations in it are taken relative to its folder.
 
     Raises
     ------
@@ -503,7 +523,7 @@ def load(path: str | Path) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f'{path}: invalid TOML: {exc}') from exc
     try:
-        return from_dict(data)
+        return _resolve_locations(from_dict(data), path.resolve().parent)
     except ConfigError as exc:
         raise ConfigError(f'{path}: {exc}') from exc
 

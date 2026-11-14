@@ -6,6 +6,7 @@ Cite the code via the Zenodo DOI below and Cooper et al. (2024, MNRAS 534, 695).
 
 **Install: see [docs/install.md](docs/install.md)** (Miniforge or pipx, with a copy-paste first RV and troubleshooting).
 Coming from the script-based release? See [docs/migration.md](docs/migration.md).
+To try it on real spectra in a few seconds, see [examples/](examples/README.md): three ultracool dwarfs (optical and near-infrared) with ready-made configs.
 
 ## Quick start
 
