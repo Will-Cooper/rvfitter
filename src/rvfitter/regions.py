@@ -85,7 +85,7 @@ class SelectOptions:
         The spectrum has already been telluric-corrected (``input.telluric_corrected``): line regions use
         ``telluric`` x 0.25 for the O2 bands only. H2O (and every other) band stays masked as usual, for lines
         and for ccf/fit spans alike, because residuals of a telluric correction are not random noise: on
-        J1745−1640 the unmasked H2O region pulled the template RVs to ≈ −45 km/s (docs/dev_notes_methods.md)
+        J1745−1640 the unmasked H2O region pulled the template RVs to ≈ −45 km/s (docs/methods.md)
     min_span_resel, max_span_resel
         Minimum and maximum length of a span for ccf/template_fit/forward, in resolution elements
     snr_window_fwhm

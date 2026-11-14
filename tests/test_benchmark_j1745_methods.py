@@ -6,7 +6,7 @@ step is skipped. Regions come from `regions.select` with `telluric_corrected=Tru
 windows, and R from `estimate_resolution` (the file has none).
 Methods are compared with the benchmark 26.2 ± 2.3 km/s through z = |RV − 26.2| / √(2.3² + σ²). With the
 feature windows both methods give 37–44 km/s (z ≈ 2–3.6), driven by Cs I 8523 (≈50 km/s in every method,
-template and R, as in the Cooper et al. 2024 line centring); this is investigated in docs/dev_notes_methods.md
+template and R, as in the Cooper et al. 2024 line centring); see docs/methods.md
 and is not tuned away. The tests therefore record the values and guard against regressions (z < 4), rather
 than require z ≤ 2.
 

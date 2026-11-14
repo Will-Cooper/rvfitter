@@ -22,7 +22,7 @@ and the telluric zero point and telluric_ref log how to build it and skip.
 The wavelengths are vacuum. At R = 20 000 the blue edges of the O2 A and B bands lie 1.0–1.3 Å redward of the
 Fraunhofer A and B lines (759.370 and 686.719 nm in air) converted to vacuum, and 2.8–3.4 Å redward of the air
 values (tested). An independent ESO SkyCalc/LBLRTM transmission (vacuum; airmass 3, R = 60 000) agrees within
-0.2 km/s in the O2 B, O2 A and H2O 8200 and 9300 bands (cross-correlation; docs/dev_notes_methods.md).
+0.2 km/s in the O2 B, O2 A and H2O 8200 and 9300 bands (cross-correlation; see docs/methods.md).
 """
 import functools
 import json
