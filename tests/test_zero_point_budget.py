@@ -70,7 +70,7 @@ def test_slit_prior_formula_and_missing_inputs():
     sig = slit.centroid_rms(1.23, 3.06 * 0.254)
     assert inp.sigma_arcsec == pytest.approx(sig) and 0. < sig < (1.23 - 3.06 * 0.254) / np.sqrt(12.)
     assert slit.prior_kms(inp, 8500.) == pytest.approx(C * sig / 0.254 * 1.39 / 8500.)
-    assert slit.instrument_pixscale('gtc_osiris_plus', 'OSIRIS')[0] == 0.125
+    assert slit.instrument('gtc_osiris_plus', 'OSIRIS').pixscale_spat == 0.125
     # the seeing overfills the slit: the clipping damps the shift, so the prior is small but finite
     wide = slit.inputs([Spectrum(wave, wave, wave, None, {**meta, 'trace_fwhm_pix': 6.}, 'x')])
     assert 0. < slit.prior_kms(wide, 8500.) < 0.2 * slit.prior_kms(inp, 8500.)

@@ -35,14 +35,14 @@ import functools
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.special import ndtr
 
 from ..constants import C_KMS
 
-__all__ = ['SlitInputs', 'ACQUISITION_ARCSEC', 'centroid_rms', 'centroid_gain', 'instrument_pixscale', 'inputs',
+__all__ = ['SlitInputs', 'ACQUISITION_ARCSEC', 'centroid_rms', 'centroid_gain', 'Instrument', 'instrument', 'inputs',
            'prior_kms']
 
 log = logging.getLogger(__name__)
@@ -50,24 +50,41 @@ log = logging.getLogger(__name__)
 ACQUISITION_ARCSEC = 0.1  # the smallest half-range of the star's position across the slit (target acquisition)
 
 
+class Instrument(NamedTuple):
+    """One row of ``data/instruments.csv``; None = not sourced"""
+    key: str
+    pixscale_spat: float | None  # [arcsec per unbinned pixel] along the slit
+    pixscale_disp: float | None  # along the dispersion; the spatial scale when the CSV leaves it empty
+    default_binning: int | None
+    wave_rms_kms: float | None
+    pixscale_source: str
+    wave_rms_source: str
+
+
 @functools.lru_cache(maxsize=1)
-def _table() -> dict[str, tuple[float, str]]:
+def _table() -> dict[str, Instrument]:
     import csv
     from importlib import resources
+
+    def num(text: str, kind: type = float):
+        return kind(text) if text.strip() else None
     with resources.files('rvfitter').joinpath('data', 'instruments.csv').open() as fh:
         rows = csv.DictReader(line for line in fh if not line.startswith('#'))
-        return {r['key'].strip().lower(): (float(r['pixscale_unbinned_arcsec']), r['source'].strip()) for r in rows}
+        out = {}
+        for r in rows:
+            spat = num(r['pixscale_spat_arcsec'])
+            out[r['key'].strip().lower()] = Instrument(
+                r['key'].strip(), spat, num(r['pixscale_disp_arcsec']) or spat, num(r['default_binning'], int),
+                num(r['wave_rms_kms']), r['pixscale_source'].strip(), r['wave_rms_source'].strip())
+        return out
 
-
-def instrument_pixscale(pypeit_spec: str | None, instrument: str | None) -> tuple[float | None, str]:
-    """The unbinned pixel scale [arcsec/pix] of an instrument from ``data/instruments.csv`` (PYP_SPEC, then INSTRUME)"""
+def instrument(pypeit_spec: str | None, *names: str | None) -> Instrument | None:
+    """The ``data/instruments.csv`` row for PYP_SPEC, else the first of the INSTRUME/INSTR `names` that has one"""
     table = _table()
-    for key in (pypeit_spec, instrument):
+    for key in (pypeit_spec, *names):
         if key and str(key).strip().lower() in table:
-            scale, source = table[str(key).strip().lower()]
-            return scale, f'data/instruments.csv[{str(key).strip()}]: {source}'
-    return None, ''
-
+            return table[str(key).strip().lower()]
+    return None
 
 @dataclass
 class SlitInputs:
@@ -118,14 +135,17 @@ def _scales(meta: dict) -> tuple[float | None, float | None, str]:
     hdr = meta.get('pixscale_arcsec')
     if hdr is not None and np.isfinite(hdr) and hdr > 0:
         return float(hdr), float(hdr), 'header PIXSCALE/PLATESCL/SECPIX (binned)'
-    unb, source = instrument_pixscale(meta.get('pypeit_spec'), meta.get('instrument'))
-    if unb is None:
+    row = instrument(meta.get('pypeit_spec'), *(meta.get('instrument_names') or (meta.get('instrument'),)))
+    if row is None or row.pixscale_spat is None:
         return None, None, ''
+    source = f'data/instruments.csv[{row.key}]: {row.pixscale_source}'
     bspat, bspec = meta.get('binning_spat'), meta.get('binning_spec')
     if bspat is None or bspec is None:
+        bspat = bspec = row.default_binning
+    if bspat is None or bspec is None:
         return None, None, f'{source}; binning unknown'
-    return unb * bspat, unb * bspec, f'{source} × BINNING {bspec},{bspat} (spectral,spatial)'
-
+    return (row.pixscale_spat * bspat, row.pixscale_disp * bspec,
+            f'{source} × BINNING {bspec},{bspat} (spectral,spatial)')
 
 def inputs(spectra: Sequence[Any], headers: Sequence[dict] = ()) -> SlitInputs:
     """
