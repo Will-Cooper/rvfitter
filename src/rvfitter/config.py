@@ -502,17 +502,26 @@ LOCATION_FIELDS = (('input', 'raw_header'), ('input', 'raw_header_dir'), ('templ
 
 
 def resolve_locations(cfg: Config, base: str | Path) -> Config:
-    """A copy of ``cfg`` with its relative file locations (``input.paths``, ``output.path``, `LOCATION_FIELDS`) made
-    absolute against ``base``; absolute ones are kept."""
+    """A copy of ``cfg`` with its relative file locations (``input.paths``, ``output.path``, `LOCATION_FIELDS`, also
+    inside ``[[refits]]`` patches, and ``grouping.override`` keys that contain a folder) made absolute against
+    ``base``; absolute ones, and override keys that are a file name, stem or object name, are kept."""
     cfg, base = copy.deepcopy(cfg), Path(base).resolve()
 
     def fix(p):
+        if isinstance(p, dict):
+            return {k: fix(v) for k, v in p.items()}
         return p if p is None or Path(p).is_absolute() else str(base / p)
     cfg.input.paths = [fix(p) for p in cfg.input.paths]
     cfg.output.path = fix(cfg.output.path)
     for section, name in LOCATION_FIELDS:
-        sub, value = getattr(cfg, section), getattr(getattr(cfg, section), name)
-        setattr(sub, name, {k: fix(v) for k, v in value.items()} if isinstance(value, dict) else fix(value))
+        setattr(getattr(cfg, section), name, fix(getattr(getattr(cfg, section), name)))
+        for r in cfg.refits:
+            sub = r.get('patch', {}).get(section, {})
+            if name in sub:
+                sub[name] = fix(sub[name])
+    if cfg.grouping.override:
+        cfg.grouping.override = {fix(k) if Path(k).parent != Path('.') else k: v
+                                 for k, v in cfg.grouping.override.items()}
     return cfg
 
 

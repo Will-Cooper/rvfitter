@@ -72,6 +72,15 @@ def test_relative_locations_follow_the_toml(tmp_path):
     assert moved.hash() == cfg.hash()  # where the files are does not change the analysis
 
 
+def test_relative_locations_in_refits_and_grouping(tmp_path):
+    (tmp_path / 'c.toml').write_text('[input]\npaths = ["night1/a.fits"]\n'
+                                     '[grouping.override]\n"night1/a.fits" = "X"\n"b.fits" = "Y"\n'
+                                     '[[refits]]\nobject = "X"\npatch = {calibration = {sky_source = "s.fits"}}\n')
+    cfg = config.load(tmp_path / 'c.toml')
+    assert cfg.grouping.override == {str(tmp_path / 'night1/a.fits'): 'X', 'b.fits': 'Y'}
+    assert cfg.refits[0]['patch']['calibration']['sky_source'] == str(tmp_path / 's.fits')
+
+
 def test_hash_properties():
     a, b = Config(), Config()
     assert len(a.hash()) == 64 and a.hash() == b.hash()
