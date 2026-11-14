@@ -170,10 +170,15 @@ class LazyBackend:
         return out
 
     def download_templates(self, cfg: Any, grids: Sequence[str]) -> None:
-        """Download ``grids`` into the cache over ``templates.teff_range`` (default: ``templates.download``'s)"""
+        """Download ``grids`` into the cache over the configured parameter ranges (unset: ``templates.download``'s)"""
         from rvfitter import templates
-        teff = {} if cfg.templates.teff_range is None else {'teff_range': tuple(cfg.templates.teff_range)}
+        t = cfg.templates
+        ranges: dict[str, Any] = {k: tuple(v) for k, v in (('teff_range', t.teff_range), ('logg_range', t.logg_range),
+                                                           ('met_range', t.met_range), ('alpha_range', t.alpha_range))
+                                  if v is not None}
+        if t.ranges:
+            ranges['ranges'] = {k: tuple(v) for k, v in t.ranges.items()}
         for grid in grids:
-            log.info('Downloading template grid %s%s.', grid, f" (Teff {teff['teff_range']} K)" if teff else '')
-            templates.download(grid, **teff)
+            log.info('Downloading template grid %s (%s).', grid, ranges or 'default ranges')
+            templates.download(grid, **ranges)
             log.info('Download of %s finished.', grid)

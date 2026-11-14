@@ -118,6 +118,26 @@ def test_setup_keeps_boxes_set_by_you_across_a_reload(qtbot, win, backend, spect
     assert win.setup.tags['input.resolution'].text() == win.setup.tags['methods.enabled'].text() == 'set by you'
 
 
+def test_setup_autofill_keeps_method_options_from_settings(qtbot, win, backend, spectra_dir):
+    cfg = win.current_config()
+    cfg.methods.options = {'template_fit': {'fit_vsini': True}}
+    win.set_config(cfg)  # an opened settings file, or the Advanced dialog
+    _load(qtbot, win, spectra_dir)
+    assert win.current_config().methods.options == {'template_fit': {'fit_vsini': True}}
+
+
+def test_download_passes_every_configured_range(monkeypatch):
+    from rvfitter import config
+    from rvfitter import templates as T
+    from rvfitter.gui.backend import LazyBackend
+    calls = []
+    monkeypatch.setattr(T, 'download', lambda grid, **kw: calls.append((grid, kw)))
+    cfg = config.Config()
+    cfg.templates.teff_range, cfg.templates.logg_range, cfg.templates.ranges = (1500, 2500), (4., 5.), {'co': (0.5, 1)}
+    LazyBackend().download_templates(cfg, ['sand'])
+    assert calls == [('sand', {'teff_range': (1500, 2500), 'logg_range': (4., 5.), 'ranges': {'co': (0.5, 1)}})]
+
+
 def test_advanced_dialog_round_trip_keeps_the_config_hash(qtbot, tmp_path):
     from rvfitter import config
     be = FakeBackend(tmp_path)
@@ -267,6 +287,8 @@ def test_lazy_backend_template_status_and_methods(tmp_path, monkeypatch):
     for teff in (1200, 3000):
         np.savetxt(grid / f'lte{teff / 100:05.1f}-5.0.txt', np.c_[[7000., 8000.], [1., 1.]])
     T.write_metadata(grid, T.KNOWN_GRIDS['bt-settl-cifist'])
+    (grid / 'manifest.json').write_text('{}')  # written last by a finished download
+    (tmp_path / 'sphinx').mkdir()  # a failed download's leftovers: missing, so Measure RVs offers it again
     assert be.template_status(cfg) == {'bt-settl-cifist': (1200., 3000.), 'sphinx': None}
     cfg.methods.enabled = ['linecentre', 'ccf', 'lsd']
     cfg.methods.options = {'lsd': {'template': 'star.fits'}}

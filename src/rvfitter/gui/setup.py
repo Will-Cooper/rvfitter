@@ -75,6 +75,7 @@ class SetupPanel(QWidget):
         self.tags: dict[str, QLabel] = {}
         self.sources: dict[str, str] = {}
         self.details: dict[str, str] = {}  # extra tag text, e.g. the medium the header gives
+        self._auto_options = copy.deepcopy(cfg.methods.options)  # the method options auto-fill last set
         self.detected = QLabel(NO_DATA)
         self.detected.setWordWrap(True)
         form = QFormLayout()
@@ -182,6 +183,8 @@ class SetupPanel(QWidget):
             self._show_tag('input.medium')
         if self.sources['methods.enabled'] != 'user':
             self.editors['methods.enabled'].set(defaults.methods.enabled)
-            self.cfg.methods.options = copy.deepcopy(defaults.methods.options)
+            if self.cfg.methods.options == self._auto_options:  # options from settings or Advanced are kept
+                self.cfg.methods.options = copy.deepcopy(defaults.methods.options)
+                self._auto_options = copy.deepcopy(defaults.methods.options)
             self.sources['methods.enabled'] = 'default'
             self._show_tag('methods.enabled')

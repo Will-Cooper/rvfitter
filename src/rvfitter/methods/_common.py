@@ -329,13 +329,15 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
 
 
 def grid_directory(tcfg: Any, name: str) -> Path | None:
-    """The directory of configured grid `name`: its `local_dir`, else the download cache if present, else None"""
+    """The directory of configured grid `name`: its `local_dir`, else the download cache if a download finished there
+    (it has the manifest that `templates.download` writes last; a failed download's leftovers count as missing), else
+    None"""
     local = tcfg.local_dir
     directory = local.get(name) if isinstance(local, Mapping) else (local if name == grid_names(tcfg)[0] else None)
     if directory:
         return Path(directory)
     cached = T.cache_dir() / name
-    return cached if cached.is_dir() else None
+    return cached if (cached / 'manifest.json').is_file() else None
 
 
 def open_grid(tcfg: Any, name: str | None = None):
