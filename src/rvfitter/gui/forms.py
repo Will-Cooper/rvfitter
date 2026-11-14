@@ -2,7 +2,7 @@
 
 Widgets are chosen from the type hints (and, for a few well-known names, from the name), so a new config option
 appears in the GUI without any GUI change.
-A field may provide ``metadata={"help": "...", "choices": [...]}`` to control its tooltip and choices.
+A field's tooltip is its `TIPS` entry; ``metadata={"choices": [...]}`` sets its choices.
 """
 from __future__ import annotations
 
@@ -34,45 +34,117 @@ from PySide6.QtWidgets import (
 from ..config import METHOD_LABELS, METHOD_NAMES, OUTPUT_FORMATS
 from ..templates import KNOWN_GRIDS
 
+# tooltip of every setting the forms show, by dotted config path (a missing one is a KeyError when the form is built)
 TIPS = {
-    'medium': 'Wavelength medium of the input files. "auto" reads the header; otherwise air or vacuum is forced.',
-    'medium_formula': 'Air/vacuum conversion formula (ciddor, edlen or morton). Used only when the input is in air.',
-    'conversion': 'Air/vacuum conversion formula (ciddor, edlen or morton). Used only when the input is in air.',
-    'formula': 'Air/vacuum conversion formula (ciddor, edlen or morton). Used only when the input is in air.',
-    'correction': 'Barycentric correction: auto (use the header, else compute, else skip), apply (force) or skip.',
-    'mode': 'Barycentric correction: auto (use the header, else compute, else skip), apply (force) or skip.',
-    'frame': 'Velocity frame of the reported RVs: barycentric or heliocentric.',
-    'methods': 'Which RV techniques to run. Each is a separate, independent measurement.',
-    'enabled': 'Which RV techniques to run. Each is a separate, independent measurement.',
-    'linecentre': 'Fit a line profile (Gaussian, Lorentzian or Voigt) to each line core and measure its shift.',
-    'ccf': 'Cross-correlate with a template or mask.',
+    'seed': 'Random seed for the Monte Carlo errors and samplers. The same seed gives the same results, for any number '
+            'of processes. Default 0.',
+    'input.paths': 'Spectra (files, folders or globs) that "rvfitter run" reads from a settings file. Not used in the '
+                   'GUI: open or drop spectra instead.',
+    'input.medium': 'Medium of the wavelengths in the files. "auto" reads each header; air or vacuum forces it (a '
+                    'conflict with the header is logged).',
+    'input.medium_method': 'Air-to-vacuum formula (ciddor, edlen or morton); used only for spectra in air. Default '
+                           'ciddor.',
+    'input.hdu': 'FITS extension to read (number or name). Leave empty to choose it automatically.',
+    'input.resolution': 'Resolving power R applied to every spectrum, overriding the header. Leave empty to use each '
+                        'spectrum\'s own (its header, else estimated from the pixel spacing).',
+    'input.telluric_corrected': 'The spectra are already telluric-corrected: relax the telluric masking. The '
+                                'telluric zero point then needs an uncorrected file (Calibration > Telluric source).',
+    'input.raw_header': 'Raw frame headers (a path or glob), needed for the slit position angle that the reduction '
+                        'drops (differential refraction across the slit).',
+    'input.raw_header_dir': 'Folder searched for the raw frames named in the reduced files (PypeIt FILENAME).',
+    'grouping.override': 'Which object each spectrum belongs to, when the header or file names group them wrongly '
+                         '(JSON): file path, name or stem, or header object name, to object, e.g. '
+                         '{"spec_0012.fits": "J1745-1640"}. Empty = automatic.',
+    'velocity_frame.correction': 'Barycentric correction: auto (skip a spectrum already corrected, else compute it '
+                                 'from the header, else use an ESO BERV keyword, else warn and skip), apply (always '
+                                 'compute) or skip.',
+    'velocity_frame.frame': 'Velocity frame of the reported RVs: barycentric (default) or heliocentric.',
+    'velocity_frame.overrides': 'Values used instead of the header (JSON): ra, dec [deg], mjd (mid-exposure), site '
+                                '(an astropy site name) or site_lat and site_lon [deg], e.g. {"site": "lapalma"}.',
+    'templates.grid': 'Model-atmosphere grid(s). Several are searched together and their spread is a systematic. '
+                      'Templates are downloaded and cached on first use.',
+    'templates.local_dir': 'Folder with your own template grid (or JSON {grid: folder}). Leave empty to use the '
+                           'download cache.',
+    'templates.medium': 'Medium of the template wavelengths; leave at (none) to take it from the grid\'s metadata.',
+    'templates.teff_range': 'Teff range searched [K], e.g. 1500, 2500. Empty = the Teff prior ± 300 K, or the whole '
+                            'grid without a prior.',
+    'templates.logg_range': 'log g range searched [dex, cgs], e.g. 4.5, 5.5. Empty = the whole grid.',
+    'templates.met_range': 'Metallicity range searched [dex]. Empty = held at the grid point nearest the '
+                           'metallicity prior (or the grid default).',
+    'templates.alpha_range': 'Alpha-enhancement range searched [dex]. Empty = held at the grid point nearest the '
+                             'alpha prior (or the grid default).',
+    'templates.ranges': 'Ranges of any other grid axes (JSON), e.g. {"co": [0.5, 1]}. An axis without a range is held '
+                        'at its default.',
+    'templates.teff_prior': 'Expected Teff [K] (e.g. from the spectral type), used to choose the features and the '
+                            'templates, e.g. 1800 or 2400.',
+    'templates.logg_prior': 'Expected log g [dex], used when no grid point lies in the ranges and for the telluric '
+                            'fit\'s template. Empty = 5.0.',
+    'templates.met_prior': 'Expected metallicity [dex]; held there when no metallicity range is set. Empty = the '
+                           'grid default.',
+    'templates.alpha_prior': 'Expected alpha enhancement [dex]; held there when no alpha range is set. Empty = the '
+                             'grid default.',
+    'methods.enabled': 'Which RV techniques to run. Each is a separate measurement; they are combined into the '
+                       'adopted RV. The defaults follow the resolving power.',
+    'methods.options': 'Keyword options per method (JSON), e.g. {"template_fit": {"fit_vsini": true}, "linecentre": '
+                       '{"profile": "gaussian"}}. Empty = each method\'s defaults.',
+    'methods.binary': 'Also test for an unresolved binary: one template against two shifted copies (binary_dbic, '
+                      'binary_flag).',
+    'regions.overrides': 'Region overrides (JSON). Edit them graphically on the Regions tab.',
+    'regions.min_snr': 'Features whose local S/N is below this are dropped. Default 5; lower it for faint spectra, '
+                       'at the cost of noisier regions.',
+    'regions.telluric_strictness': 'Scales the airmass-dependent threshold for masking telluric bands; larger masks '
+                                   'more. Default 1.',
+    'regions.max_regions': 'Keep at most this many regions per method, ranked by their forecast RV information. '
+                           'Default 12.',
+    'regions.continuum_fwhm': 'Continuum windows extend this many resolution elements around a feature. Default 5.',
+    'regions.template_windows': 'Windows for CCF and template fit at R ≤ 5000: features (around well-modelled atomic '
+                                'and CO features; default, since model grids reproduce molecular bands poorly) or '
+                                'full (every non-telluric span). Above R 5000 the full spans are always used.',
+    'combine.tau_scale': 'Scale [km/s] of the half-Cauchy prior on the region-to-region and method-to-method scatter '
+                         'when combining. Empty = automatic (the median error).',
+    'combine.systematic_floor': 'Added in quadrature to the adopted error [km/s], e.g. a known instrument floor. '
+                                'Default 0.',
+    'calibration.wavelength_correction': 'Wavelength zero-point correction: sky-if-needed (default: the OH sky curve, '
+                                         'only when safe and significant), auto (also the star - sky constant), sky, '
+                                         'telluric or none (report only).',
+    'calibration.slit_prior': 'Slit-centring error when the star - sky constant is not applied: auto ((W - F)/√12 '
+                              'from the slit width and trace FWHM), a velocity [km/s], or none (unconstrained; the '
+                              'total error is then undefined).',
+    'calibration.seeing_fwhm': 'Seeing FWHM [arcsec] assumed for the auto slit prior when the file has no trace FWHM '
+                               '(flagged seeing_assumed). Default 0.8.',
+    'calibration.wave_rms_kms': 'Wavelength-calibration accuracy [km/s] assumed when the file records no arc RMS '
+                                '(flagged wave_rms_assumed). Empty = the instrument\'s typical value, if known.',
+    'calibration.zero_point_known': 'Fibre or IFU data, or an absolute calibration: no slit-centring term.',
+    'calibration.sky_source': 'File whose sky spectrum shares the input\'s wavelength solution (e.g. a PypeIt spec1d), '
+                              'for spectra without their own sky.',
+    'calibration.sky_segment_width': 'Maximum width [Å] of the sky segments; the zero point is interpolated between '
+                                     'them. Default 250.',
+    'calibration.telluric_source': 'Uncorrected file with the input\'s wavelength solution, for the star\'s own '
+                                   'zero point from its telluric lines; needed when the input is telluric-corrected.',
+    'calibration.telluric_segment_width': 'Maximum width [Å] of the telluric-band segments. Default 250.',
+    'calibration.telluric_template': 'Model the star with the template nearest the priors in the telluric fit '
+                                     '(default). Untick to fit the telluric lines without a stellar model.',
+    'calibration.wave_valid_range': 'Vacuum wavelength range [Å, observatory frame] where the wavelength solution is '
+                                    'constrained, e.g. by the arc lines; sky segments outside it are not used. Empty = '
+                                    'the arc-line range found next to a PypeIt file.',
+    'parallel.n_procs': 'Worker processes within each object; auto = serial, or all but one core when the forward '
+                        'model runs. Results do not depend on it.',
+    'output.path': 'File the results are written to after each run (each format gets its own extension). Empty = '
+                   'save only with Export.',
+    'output.formats': 'Results file formats to write.',
+    'output.plots': 'Write the diagnostic plots next to the results ("rvfitter run" only; the GUI shows them in the '
+                    'Diagnostics tab).',
+    'output.plot_style': 'Plots written by "rvfitter run". quick: bundled fonts, no LaTeX needed. paper: text '
+                         'typeset by LaTeX (needs latex and dvipng).',
+    'output.medium': 'Medium of the wavelengths in the reports and plots: vacuum (default) or air.',
+}
+METHOD_TIPS = {  # what each method does; the Setup tab adds why it is or is not recommended
     'template_fit': 'Chi-squared fit of a (broadened, shifted) model-atmosphere template.',
-    'telluric_ref': 'Use telluric lines as a wavelength reference (zero-point check).',
-    'forward_mcmc': 'Pixel-level forward model (grid template, vsini, LSF, continuum) sampled by MCMC; slow, opt-in.',
-    'lsd': 'Least-squares deconvolution: the mean line profile against a template line mask; RV and vsini; opt-in.',
-    'binary': 'Also test for an unresolved binary: one template against two shifted copies (binary_dbic, binary_flag).',
-    'grid': 'Template grid name (e.g. bt-settl-cifist). Templates are downloaded and cached on first use.',
-    'template_grid': 'Template grid name (e.g. bt-settl-cifist). Templates are downloaded and cached on first use.',
-    'local_dir': 'Folder with your own template spectra. Leave empty to use the downloaded cache.',
-    'template_dir': 'Folder with your own template spectra. Leave empty to use the downloaded cache.',
-    'teff_prior': 'Effective-temperature prior [K] used to select features and templates, e.g. 1800, 2400.',
-    'teff': 'Effective-temperature prior [K] used to select features and templates.',
-    'n_procs': 'Number of worker processes used within each object (1 = serial). Results do not depend on it.',
-    'seed': 'Random seed. The same seed always gives the same results, for any number of processes.',
-    'path': 'Where the results are written (a file name or folder; the format extensions are added).',
-    'output_dir': 'Folder where the results tables are written.',
-    'out_dir': 'Folder where the results tables are written.',
-    'formats': 'Results file formats to write.',
-    'hdu': 'FITS extension to read (number or name). Leave empty to choose it automatically.',
-    'resolution': 'Resolving power R applied to every spectrum, overriding the header. Leave empty to use each '
-                  'spectrum\'s own (its header, else estimated from the pixel spacing).',
-    'telluric_corrected': 'The spectra are already telluric-corrected: relax the telluric masking.',
-    'raw_header': 'Raw frame headers (a path or glob), needed for the slit position angle that the reduction drops.',
-    'raw_header_dir': 'Folder searched for the raw frames named in the reduced files (PypeIt FILENAME).',
-    'wavelength_correction': 'Wavelength zero-point correction: sky-if-needed (OH sky lines when safe), auto, sky, '
-                             'telluric or none.',
-    'plot_style': 'quick: bundled fonts, no LaTeX needed. paper: text typeset by LaTeX (needs latex and dvipng).',
-    'overrides': 'Region overrides (JSON). Edit them graphically on the Regions tab.',
+    'ccf': 'Cross-correlation with the model template, one RV per window.',
+    'telluric_ref': 'The star\'s velocity against the telluric lines of the same band.',
+    'linecentre': 'Fit a line profile (Gaussian, Lorentzian or Voigt) to each line core and measure its shift.',
+    'forward_mcmc': 'Pixel-level forward model (grid template, vsini, LSF, continuum) sampled by MCMC.',
+    'lsd': 'Least-squares deconvolution: the mean line profile against a template line mask; RV and vsini.',
 }
 
 _PATH_NAMES = {'output_dir', 'out_dir', 'local_dir', 'template_dir', 'cache_dir', 'logfile', 'raw_header_dir'}
@@ -81,7 +153,8 @@ _CHOICE_LISTS = {'methods': METHOD_NAMES, 'enabled': METHOD_NAMES, 'formats': OU
 LABELS = {'seed': 'Random seed', 'hdu': 'FITS HDU', 'raw_header_dir': 'Raw header folder', 'n_procs': 'Processes',
           'raw_header': 'Raw header file', 'medium_method': 'Air/vacuum formula', 'enabled': 'Methods',
           'telluric_corrected': 'Telluric corrected'}
-HIDDEN = {'config.schema_version'}  # internal: kept from the loaded config, never shown
+# kept from the loaded config, never shown: the file-format version and the refit button's per-object patches
+HIDDEN = {'config.schema_version', 'config.refits'}
 OPEN_SECTIONS = {'input', 'methods', 'velocity_frame', 'calibration', 'output'}  # the common settings
 NUMBER_WIDTH, CHOICE_WIDTH, TEXT_WIDTH = 120, 180, 320  # maximum widths [px]; paths and lists stretch
 
@@ -255,8 +328,8 @@ class CheckListEditor(Editor):
 
     def _add(self, name: str):
         box = QCheckBox(METHOD_LABELS.get(name, name))
-        if name in METHOD_LABELS:
-            box.setToolTip(f'{METHOD_LABELS[name]} (config name "{name}")')
+        if name in METHOD_TIPS:
+            box.setToolTip(f'{METHOD_TIPS[name]} (config name "{name}")')
         n = len(self.boxes)
         self.boxes[name] = box
         self._lay.addWidget(box, n // self.COLUMNS, n % self.COLUMNS)
@@ -324,7 +397,8 @@ class GroupEditor(Editor):
             sub = f'{path}.{f.name}'
             ed = make_editor(hints.get(f.name, f.type), f, sub, tooltips)
             self.children[f.name] = ed
-            tip = f.metadata.get('help') or tooltips.get(f.name) or f'Config option "{sub}".'
+            tip = ed.cls.__doc__.strip().splitlines()[0] if isinstance(ed, GroupEditor) else \
+                tooltips[sub.removeprefix('config.')]
             ed.widget.setToolTip(tip)
             label = LABELS.get(f.name, f.name.replace('_', ' ').capitalize())
             if isinstance(ed, GroupEditor):

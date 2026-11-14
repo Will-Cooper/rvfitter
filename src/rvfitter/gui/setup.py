@@ -82,7 +82,7 @@ class SetupPanel(QWidget):
         for path, label in FIELDS:
             tp, f = _field(type(cfg), path)
             ed = make_editor(tp, f, path, TIPS)
-            ed.widget.setToolTip(f.metadata.get('help') or TIPS.get(f.name, f'Config option "{path}".'))
+            ed.widget.setToolTip(TIPS[path])
             tag = QLabel()
             row = QHBoxLayout()
             row.addWidget(ed.widget)

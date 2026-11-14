@@ -64,23 +64,32 @@ def test_settings_round_trip(win):
     cfg.templates.local_dir = '/data/templates'
     cfg.templates.teff_prior = (1800.0, 2400.0)
     cfg.parallel.n_procs = 3
-    cfg.parallel.seed = 7
+    cfg.seed = 7
     cfg.output.formats = ['csv', 'html']
     cfg.regions.overrides = {'ccf': [{'name': 'K I 7701', 'remove': True}]}
     win.set_config(cfg)
     assert win.current_config() == cfg
 
 
-def test_every_setting_has_a_tooltip(win):
-    from rvfitter.gui.forms import GroupEditor
+def test_every_setting_has_a_tooltip(qtbot, win):
+    """Every field of the real Config that the forms show has its own TIPS entry (building the form fails without
+    one), and TIPS has no entry for a field that does not exist"""
+    from rvfitter import config
+    from rvfitter.gui.forms import TIPS, ConfigForm, GroupEditor
+    form = ConfigForm(config.Config())
+    qtbot.addWidget(form)
+    shown = {}
 
-    def walk(g):
+    def walk(g, prefix):
         for name, ed in g.children.items():
-            assert ed.widget.toolTip(), name
             if isinstance(ed, GroupEditor):
-                walk(ed)
-    walk(win.advanced_settings().form.root)
-    assert all(ed.widget.toolTip() for ed in win.setup.editors.values())
+                assert ed.widget.toolTip() == ed.cls.__doc__.strip().splitlines()[0]
+                walk(ed, f'{prefix}{name}.')
+            else:
+                shown[prefix + name] = ed.widget.toolTip()
+    walk(form.root, '')
+    assert shown == {k: TIPS[k] for k in shown} and set(shown) == set(TIPS)
+    assert all(ed.widget.toolTip() == TIPS[p] for p, ed in win.setup.editors.items())
 
 
 def test_setup_autofill_from_the_spectra(qtbot, win, backend, spectra_dir):
@@ -173,7 +182,7 @@ def test_progress_bar_steps_per_method(qtbot, win, backend, spectra_dir):
 def test_save_and_load_config(win, tmp_path):
     cfg = FakeConfig()
     cfg.methods.enabled = ['template_fit', 'telluric_ref']
-    cfg.parallel.seed = 99
+    cfg.seed = 99
     win.set_config(cfg)
     path = tmp_path / 'analysis.toml'
     assert win.save_config(path)

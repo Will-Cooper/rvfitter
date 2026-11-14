@@ -54,7 +54,6 @@ class RegionsCfg:
 @dataclass
 class ParallelCfg:
     n_procs: int | None = None  # as rvfitter.config: None = automatic
-    seed: int = 42
 
 
 @dataclass
@@ -65,6 +64,7 @@ class OutputCfg:
 
 @dataclass
 class FakeConfig:
+    seed: int = 42
     input: InputCfg = field(default_factory=InputCfg)
     velocity_frame: VelocityFrameCfg = field(default_factory=VelocityFrameCfg)
     calibration: CalibrationCfg = field(default_factory=CalibrationCfg)
@@ -77,6 +77,7 @@ class FakeConfig:
 
 def _from_dict(d: dict) -> FakeConfig:
     cfg = FakeConfig()
+    cfg.seed = d.pop('seed')
     for sect, vals in d.items():
         obj = getattr(cfg, sect)
         for k, v in vals.items():
