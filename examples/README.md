@@ -3,6 +3,7 @@
 Three ultracool dwarfs to try rvfitter on: one optical, two near-infrared. Each folder holds the spectra and a ready-made
 config, `rvfitter.toml`, set to model-free line centring, so no template download is needed and each run takes a few
 seconds. Results, the config actually used, a log and figures are written to `output/` in that folder.
+[docs/settings.md](../docs/settings.md) explains every setting in these configs and gives [recipes per data type](../docs/settings.md#which-settings-for-my-data).
 
 | Folder | Object | Instrument | Literature RV [km/s] | rvfitter (line centring) [km/s] |
 |---|---|---|---|---|
