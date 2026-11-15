@@ -42,7 +42,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(archives, 'group_by_object', lambda sp, override=None: {
         n: [s for s in sp if s.meta['object'] == n] for n in dict.fromkeys(s.meta['object'] for s in sp)},
         raising=False)
-    monkeypatch.setattr(archives, 'read_spectrum', lambda p, **kw: spectra.pop(0))
+    monkeypatch.setattr(archives, 'read_spectra', lambda p, **kw: [spectra.pop(0)])
     monkeypatch.setattr(barycentric, 'correction', lambda s, mode='auto', frame='barycentric', overrides=None:
                         (-5.0, 'computed'), raising=False)
     monkeypatch.setattr(barycentric, 'apply', lambda s, kms: s, raising=False)
@@ -113,7 +113,7 @@ def test_sequencing_and_failure(fakes, caplog):
 def test_determinism_across_procs(fakes, monkeypatch):
     t1 = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
     spectra = fresh_spectra()
-    monkeypatch.setattr(archives, 'read_spectrum', lambda p, **kw: spectra.pop(0))
+    monkeypatch.setattr(archives, 'read_spectra', lambda p, **kw: [spectra.pop(0)])
     t2 = results.to_table(pipeline.run(CFG, INPUTS, n_procs=2))
     assert t1.equals(t2)
     assert t1['rv_ccf'].nunique() == 3
@@ -262,9 +262,19 @@ def test_results_record_an_estimated_resolution(fakes, monkeypatch):
     spectra = fresh_spectra()
     for s in spectra:
         s.meta.update(resolution_source='estimated', resolution_implausible=s.meta['object'] == 'C')
-    monkeypatch.setattr(archives, 'read_spectrum', lambda p, **kw: spectra.pop(0))
+    monkeypatch.setattr(archives, 'read_spectra', lambda p, **kw: [spectra.pop(0)])
     table = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
     assert list(table['resolution_source']) == ['estimated;estimated', 'estimated', 'estimated']
     assert (table['rv_ccf_flag'] & results.FLAGS['resolution_estimated']).all()
     assert list(table['rv_ccf_flag'] & results.FLAGS['resolution_implausible'] > 0) == [False, False, True]
     assert (table['resolution'] == 5000.).all()
+
+
+def test_resolution_too_low_is_warned_and_flagged(fakes, monkeypatch, caplog):
+    from dataclasses import replace
+    spectra = [replace(s, resolution=100. if s.meta['object'] == 'C' else s.resolution) for s in fresh_spectra()]
+    monkeypatch.setattr(archives, 'read_spectra', lambda p, **kw: [spectra.pop(0)])
+    caplog.set_level(logging.WARNING, logger='rvfitter')
+    table = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
+    assert list(table['rv_ccf_flag'] & results.FLAGS['resolution_too_low'] > 0) == [False, False, True]
+    assert 'C: R 100 is below 500' in caplog.text

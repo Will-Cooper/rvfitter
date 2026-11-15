@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import METHOD_LABELS, method_advice, regime_for
+from ..config import METHOD_LABELS, method_advice, regime_for, resolution_too_low
+from ..io import CUBE_RADIUS_DEFAULT
 from . import theme
 from .forms import METHOD_TIPS, TIPS, Editor, make_editor
 
@@ -68,6 +69,7 @@ class SetupPanel(QWidget):
     """
 
     advancedRequested = Signal()
+    cubeRequested = Signal()
 
     def __init__(self, cfg: Any, template_status: Callable[[Any], dict], parent: QWidget | None = None):
         super().__init__(parent)
@@ -86,7 +88,14 @@ class SetupPanel(QWidget):
         self.recommended = QLabel()  # which methods suit the detected R and band
         self.method_note = QLabel()  # why a ticked method is not recommended
         self.method_note.setWordWrap(True)
+        self.recommended.setWordWrap(True)
+        self.cube_text = QLabel()  # the IFU extraction (input.cube), shown when a cube is loaded
+        self.cube_btn = QPushButton('Choose…')
+        self.cube_btn.setToolTip('Move or resize the extraction aperture on the collapsed cube.')
+        self.cube_btn.clicked.connect(self.cubeRequested)
+        self._brightest: tuple[int, int] | None = None  # brightest spaxel of the loaded cube; None: no cube
         form = QFormLayout()
+        self.form = form
         for path, label in FIELDS:
             tp, f = _field(type(cfg), path)
             ed = make_editor(tp, f, path, TIPS)
@@ -105,6 +114,13 @@ class SetupPanel(QWidget):
             form.addRow(label, row)
             self.editors[path], self.tags[path] = ed, tag
             self._watch(ed, path)
+        cube_row = QHBoxLayout()
+        cube_row.addWidget(self.cube_text)
+        cube_row.addWidget(self.cube_btn)
+        cube_row.addStretch(1)
+        form.addRow('IFU extraction', cube_row)
+        form.setRowVisible(cube_row, False)
+        self._cube_row = cube_row
         self.advanced_btn = QPushButton('Advanced settings…')
         self.advanced_btn.setToolTip('Every setting, including those not shown here.')
         self.advanced_btn.clicked.connect(self.advancedRequested)
@@ -166,6 +182,7 @@ class SetupPanel(QWidget):
             self.sources[path] = sources[path]
             self._show_tag(path)
         self.show_grid_status()
+        self.show_cube(self._brightest)
         if self._detected:  # programmatic sets emit no edit signal: the advice follows the new R and methods here
             self._show_advice(*self._detected)
 
@@ -173,6 +190,18 @@ class SetupPanel(QWidget):
         """Show ``cfg`` (opened settings, the Advanced dialog): boxes whose value changes become 'set by you'"""
         current = self.get_config()
         self._load(cfg, {p: 'user' if _get(cfg, p) != _get(current, p) else self.sources[p] for p in self.editors})
+
+    def show_cube(self, brightest: tuple[int, int] | None) -> None:
+        """Show the IFU extraction row for a loaded cube whose brightest spaxel is ``brightest`` (None hides it)"""
+        self._brightest = brightest
+        self.form.setRowVisible(self._cube_row, brightest is not None)
+        if brightest is None:
+            return
+        c = self.cfg.input.cube
+        radius = CUBE_RADIUS_DEFAULT if c.radius is None else c.radius
+        where = f'brightest spaxel {brightest}' if c.position is None else \
+            f'spaxel ({c.position[0]:g}, {c.position[1]:g})'
+        self.cube_text.setText(f'{where}, radius {radius:g} spaxels')
 
     def get_config(self) -> Any:
         """A copy of the session config with the boxes applied"""
@@ -217,11 +246,16 @@ class SetupPanel(QWidget):
         estimated = R is None and r_src == 'estimated'
         R = spectrum.resolution if R is None else R
         regime, band = regime_for(R, (spectrum.wmin, spectrum.wmax))
-        self.advice = method_advice(regime)
+        self.advice = method_advice(regime, R)
         names = [METHOD_LABELS[m] for m, a in self.advice.items() if a.recommended]
         r_text = 'unknown R' if R is None else f'R {R:.0f}' + (' (estimated)' if estimated else '')
-        self.recommended.setText(f'Recommended for {r_text}, {BAND_TEXT[band]}: {", ".join(names)}. '
+        too_low = resolution_too_low(R)
+        lead = 'The methods are left at the low-R defaults' if too_low else 'Recommended'
+        self.recommended.setText(f'{too_low}. ' * bool(too_low) +
+                                 f'{lead} for {r_text}, {BAND_TEXT[band]}: {", ".join(names)}. '
                                  'Hover over a method for why.')
+        self.recommended.setStyleSheet(f'color: {theme.colour("flagged", self.recommended.palette()).name()}'
+                                       if too_low else '')
         for m, box in self.editors[METHODS_PATH].boxes.items():
             box.setToolTip(f'{METHOD_TIPS[m]}\n{self.advice[m].reason}')
         self._show_method_note()

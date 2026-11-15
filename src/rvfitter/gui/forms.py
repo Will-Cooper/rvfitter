@@ -52,6 +52,12 @@ TIPS = {
     'input.raw_header': 'Raw frame headers (a path or glob), needed for the slit position angle that the reduction '
                         'drops (differential refraction across the slit).',
     'input.raw_header_dir': 'Folder searched for the raw frames named in the reduced files (PypeIt FILENAME).',
+    'input.objects': 'Which spectra of a multi-object file (PypeIt, JWST x1d, multi-extension FITS) to measure, each '
+                     'as its own object: auto (the target if named, else every spectrum with its own source name), '
+                     'target, all, or a JSON list of names or HDU numbers.',
+    'input.cube.position': 'IFU cube: aperture centre (x, y) in pixels of the collapsed image. Empty = the brightest '
+                           'spaxel.',
+    'input.cube.radius': 'IFU cube: aperture radius in spaxels. Empty = 3.',
     'grouping.override': 'Which object each spectrum belongs to, when the header or file names group them wrongly '
                          '(JSON): file path, name or stem, or header object name, to object, e.g. '
                          '{"spec_0012.fits": "J1745-1640"}. Empty = automatic.',

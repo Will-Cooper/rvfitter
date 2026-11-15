@@ -1,0 +1,21 @@
+# JWST/NIRSpec IFU G395H/F290LP cube of VHS 1256-1257 b (programme 1386), NRS1 detector (2.87-4.08 um): a 17 x 17
+# spaxel cut-out around the planet (see examples/README.md for the provenance).
+# Run from this folder:  rvfitter run rvfitter.toml
+# The spectrum is extracted in a circular aperture on the brightest spaxel of the median-collapsed cube, radius 3
+# spaxels (set [input.cube] to move or resize it). The JWST pipeline has already corrected the wavelengths to the
+# barycentre (SPECSYS = 'BARYCENT'), so no correction is applied. There is no slit, so no slit-centring term.
+# Space data have no telluric absorption: telluric_corrected relaxes the telluric masking.
+
+[input]
+paths = ["jw01386013001_03104_00001_nrs1_s3d_cutout.fits.gz"]
+telluric_corrected = true
+
+[input.cube]
+# position = [8.0, 8.0]  # (x, y) [pixels of the collapsed image]; unset: the brightest spaxel
+# radius = 3.0  # [spaxels]
+
+[methods]
+enabled = ["ccf", "template_fit"]
+
+[output]
+path = "output/results.csv"

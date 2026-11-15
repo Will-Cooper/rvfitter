@@ -1,7 +1,9 @@
 """The main window."""
 from __future__ import annotations
 
+import copy
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +35,16 @@ from PySide6.QtWidgets import (
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QVBoxLayout,
     QWidget,
 )
 
 from ..config import METHOD_LABELS
+from ..io import _SPECTRUM_KINDS
 from . import theme
 from .backend import Backend, LazyBackend
+from .cube import CubeDialog
 from .diagnostics import DiagnosticsPanel, rv_text
 from .forms import ConfigForm
 from .logpane import LogPane, QtLogHandler
@@ -70,6 +75,33 @@ MAX_SIZE = (1280, 800)  # default window size cap [px]
 LOG_HEIGHT = 90  # default log pane height [px]
 PROGRESS_WIDTH = 320  # [px], room for 'J1745-1640 · Template fit (2/3) · object 1/3'
 R_PREFIX = {'header': 'R ', 'config': 'R ', 'estimated': 'R≈'}
+ROW_ROLE = Qt.ItemDataRole.UserRole + 1  # True on the rows that show an object's R, then its RV
+ENTRY_ROLE = Qt.ItemDataRole.UserRole + 2  # the entry name of a spectrum of a multi-object file
+
+
+def _file_of(source: str) -> str:
+    """The file of a spectrum source ('file.fits[3]' for one entry of a multi-object file)"""
+    return source[:source.rindex('[')] if source.endswith(']') else source
+
+
+def _scan(backend: Backend, files: list[Path], cfg: Any) -> tuple[dict, dict, dict, dict]:
+    """
+    Group ``files`` into objects and read each object's first spectrum; list the spectra of the files that hold
+    several, and the collapsed image and brightest spaxel of the IFU cubes. Returns (groups, first spectra, entries
+    per multi-object file, (image, brightest) per cube file).
+    """
+    entries, cubes = {}, {}
+    for f in files:
+        try:
+            listed = backend.list_spectra(f, cfg)
+        except (OSError, ValueError):  # group_objects says why it skips the file
+            continue
+        if sum(e.kind in _SPECTRUM_KINDS for e in listed) > 1:
+            entries[str(f)] = listed
+        if any(e.kind == 'cube' for e in listed):
+            cubes[str(f)] = backend.cube_image(f)
+    groups = backend.group_objects(files, cfg) if files else {}
+    return groups, {name: backend.read_spectrum(fs[0], cfg) for name, fs in groups.items()}, entries, cubes
 
 
 def _scrolled(widget: QWidget) -> QScrollArea:
@@ -102,6 +134,9 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.groups: dict[str, list[str]] = {}
+        self.entries: dict[str, list[Any]] = {}  # multi-object file -> its spectra (io.SpectrumEntry)
+        self.cubes: dict[str, tuple[Any, tuple[int, int]]] = {}  # IFU cube file -> (collapsed image, brightest)
+        self._regroups = 0  # selection changes so far: only the latest regrouping is applied
         self.results: list[Any] = []
         self.worker: RunWorker | None = None
         self._jobs: list[JobWorker] = []
@@ -143,6 +178,12 @@ class MainWindow(QMainWindow):
         self.input_tree.setFont(theme.tabular(self.input_tree.font()))
         self.input_tree.setToolTip('Spectra grouped into objects. Drop files, folders or archives here.')
         self.input_tree.itemSelectionChanged.connect(self._tree_selected)
+        self.input_tree.itemChanged.connect(self._entry_toggled)
+        self.input_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        for text, mode in (('Tick all usable', 'all'), ('Target only', 'target')):
+            act = QAction(text, self.input_tree)
+            act.triggered.connect(lambda _c=False, m=mode: self.set_objects(m))
+            self.input_tree.addAction(act)
 
         # toolbar
         self.open_btn = QToolButton(text='Open spectra')
@@ -189,6 +230,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setup = SetupPanel(cfg, self.backend.template_status)
         self.setup.advancedRequested.connect(self.advanced_settings)
+        self.setup.cubeRequested.connect(self.choose_cube)
         self.tabs.addTab(_scrolled(self.setup), 'Setup')
 
         self.model = PandasModel()
@@ -326,7 +368,10 @@ class MainWindow(QMainWindow):
         return self.setup.get_config()
 
     def set_config(self, cfg: Any) -> None:
+        before = self.current_config().input
         self.setup.set_config(cfg)
+        if (cfg.input.objects, cfg.input.cube) != (before.objects, before.cube):
+            self._regroup([*self.entries, *self.cubes])
 
     def advanced_settings(self) -> QDialog:
         """Every setting (the generated form) in a dialog; OK applies it to the session config."""
@@ -395,35 +440,115 @@ class MainWindow(QMainWindow):
         backend = self.backend
         log.info('Loading %d input%s…', len(paths), '' if len(paths) == 1 else 's')
 
-        def job() -> tuple[dict[str, list[str]], dict[str, Any]]:
+        def job() -> tuple[dict, dict, dict, dict]:
             files: list[Path] = []
             for p in paths:
                 try:
                     files.extend(backend.collect_inputs(p))
                 except (OSError, ValueError) as exc:  # one bad input never stops the others
                     log.warning('Could not read %s: %s', p, exc)
-            groups = backend.group_objects(files, cfg) if files else {}
-            return groups, {name: backend.read_spectrum(fs[0], cfg) for name, fs in groups.items()}
+            return _scan(backend, files, cfg)
 
         return self._job(job, self._loaded)
 
-    def _loaded(self, loaded: tuple[dict[str, list[str]], dict[str, Any]]) -> None:
-        groups, first = loaded
-        if not groups:
+    def _loaded(self, loaded: tuple[dict, dict, dict, dict]) -> None:
+        groups, first = loaded[:2]
+        if not groups and not loaded[2]:
             log.warning('No usable spectra found.')
             self.statusBar().showMessage('No usable spectra found. Check that the files are 1D spectra.')
             return
+        self._merge(loaded)
+        if first:
+            self._autofill(first)
+        # sources of multi-object files and cubes are 'file.fits[hdu]': count the files, not the entries
+        n = len({re.sub(r'\[[^\]]*\]$', '', str(s)) for v in self.groups.values() for s in v})
+        log.info('Loaded %d file%s in %d object%s.', n, '' if n == 1 else 's', len(self.groups),
+                 '' if len(self.groups) == 1 else 's')
+        self.statusBar().showMessage(f'{n} files, {len(self.groups)} objects loaded.')
+
+    def _merge(self, loaded: tuple[dict, dict, dict, dict]) -> None:
+        """Add the objects, spectra and cubes of a `_scan` to the session and show them"""
+        groups, first, entries, cubes = loaded
         for name, files in groups.items():
             known = self.groups.setdefault(name, [])
             known.extend(f for f in files if f not in known)
         self.first_spectra.update(first)
-        self._autofill(first)
+        self.entries.update(entries)
+        self.cubes.update(cubes)
+        self.setup.show_cube(next(iter(self.cubes.values()))[1] if self.cubes else None)
         self._fill_tree()
         self._update_summary()
-        n = sum(len(v) for v in self.groups.values())
-        log.info('Loaded %d file%s in %d object%s.', n, '' if n == 1 else 's', len(self.groups),
-                 '' if len(self.groups) == 1 else 's')
-        self.statusBar().showMessage(f'{n} files, {len(self.groups)} objects loaded.')
+
+    def _regroup(self, files: list[str]) -> JobWorker | None:
+        """Read ``files`` again with the current input.objects and input.cube, replacing their objects"""
+        if not files:
+            return None
+        cfg, backend = self.current_config(), self.backend
+        self._regroups += 1
+        n = self._regroups
+        self.measure_btn.setEnabled(False)  # until the objects follow the new selection
+
+        def ok(loaded: tuple[dict, dict, dict, dict]) -> None:
+            if n != self._regroups:  # a later change is on its way
+                return
+            for name in list(self.groups):
+                self.groups[name] = [s for s in self.groups[name] if _file_of(s) not in files]
+                if not self.groups[name]:
+                    del self.groups[name]
+                    self.first_spectra.pop(name, None)
+            self._merge(loaded)
+            self.measure_btn.setEnabled(self.worker is None)
+
+        def fail(msg: str) -> None:
+            self.measure_btn.setEnabled(self.worker is None)
+            self._error('Error', msg)
+
+        return self._job(lambda: _scan(backend, [Path(f) for f in files], cfg), ok, fail)
+
+    def set_objects(self, objects: str | list[str]) -> JobWorker | None:
+        """Set input.objects (from the tree's ticks or its context menu) and read the multi-object files again"""
+        self.setup.cfg.input.objects = objects
+        log.info('input.objects = %r', objects)
+        return self._regroup(list(self.entries))
+
+    def _entry_toggled(self, item: QTreeWidgetItem, column: int) -> None:
+        """A ticked or unticked spectrum: input.objects becomes the names of every ticked one (a name ticked in
+        one file selects it in every file, as the same source observed again)"""
+        if column != 0 or item.data(0, ENTRY_ROLE) is None or \
+                (item.checkState(0) == Qt.CheckState.Checked) == bool(item.data(0, ROW_ROLE)):
+            return  # not a spectrum, or not a change of its tick (measured rows are the ticked ones)
+        ticked = []
+        it = QTreeWidgetItemIterator(self.input_tree)
+        while it.value():
+            e = it.value().data(0, ENTRY_ROLE)
+            if e is not None and it.value().checkState(0) == Qt.CheckState.Checked and e not in ticked:
+                ticked.append(e)
+            it += 1
+        self.set_objects(ticked)
+
+    def choose_cube(self) -> CubeDialog:
+        """The IFU extraction dialog for the first loaded cube; OK sets input.cube and reads the cubes again"""
+        path, (image, brightest) = next(iter(self.cubes.items()))
+        cfg = self.current_config()
+
+        def preview(position: tuple[float, float] | None, radius: float) -> Any:
+            c = copy.deepcopy(cfg)
+            c.input.cube.position, c.input.cube.radius = position, radius
+            return self.backend.read_spectrum(path, c)
+
+        dlg = CubeDialog(image, brightest, cfg.input.cube, preview, Path(path).name, self)
+
+        def accepted() -> None:
+            cube = self.setup.cfg.input.cube
+            cube.position, cube.radius = dlg.position, dlg.radius
+            log.info('input.cube: position %s, radius %g spaxels', dlg.position or 'brightest spaxel', dlg.radius)
+            self.setup.show_cube(brightest)
+            self._regroup(list(self.cubes))
+
+        dlg.accepted.connect(accepted)
+        dlg.finished.connect(dlg.deleteLater)
+        dlg.open()
+        return dlg
 
     def _autofill(self, first: dict[str, Any]) -> None:
         """Fill the Setup boxes from the first object of this load; warn if the objects need different defaults."""
@@ -438,19 +563,31 @@ class MainWindow(QMainWindow):
                        f'{meta.get("medium_in", "?")} wavelengths in the file, {regimes[name]}')
         self.setup.autofill(name, spec, self.backend.default_for(spec), description)
 
+    def _object_row(self, item: QTreeWidgetItem, name: str) -> None:
+        """Make ``item`` the row of object ``name``: its R (then its RV), and selecting it selects the object"""
+        spec = self.first_spectra[name]
+        src = 'implausible' if spec.meta.get('resolution_implausible') else spec.meta.get('resolution_source', '')
+        item.setText(1, f'{R_PREFIX.get(src, "R≈")}{spec.resolution:.0f}')
+        item.setToolTip(1, f'Resolving power of {Path(self.groups[name][0]).name}: {src or "header"}'
+                           f'{"" if src in ("header", "config") else ", check it on the Setup tab"}.')
+        if src in ('estimated', 'implausible'):
+            item.setForeground(1, theme.colour('flagged' if src == 'estimated' else 'failed',
+                                               self.input_tree.palette()))
+        item.setData(0, Qt.ItemDataRole.UserRole, name)
+        item.setData(0, ROW_ROLE, True)
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
     def _fill_tree(self) -> None:
+        """Objects first, each with its files; then each multi-object file with its spectra, ticked where they are
+        measured (an object all of whose spectra come from such files is shown only there)"""
+        self.input_tree.blockSignals(True)  # setting the ticks is not a selection change
         self.input_tree.clear()
-        pal = self.input_tree.palette()
+        source_object = {s: name for name, files in self.groups.items() for s in files}
         for name, files in self.groups.items():
-            spec = self.first_spectra[name]
-            src = 'implausible' if spec.meta.get('resolution_implausible') else spec.meta.get('resolution_source', '')
-            top = QTreeWidgetItem([name, f'{R_PREFIX.get(src, "R≈")}{spec.resolution:.0f}'])
-            top.setToolTip(1, f'Resolving power of {Path(files[0]).name}: {src or "header"}'
-                              f'{"" if src in ("header", "config") else ", check it on the Setup tab"}.')
-            if src in ('estimated', 'implausible'):
-                top.setForeground(1, theme.colour('flagged' if src == 'estimated' else 'failed', pal))
-            top.setData(0, Qt.ItemDataRole.UserRole, name)
-            top.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if all(_file_of(f) in self.entries for f in files):
+                continue
+            top = QTreeWidgetItem([name])
+            self._object_row(top, name)
             for f in files:
                 child = QTreeWidgetItem([Path(f).name])
                 child.setToolTip(0, str(f))
@@ -458,6 +595,29 @@ class MainWindow(QMainWindow):
                 top.addChild(child)
             self.input_tree.addTopLevelItem(top)
             top.setExpanded(True)
+        for path, entries in self.entries.items():
+            top = QTreeWidgetItem([Path(path).name])
+            top.setToolTip(0, f'{path}: {len(entries)} extensions. Tick the spectra to measure; right-click for '
+                              'all usable or the target only.')
+            for e in entries:
+                snr = 'S/N ?' if e.snr != e.snr else f'S/N {e.snr:.0f}'  # the panel is narrow: kind if not 'object'
+                child = QTreeWidgetItem([f'{e.name}{f" ({e.kind})" * (e.kind != "object")} · {snr}'])
+                name = source_object.get(f'{path}[{e.hdu}]')
+                tip = f'HDU {e.hdu}, {e.kind}, {snr}: '
+                if e.usable:
+                    child.setData(0, ENTRY_ROLE, e.name)
+                    child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    child.setToolTip(0, tip + (f'object {name}' if name else 'not measured'))
+                else:  # visible, greyed and unticked, saying why
+                    child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                    child.setToolTip(0, f'{tip}not usable: {e.reason}')
+                child.setCheckState(0, Qt.CheckState.Checked if name else Qt.CheckState.Unchecked)
+                if name:
+                    self._object_row(child, name)
+                top.addChild(child)
+            self.input_tree.addTopLevelItem(top)
+            top.setExpanded(True)
+        self.input_tree.blockSignals(False)
         self._refresh_rows()
 
     def _adopted(self, name: str) -> tuple[float, float] | None:
@@ -484,8 +644,12 @@ class MainWindow(QMainWindow):
         """Show each object's adopted RV, with a gold or rose dot where it needs attention or failed."""
         pal = self.input_tree.palette()
         self.input_tree.headerItem().setText(1, 'RV [km/s]' if len(self.model.df) else 'R')
-        for i in range(self.input_tree.topLevelItemCount()):
-            top = self.input_tree.topLevelItem(i)
+        it = QTreeWidgetItemIterator(self.input_tree)
+        while it.value():
+            top = it.value()
+            it += 1
+            if not top.data(0, ROW_ROLE):
+                continue
             name = top.data(0, Qt.ItemDataRole.UserRole)
             state = self._state(name)
             if state is None:

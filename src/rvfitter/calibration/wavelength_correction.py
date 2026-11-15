@@ -208,9 +208,10 @@ def _read_source(path: str, cfg: Any, resolution: float, hdu: int | None = None)
 
 def _object_tables(spec: Spectrum, cfg: Any) -> list[tuple[int, Spectrum]]:
     """Every object table of a multi-object PypeIt file (hdu, spectrum), the one read first included"""
-    if int(spec.meta.get('n_objects', 1) or 1) < 2 or not Path(str(spec.source)).is_file():
+    path = io.split_source(spec.source)[0]
+    if int(spec.meta.get('n_objects', 1) or 1) < 2 or not path.is_file():
         return [(spec.meta.get('hdu', -1), spec)]
-    with fits.open(spec.source) as hdul:
+    with fits.open(path) as hdul:
         tables = [i for i in range(1, len(hdul)) if getattr(hdul[i], 'columns', None) is not None
                   and ('OPT_WAVE' in hdul[i].columns.names or 'BOX_WAVE' in hdul[i].columns.names)]
     out = []
@@ -219,9 +220,9 @@ def _object_tables(spec: Spectrum, cfg: Any) -> list[tuple[int, Spectrum]]:
             out.append((k, spec))
             continue
         try:
-            out.append((k, _read_source(spec.source, cfg, spec.resolution, hdu=k)))
+            out.append((k, _read_source(str(path), cfg, spec.resolution, hdu=k)))
         except (ValueError, KeyError) as exc:  # not an object table
-            log.debug('object table %d of %s unreadable: %s', k, spec.source, exc)
+            log.debug('object table %d of %s unreadable: %s', k, path, exc)
     return out
 
 
@@ -415,13 +416,17 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     cands = [tsrc, raw]
     if tsrc is None and cal.sky_source and not raw.meta.get('trace_fwhm_pix'):
         cands.insert(0, matching_object(cal.sky_source, raw, cfg, name, what='sky_source'))
-    meta, heads = _raw_headers(raw, tsrc, cfg, name)
-    info['slit'] = _slit_inputs(cands, heads, cfg, name, info)
-    info['dar'] = _dar_geometry(meta, heads, name, info)
+    if raw.meta.get('no_slit'):  # e.g. an IFU cube: no slit centring, no DAR across a slit, no star - sky offset
+        info['slit'] = info['dar'] = None
+        log.info('%s: %s: no slit inputs, DAR across the slit or star - sky offset', name, raw.meta['no_slit'])
+    else:
+        meta, heads = _raw_headers(raw, tsrc, cfg, name)
+        info['slit'] = _slit_inputs(cands, heads, cfg, name, info)
+        info['dar'] = _dar_geometry(meta, heads, name, info)
     if tzp is not None:
         info.update(zp_tell_kms=tzp.zp_kms, zp_tell_err=tzp.zp_err)
         spec = replace(spec, meta={**spec.meta, 'telluric_zeropoint': tzp.as_dict()})
-        if zp is not None:
+        if zp is not None and info['dar'] is not None:
             ss = _star_minus_sky(tzp, zp, info, tsrc, cfg, name)
             info.update(zp_star_sky=ss['zp_star_sky'], zp_star_sky_err=ss['zp_star_sky_err'],
                         zp_star_sky_n=ss['n_nodes'], zp_dar_s=ss['s'], zp_dar_s_err=ss['s_err'], star_sky=ss)
@@ -672,7 +677,8 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
 
     The applied star − sky correction's error, the RMS over the measurements' wavelengths of
     σ²(a + s·D) = σ_a² + D²σ_s² + 2D cov(a, s); none (0) when the telluric curve was applied (its error is in
-    sys_wavezp), with ``calibration.zero_point_known`` or with slit_prior 'none' (warned); otherwise the
+    sys_wavezp), for a spectrum without a slit (``meta['no_slit']``, e.g. an IFU cube extraction), with
+    ``calibration.zero_point_known`` or with slit_prior 'none' (warned); otherwise the
     slit-centring prior (``calibration.slit_prior``: a number [km/s], or 'auto' for `slit.prior_kms` at the
     measurements' wavelengths, with the assumed ``calibration.seeing_fwhm`` when the trace FWHM is unknown). The
     'auto' prior gains the DAR term in quadrature: the RMS over those wavelengths of s·(D − mean D) (the constant
@@ -710,6 +716,9 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
                    term='star - sky constant + DAR (measured, applied)')
     elif info.get('applied') == 'telluric':
         out.update(value=0., term='none: the star\'s telluric curve was applied')
+    elif spec.meta.get('no_slit'):
+        out.update(value=0., term=f"none: {spec.meta['no_slit']} (no slit)")
+        log.info('%s: %s: no slit, so no slit-centring term', name, spec.meta['no_slit'])
     elif cfg.calibration.zero_point_known:
         out.update(value=0., term='none: calibration.zero_point_known')
         log.info('%s: calibration.zero_point_known: no slit-centring term', name)

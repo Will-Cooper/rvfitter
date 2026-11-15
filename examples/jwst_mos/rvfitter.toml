@@ -1,0 +1,17 @@
+# JWST/NIRSpec MOS PRISM/CLEAR spectra (R ~ 30-330) of young brown-dwarf candidates in IC 348 (programme 1229): two
+# x1d files, one EXTRACT1D extension per source (see examples/README.md for the provenance).
+# Run from this folder:  rvfitter run rvfitter.toml
+# This example tests the multi-object reader only: each usable source becomes its own object (input.objects = 'auto'
+# takes every source, as they carry their own names), but at R ~ 100 one resolution element is ~3000 km/s, so no RV
+# can be constrained: the run warns, and any value is flagged resolution_too_low.
+
+[input]
+paths = ["jw01229004001_03101_00001_nrs2_x1d.fits", "jw01229004001_05101_00001_nrs1_x1d.fits"]
+telluric_corrected = true  # space data: no telluric absorption
+objects = "auto"  # or "all", "target", or a list of source names / HDU numbers, e.g. ["1229_1", "1229_3"]
+
+[methods]
+enabled = ["linecentre"]
+
+[output]
+path = "output/results.csv"

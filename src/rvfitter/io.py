@@ -25,7 +25,7 @@ import logging
 import re
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,9 @@ from .config import REGIME_EDGES
 from .medium import to_vacuum
 from .types import Spectrum
 
-__all__ = ['read_spectrum', 'RawSpectrum', 'raw_headers', 'estimate_resolution', 'implausible_resolution']
+__all__ = ['read_spectrum', 'read_spectra', 'list_spectra', 'SpectrumEntry', 'split_source', 'cube_image',
+           'brightest_spaxel', 'RawSpectrum', 'raw_headers', 'estimate_resolution', 'implausible_resolution',
+           'SNR_USABLE_MIN', 'CUBE_RADIUS_DEFAULT']
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +75,33 @@ R_ESTIMATE_CEILING = REGIME_EDGES[0]
 _RES_KEYS = ('RESOLUTION', 'SPECRES', 'SPEC_RES', 'RESOLVING', 'RESPOWER', 'RESOLPOW')
 _VEL_KEYS = ('VHELIO', 'VBARY', 'VLSR', 'BCV', 'BERV', 'BARYCORR', 'HELIOCOR', 'BARY_CORR', 'VELOSYS', 'HELCORR',
              'QC VRAD BARYCOR', 'QC VRAD HELICOR', 'VEL_TYPE', 'VEL_CORR', 'RADVEL', 'VELFRAME')
+
+#: `list_spectra`: an entry with a median S/N per pixel below this is listed but unusable ('auto' and 'all' skip it,
+#: with a WARNING): at S/N < 3 per pixel even the strongest bands are barely above the noise
+SNR_USABLE_MIN = 3.
+#: JWST pipeline products: vacuum wavelengths, corrected to the barycentre by assign_wcs (a relativistic Doppler
+#: correction from VELOSYS applied to all spectroscopic wavelengths; jwst-pipeline.readthedocs.io, assign_wcs), whether
+#: or not the file records SPECSYS (x1d files do not)
+JWST_MEDIUM = 'vacuum'
+JWST_FRAME_SOURCE = 'JWST pipeline: assign_wcs applies the barycentric correction to all spectroscopic wavelengths'
+#: JWST data-quality bit DO_NOT_USE; in other DQ arrays any non-zero value marks a bad pixel
+JWST_DO_NOT_USE = 1
+#: IFU cubes: aperture radius [spaxels] when ``input.cube.radius`` is unset. Three spaxels (0.3 arcsec on the NIRSpec
+#: IFU) hold 95 per cent of the flux of the JWST pipeline's point-source extraction of VHS 1256-1257 b
+#: (examples/jwst_ifu)
+CUBE_RADIUS_DEFAULT = 3.
+#: the collapsed cube ignores spaxels valid in fewer than this fraction of the wavelength planes that hold data
+#: anywhere: edge spaxels with a handful of valid planes give meaningless medians (and would be the 'brightest')
+CUBE_MIN_COVERAGE = 0.5
+#: EXTNAME words of extensions that are never spectra (planes belonging to another extension) → their kind
+_AUX_WORDS = {**dict.fromkeys(('ERR', 'ERROR', 'ERRS', 'SIGMA', 'UNCERT', 'NOISE', 'STDDEV'), 'error'),
+              **dict.fromkeys(('VAR', 'VARIANCE', 'IVAR', 'INVVAR'), 'variance'),
+              **dict.fromkeys(('DQ', 'QUALITY'), 'dq'),
+              **dict.fromkeys(('MASK', 'BPM'), 'mask'), **dict.fromkeys(('WAVE', 'WAVELENGTH', 'LAMBDA'), 'wavelength'),
+              'SKY': 'sky', **dict.fromkeys(('BKG', 'BKGD', 'BACKGROUND'), 'background'),
+              **dict.fromkeys(('WMAP', 'WHT', 'WEIGHT'), 'weight map')}
+_SPECTRUM_KINDS = ('object', 'cube')
+_SOURCE_RE = re.compile(r'(.+)\[(\d+)\]')
 
 _UNIT_SCALES = {  # to Å
     'a': 1., 'å': 1., 'aa': 1., 'ang': 1., 'angs': 1., 'angstrom': 1., 'angstroms': 1., 'ångström': 1.,
@@ -111,6 +140,8 @@ class RawSpectrum:
         Name of the reader that produced it
     sky
         Optional sky spectrum on the same pixels (PypeIt ``*_COUNTS_SKY``, or a ``sky`` column), else None
+    meta
+        Entries added to `Spectrum.meta` as they are (e.g. how a cube was extracted)
     """
     wave: np.ndarray
     flux: np.ndarray
@@ -122,6 +153,7 @@ class RawSpectrum:
     resolution: float | None = None
     reader: str = ''
     sky: np.ndarray | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -238,7 +270,7 @@ def _medium_from_header(header: Mapping[str, Any]) -> tuple[str | None, str]:
         if isinstance(value, str):
             value = value.strip().lower() in ('t', 'true', 'yes', '1')
         return ('vacuum' if value else 'air'), 'header:VACUUM'
-    for key in ('CTYPE1', 'CTYPE'):
+    for key in ('CTYPE1', 'CTYPE3', 'CTYPE'):
         if key in header:
             code = str(header[key]).strip().upper().split('-')[0]
             if code == 'AWAV':
@@ -287,30 +319,32 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
     """
     Build the `Spectrum.meta` dictionary from a flat header.
 
-    - object: ``OBJECT``, ``TARGNAME``, ``TARGET``, ``OBJNAME`` (first non-empty).
-    - ra, dec: ``RA``/``DEC`` (or ``OBJRA``/``OBJDEC``, ``TELRA``/``TELDEC``, ``TCS_RA``/``TCS_DEC``); floats are
-      degrees, sexagesimal strings hours (RA) and degrees (Dec).
-    - mjd_mid: ``MJD_MID``/``MJD-MID`` (already mid-exposure), else ``MJD``, ``MJD-OBS`` or ``DATE-OBS`` (+
-      ``TIME-OBS``), which mean the exposure start, plus ``EXPTIME``/2; ``mjd_source`` records which (a reader
-      that sets ``MJD_MID`` names its origin in ``RVF_MJD_SOURCE``).
+    - object: the source of one entry of a multi-object file (``RVF_OBJECT``: PypeIt MASKDEF_OBJNAME, JWST SRCNAME),
+      else ``OBJECT``, ``TARGNAME``, ``TARGET``, ``OBJNAME`` (first non-empty).
+    - ra, dec: ``RA``/``DEC`` (or ``OBJRA``/``OBJDEC``, ``TELRA``/``TELDEC``, ``TCS_RA``/``TCS_DEC``, JWST
+      ``TARG_RA``/``TARG_DEC``); floats are degrees, sexagesimal strings hours (RA) and degrees (Dec).
+    - mjd_mid: ``MJD_MID``/``MJD-MID``/JWST ``EXPMID`` (already mid-exposure), else ``MJD``, ``MJD-OBS`` or
+      ``DATE-OBS`` (+ ``TIME-OBS``), which mean the exposure start, plus ``EXPTIME``/2; ``mjd_source`` records
+      which (a reader that sets ``MJD_MID`` names its origin in ``RVF_MJD_SOURCE``).
     - site: ``OBSERVAT``, else ``TELESCOP`` (``telescope`` is always ``TELESCOP``); site_lat/site_lon: ``SITELAT``...
     - exptime: ``EXPTIME``, ``EXPOSURE`` or ``ITIME`` [s]; airmass: ``AIRMASS``, else the mean of ``AMSTART``/``AMEND``.
-    - frame_in: ``VEL_TYPE``; vel_corr: ``VEL_CORR`` (PypeIt's factor already applied to the wavelengths) and
-      ``vel_corr_kms``, the same as a velocity.
+    - frame_in: ``VEL_TYPE``, else ``SPECSYS`` 'BARYCENT'/'HELIOCEN' (FITS WCS paper III), else 'barycentric' for
+      JWST (`JWST_FRAME_SOURCE`); ``frame_source`` records which. vel_corr: ``VEL_CORR`` (PypeIt's factor already
+      applied to the wavelengths) and ``vel_corr_kms``, the same as a velocity.
     """
     meta: dict[str, Any] = {}
-    obj, _ = _first(header, ('OBJECT', 'TARGNAME', 'TARGET', 'OBJNAME'))
+    obj, _ = _first(header, ('RVF_OBJECT', 'OBJECT', 'TARGNAME', 'TARGET', 'OBJNAME'))
     if obj is not None and str(obj).strip().lower() not in ('none', 'unknown', 'n/a', ''):
         meta['object'] = str(obj)
-    ra, _ = _first(header, ('RA', 'OBJRA', 'TELRA', 'RA_DEG', 'TCS_RA'))
-    dec, _ = _first(header, ('DEC', 'OBJDEC', 'TELDEC', 'DEC_DEG', 'TCS_DEC'))
+    ra, _ = _first(header, ('RA', 'OBJRA', 'TELRA', 'RA_DEG', 'TCS_RA', 'TARG_RA'))
+    dec, _ = _first(header, ('DEC', 'OBJDEC', 'TELDEC', 'DEC_DEG', 'TCS_DEC', 'TARG_DEC'))
     meta['ra'] = _parse_coord(ra, True)
     meta['dec'] = _parse_coord(dec, False)
     exptime = _as_float(_first(header, ('EXPTIME', 'EXPOSURE', 'ITIME'))[0])
     meta['exptime'] = exptime
     # mid-exposure time
     mjd_mid, source = None, None
-    mid, key = _first(header, ('MJD_MID', 'MJD-MID', 'MJDMID'))
+    mid, key = _first(header, ('MJD_MID', 'MJD-MID', 'MJDMID', 'EXPMID'))
     if _as_float(mid) is not None:
         mjd_mid, source = _as_float(mid), header.get('RVF_MJD_SOURCE', key)
     else:
@@ -338,8 +372,14 @@ def _meta_from_header(header: Mapping[str, Any]) -> dict[str, Any]:
         vals = [a for a in (a0, a1) if a is not None]
         airmass = float(np.mean(vals)) if vals else None
     meta['airmass'] = airmass
-    frame = _first(header, ('VEL_TYPE',))[0]
+    frame, key = _first(header, ('VEL_TYPE',))
+    if frame is None:
+        frame, key = {'BARYCENT': 'barycentric', 'HELIOCEN': 'heliocentric'}.get(
+            str(header.get('SPECSYS', '')).strip().upper()), 'SPECSYS'
+    if frame is None and _is_jwst(header):
+        frame, key = 'barycentric', None
     meta['frame_in'] = None if frame is None else str(frame).strip().lower()
+    meta['frame_source'] = None if frame is None else f'header:{key}' if key else JWST_FRAME_SOURCE
     f = _as_float(header.get('VEL_CORR'))
     meta['vel_corr'] = f
     meta['vel_corr_kms'] = None if f is None else vel_corr_to_kms(f)
@@ -364,7 +404,8 @@ def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
     - ``binning_spec``, ``binning_spat``: PypeIt's ``BINNING`` 'spectral,spatial', else ``CCDSUM`` when both
       factors are equal (its axis order is instrument-dependent).
     - ``pixscale_arcsec``: ``PIXSCALE``, ``PLATESCL`` or ``SECPIX`` [arcsec per (binned) pixel] if present.
-    - ``instrument``: ``INSTRUME``, else ``INSTR`` (Spextool).
+    - ``instrument``: ``INSTRUME``, else ``INSTR`` (Spextool); ``instrument_names``: every INSTRUME/INSTR value, then
+      '<TELESCOP>_<INSTRUME>_<GRATING>' when all three exist (the per-mode rows of ``data/instruments.csv``).
     - ``trace_fwhm_pix``: PypeIt's object FWHM along the slit [binned pixels].
     """
     out: dict[str, Any] = {}
@@ -373,7 +414,9 @@ def _slit_meta(header: Mapping[str, Any]) -> dict[str, Any]:
     # every INSTRUME/INSTR value: Spextool files carry both ('SpeX Spectrograph', 'uSpeX'), and the table keys on INSTR
     out['instrument_names'] = tuple(str(header[k]).strip() for k in ('INSTRUME', 'INSTRUMENT', 'INSTR')
                                     if header.get(k) is not None)
-    pyp = header.get('PYP_SPEC')
+    if all(header.get(k) for k in ('TELESCOP', 'INSTRUME', 'GRATING')):  # a mode row, e.g. 'JWST_NIRSPEC_G395H'
+        out['instrument_names'] += ('_'.join(str(header[k]).strip() for k in ('TELESCOP', 'INSTRUME', 'GRATING')),)
+    pyp =header.get('PYP_SPEC')
     out['pypeit_spec'] = None if pyp is None else str(pyp).strip()
     width, key = None, None
     w, wkey = _first(header, ('SLITW', 'SLTW_ARC'))
@@ -491,9 +534,63 @@ def _is_fits(path: Path) -> bool:
 
 def _hdu_index(hdul: fits.HDUList, hdu: int | str) -> int:
     try:
-        return hdul.index_of(hdu)
+        idx = hdul.index_of(hdu)
+        hdul[idx]  # index_of passes any integer through
+        return idx
     except (KeyError, IndexError) as exc:
         raise ValueError(f'HDU {hdu!r} not found in file with {len(hdul)} HDUs') from exc
+
+
+def _is_jwst(header: Mapping[str, Any]) -> bool:
+    return str(header.get('TELESCOP', '')).strip().upper() == 'JWST'
+
+
+def _aux_kind(extname: Any) -> str | None:
+    """What an extension holds if its EXTNAME marks it as never a spectrum (error, variance, dq, mask, wavelength,
+    sky, background, weight map: any word of the name in `_AUX_WORDS`), else None"""
+    return next((_AUX_WORDS[w] for w in re.split(r'[^A-Z]+', str(extname).upper()) if w in _AUX_WORDS), None)
+
+
+def _dq_bad(dq: np.ndarray, header: Mapping[str, Any]) -> np.ndarray:
+    """Bad pixels of a DQ array: the DO_NOT_USE bit for JWST, any non-zero value otherwise"""
+    dq = np.asarray(dq).astype(np.int64)
+    return (dq & JWST_DO_NOT_USE) != 0 if _is_jwst(header) else dq != 0
+
+
+def split_source(source: str | Path) -> tuple[Path, int | None]:
+    """
+    ``'file.fits[3]'`` (the `Spectrum.source` of one entry of a multi-object file) → (Path('file.fits'), 3); any
+    other path (or an existing file whose name ends in '[n]') → (path, None)
+    """
+    m = _SOURCE_RE.fullmatch(str(source))
+    if m is None or Path(source).exists():
+        return Path(source), None
+    return Path(m.group(1)), int(m.group(2))
+
+
+def _to_flambda(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray, unit: Any, header: Mapping[str, Any],
+                name: str) -> tuple[np.ndarray, np.ndarray, dict[str, str]]:
+    """
+    The one fν → fλ conversion: flux and σ per frequency (e.g. Jy) → erg s⁻¹ cm⁻² Å⁻¹ at ``wave`` [Å]; surface
+    brightness (e.g. MJy/sr) is first multiplied by the pixel solid angle ``PIXAR_SR`` (`ValueError` without it). Any
+    other unit (fλ, counts, unknown) is returned unchanged. The third item is ``{'flux_conversion': what was done}``
+    (empty if nothing), for `Spectrum.meta`; `read_spectrum` logs it.
+    """
+    from astropy import units as u
+    q = None if unit is None else u.Unit(str(unit).strip(), parse_strict='silent')
+    if q is None or isinstance(q, u.UnrecognizedUnit):
+        return flux, sigma, {}
+    scale, what = 1., str(unit)
+    if q.is_equivalent(u.Jy / u.sr):
+        pixar = _as_float(header.get('PIXAR_SR'))
+        if pixar is None or pixar <= 0:
+            raise ValueError(f'{name}: the flux is a surface brightness ({unit}); converting it to a flux needs the '
+                             'pixel solid angle PIXAR_SR [sr], which the header lacks')
+        q, scale, what = q * u.sr, pixar, f'{unit} × PIXAR_SR {pixar:.4g} sr'
+    if not q.is_equivalent(u.Jy):
+        return flux, sigma, {}
+    factor = scale * (1. * q).to(u.erg / u.s / u.cm ** 2 / u.AA, equivalencies=u.spectral_density(wave * u.AA)).value
+    return flux * factor, sigma * factor, {'flux_conversion': f'{what} (per unit frequency) to fλ [erg/s/cm2/Å]'}
 
 
 def _table_columns(hdu_obj: Any) -> list[str]:
@@ -624,6 +721,8 @@ def _read_pypeit_spec1d(path: Path, hdu: int | str | None = None, columns: Any =
         header = _header_dict(hdul[0].header, ext.header)
         header.update(RVF_HDU=idx, RVF_EXTNAME=str(ext.header.get('NAME', ext.name)),
                       RVF_NOBJ=len(_pypeit_tables(hdul)))
+        if _clean_value(ext.header.get('MASKDEF_OBJNAME')):  # a slit-mask object: its own name, not the mask's
+            header['RVF_OBJECT'] = str(ext.header['MASKDEF_OBJNAME']).strip()
         data = ext.data
         names = [n.upper() for n in _table_columns(ext)]
         fwhm = _pypeit_trace_fwhm(data, names, ext.header)
@@ -945,7 +1044,8 @@ def _generic_kind(hdu_obj: Any, columns: Any) -> str | None:
 
 
 def _generic_hdu(hdul: fits.HDUList, hdu: int | str | None, columns: Any) -> tuple[int, str] | None:
-    candidates = [_hdu_index(hdul, hdu)] if hdu is not None else range(len(hdul))
+    candidates = [_hdu_index(hdul, hdu)] if hdu is not None else [i for i in range(len(hdul))
+                                                                    if not _aux_kind(hdul[i].name)]
     for idx in candidates:
         kind = _generic_kind(hdul[idx], columns)
         if kind:
@@ -960,24 +1060,27 @@ def _sniff_fits_generic(path: Path, hdu: int | str | None = None, columns: Any =
         return _generic_hdu(hdul, hdu, columns) is not None
 
 
-def _wcs_wave(header: Mapping[str, Any], n: int) -> np.ndarray:
+def _wcs_wave(header: Mapping[str, Any], n: int, axis: int = 1) -> np.ndarray:
     """
-    Wavelength axis from CRVAL1/CDELT1 (or CD1_1)/CRPIX1.
+    Wavelength axis from CRVALi/CDELTi (× PCi_i; or CDi_i)/CRPIXi of WCS axis ``axis`` (1: 1D image, 3: cube).
 
-    Log-linear if ``DC-FLAG`` = 1 (IRAF: CRVAL1 and CDELT1 in log10 λ) or ``CTYPE1`` ends in '-LOG'
-    (FITS WCS paper III: λ = λ_r exp[(w − w_r)/λ_r]).
+    Log-linear if ``DC-FLAG`` = 1 (IRAF: CRVAL1 and CDELT1 in log10 λ) or ``CTYPEi`` ends in '-LOG'
+    (FITS WCS paper III: λ = λ_r exp[(w − w_r)/λ_r]); a tabulated axis ('-TAB') raises `ValueError`.
     """
-    crval = float(header['CRVAL1'])
-    cdelt = header.get('CDELT1', header.get('CD1_1'))
+    a = axis
+    crval = float(header[f'CRVAL{a}'])
+    cdelt = header.get(f'CDELT{a}', header.get(f'CD{a}_{a}'))
     if cdelt is None:
-        raise ValueError('1D image has CRVAL1 but neither CDELT1 nor CD1_1')
-    cdelt = float(cdelt)
-    crpix = float(header.get('CRPIX1', 1.))
+        raise ValueError(f'the image has CRVAL{a} but neither CDELT{a} nor CD{a}_{a}')
+    cdelt = float(cdelt) * float(header.get(f'PC{a}_{a}', 1.)) if f'CDELT{a}' in header else float(cdelt)
+    crpix = float(header.get(f'CRPIX{a}', 1.))
     x = np.arange(n) + 1.
     lin = crval + (x - crpix) * cdelt
-    ctype = str(header.get('CTYPE1', '')).upper()
+    ctype = str(header.get(f'CTYPE{a}', '')).upper()
+    if ctype.endswith('-TAB'):
+        raise ValueError(f'CTYPE{a} = {ctype!r}: a tabulated wavelength axis is not supported')
     dc = _as_float(header.get('DC-FLAG'))
-    if dc is not None and int(dc) == 1:
+    if a == 1 and dc is not None and int(dc) == 1:
         return 10. ** lin
     if ctype.endswith('-LOG'):
         return crval * np.exp((lin - crval) / crval)
@@ -1000,7 +1103,8 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
         idx, kind = found
         ext = hdul[idx]
         header = _header_dict(hdul[0].header, ext.header)
-        sky = None
+        header.update(RVF_HDU=idx, RVF_EXTNAME=str(ext.name))
+        sky, flux_unit = None, None
         if kind == 'table':
             names = _table_columns(ext)
             roles = _role_lookup(names, columns)
@@ -1013,17 +1117,24 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
             sigma = _sigma_from_roles(get, roles, len(wave))
             sky = get(roles['sky']) if 'sky' in roles else None
             unit = _table_wave_unit(ext, names[roles['wave']])
+            flux_unit = _table_wave_unit(ext, names[roles['flux']])
+            if 'DQ' in names:  # JWST x1d
+                flux = np.where(_dq_bad(data['DQ'], header).ravel(), np.nan, flux)
+            if _clean_value(ext.header.get('SRCNAME')):  # JWST: one extension per source
+                header['RVF_OBJECT'] = str(ext.header['SRCNAME']).strip()
         elif kind == 'wcs':
             flux = np.asarray(np.squeeze(ext.data), dtype=float)
             wave = _wcs_wave(header, len(flux))
-            sigma = np.full(len(flux), np.nan)
-            for j, other in enumerate(hdul):  # optional error image
-                if j == idx or getattr(other, 'data', None) is None or _table_columns(other):
-                    continue
-                if str(other.name).upper() in ('ERR', 'ERROR', 'SIGMA', 'UNCERT', 'NOISE', 'STDDEV') \
-                        and np.size(other.data) == len(flux):
-                    sigma = _clean_sigma(np.asarray(other.data, dtype=float).ravel())
-                    break
+            # optional error image: an ERR... image of the same length and EXTVER (FITS default 1), as in STScI files
+            ver = ext.header.get('EXTVER', 1)
+            errs = [other for j, other in enumerate(hdul) if j != idx and getattr(other, 'data', None) is not None
+                    and not _table_columns(other) and _aux_kind(other.name) == 'error'
+                    and np.size(other.data) == len(flux) and other.header.get('EXTVER', 1) == ver]
+            if len(errs) > 1:  # a warning, not an error: other readers would retry the file silently
+                log.warning('%s: HDU %d: %d error images (%s) match its length and EXTVER %s, so none is used; give '
+                            'each its own EXTVER', path.name, idx, len(errs), ', '.join(e.name for e in errs), ver)
+            one = len(errs) == 1
+            sigma = _clean_sigma(np.asarray(errs[0].data, dtype=float).ravel()) if one else np.full(len(flux), np.nan)
             unit = _image_unit(header)
         else:  # rows
             arr = np.asarray(np.squeeze(ext.data), dtype=float)
@@ -1033,9 +1144,129 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
             sigma = _clean_sigma(arr[2]) if arr.shape[0] > 2 else np.full(len(wave), np.nan)
             unit = _image_unit(header)
     wave = _wave_to_angstrom(wave, unit, path.name)
+    flux, sigma, note = _to_flambda(wave, flux, sigma, flux_unit, header, path.name)
     medium, source = _medium_from_header(header)
-    return RawSpectrum(wave, flux, sigma, header, medium, source, None, _header_resolution(header), 'fits_generic',
-                       sky)
+    jwst = _is_jwst(header)
+    return RawSpectrum(wave, flux, sigma, header, medium, source, JWST_MEDIUM if jwst else None,
+                       _header_resolution(header), 'jwst' if jwst else 'fits_generic', sky, note)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# IFU cubes
+# ----------------------------------------------------------------------------------------------------------------------
+
+def _cube_index(hdul: fits.HDUList, hdu: int | str | None = None) -> int | None:
+    """The HDU of an IFU cube: a 3D image whose third WCS axis is a wavelength (CTYPE3 'WAVE' or 'AWAV')"""
+    for idx in [_hdu_index(hdul, hdu)] if hdu is not None else range(len(hdul)):
+        h = hdul[idx].header
+        if (h.get('NAXIS') == 3 and str(h.get('CTYPE3', '')).upper().split('-')[0] in ('WAVE', 'AWAV')
+                and not _aux_kind(hdul[idx].name)):
+            return idx
+    return None
+
+
+def _load_cube(path: Path, hdu: int | str | None = None) -> tuple[np.ndarray, np.ndarray, dict[str, Any], int]:
+    """
+    (SCI [λ, y, x] with DQ-flagged and non-finite voxels NaN, its σ (NaN without an ERR plane), flat header, HDU)
+
+    The ERR and DQ planes are the extensions of the same shape whose EXTNAME says so (JWST s3d layout).
+    """
+    with fits.open(path, memmap=False) as hdul:
+        idx = _cube_index(hdul, hdu)
+        if idx is None:
+            raise ValueError('no 3D image with a wavelength axis (CTYPE3 WAVE or AWAV)')
+        header = _header_dict(hdul[0].header, hdul[idx].header)
+        sci = np.array(hdul[idx].data, dtype=float)
+        planes = {_aux_kind(h.name): h.data for h in hdul if h.is_image and h.header.get('NAXIS') == 3
+                  and h.data is not None and h.data.shape == sci.shape}
+        err, dq = planes.get('error'), planes.get('dq')
+        err = np.full(sci.shape, np.nan) if err is None else _clean_sigma(err)
+    bad = ~np.isfinite(sci) | (False if dq is None else _dq_bad(dq, header))
+    sci[bad] = np.nan
+    if not np.isfinite(err).any():
+        log.warning('%s: the cube has no ERR plane: the extracted spectrum has no uncertainties', path.name)
+    return sci, err, header, idx
+
+
+def _collapse(sci: np.ndarray) -> np.ndarray:
+    """Median over wavelength of each spaxel; NaN where valid in < `CUBE_MIN_COVERAGE` of the planes with data"""
+    valid = np.isfinite(sci)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN spaxels
+        image = np.nanmedian(sci, axis=0)
+    image[valid.sum(axis=0) < CUBE_MIN_COVERAGE * valid.any(axis=(1, 2)).sum()] = np.nan
+    return image
+
+
+def cube_image(path: str | Path, hdu: int | str | None = None) -> np.ndarray:
+    """
+    The median-collapsed image [y, x] of an IFU cube on which the extraction centres (DQ-flagged voxels excluded;
+    spaxels valid in fewer than `CUBE_MIN_COVERAGE` of the wavelength planes are NaN)
+    """
+    return _collapse(_load_cube(Path(path), hdu)[0])
+
+
+def brightest_spaxel(image: np.ndarray) -> tuple[int, int]:
+    """(x, y) [0-based pixels] of the brightest finite spaxel of a collapsed image; `ValueError` if none"""
+    if not np.isfinite(image).any():
+        raise ValueError('the collapsed cube has no valid spaxel')
+    y, x = np.unravel_index(np.nanargmax(image), image.shape)
+    return int(x), int(y)
+
+
+def _read_cube(path: Path, hdu: int | str | None = None, cube: Any = None) -> RawSpectrum:
+    """
+    A spectrum extracted from an IFU cube in a circular aperture
+
+    Centre ``cube.position`` (x, y) [0-based pixels of the collapsed image], else the brightest spaxel of the
+    median-collapsed cube (`cube_image`); radius ``cube.radius`` [spaxels], else `CUBE_RADIUS_DEFAULT`. The spaxels
+    whose centres lie within the radius are summed, σ in quadrature. A wavelength plane with a DQ-flagged or missing
+    spaxel in the aperture is dropped (a partial sum would fake an absorption feature); the count is logged. Surface
+    brightness is converted with PIXAR_SR (`_to_flambda`). ``meta['extraction']`` records all this, and
+    ``meta['no_slit']`` makes the slit-centring term not apply.
+    """
+    sci, err, header, idx = _load_cube(path, hdu)
+    nw, ny, nx = sci.shape
+    position, radius = (None, None) if cube is None else (cube.position, cube.radius)  # cube: config.CubeConfig
+    if position is None:
+        (x, y), centre_source = brightest_spaxel(_collapse(sci)), 'brightest spaxel of the median-collapsed cube'
+    else:
+        x, y = (float(v) for v in position)
+        if not (0 <= x <= nx - 1 and 0 <= y <= ny - 1):
+            raise ValueError(f'input.cube.position ({x:g}, {y:g}) is outside the {nx} × {ny} spaxel image')
+        centre_source = 'input.cube.position'
+    r, radius_source = ((CUBE_RADIUS_DEFAULT, 'default') if radius is None else (float(radius), 'input.cube.radius'))
+    if not r > 0:
+        raise ValueError(f'input.cube.radius = {r:g} must be positive')
+    yy, xx = np.mgrid[:ny, :nx]
+    aperture = (xx - x) ** 2 + (yy - y) ** 2 <= r * r
+    if not aperture.any():
+        raise ValueError(f'the aperture of radius {r:g} spaxels at ({x:g}, {y:g}) contains no spaxel centre')
+    flux_ap, err_ap = sci[:, aperture], err[:, aperture]
+    incomplete = ~np.isfinite(flux_ap).all(axis=1)
+    held = np.isfinite(sci).any(axis=(1, 2))
+    flux = np.where(incomplete, np.nan, flux_ap.sum(axis=1))
+    sigma = np.sqrt((err_ap ** 2).sum(axis=1))
+    if not np.isfinite(flux).any():
+        raise ValueError(f'{path.name}: no wavelength plane has every spaxel of the aperture valid')
+    dropped = int((incomplete & held).sum())
+    text = (f'IFU cube HDU {idx} extracted in a circular aperture at x={x:g}, y={y:g} ({centre_source}), radius {r:g} '
+            f'spaxels ({radius_source}), {int(aperture.sum())} spaxels; {dropped} of the {int(held.sum())} wavelength '
+            'planes with data dropped (a flagged or missing spaxel in the aperture)')
+    if dropped > 0.5 * held.sum():
+        log.warning('%s: the aperture loses %d of %d wavelength planes: it probably reaches the edge of the field; '
+                    'move it (input.cube.position) or shrink it (input.cube.radius)', path.name, dropped,
+                    int(held.sum()))
+    wave = _wave_to_angstrom(_wcs_wave(header, nw, axis=3), header.get('CUNIT3'), path.name)
+    flux, sigma, note = _to_flambda(wave, flux, sigma, header.get('BUNIT'), header, path.name)
+    header.update(RVF_HDU=idx, RVF_EXTNAME=str(header.get('EXTNAME', idx)))
+    medium, source = _medium_from_header(header)
+    meta = {'extraction': {'method': 'circular aperture', 'x': float(x), 'y': float(y), 'centre_source': centre_source,
+                           'radius': r, 'radius_source': radius_source, 'n_spaxels': int(aperture.sum()),
+                           'planes_dropped': dropped, 'text': text},
+            'no_slit': 'IFU cube extraction', **note}
+    return RawSpectrum(wave, flux, sigma, header, medium, source, JWST_MEDIUM if _is_jwst(header) else None,
+                       _header_resolution(header), 'ifu_cube', meta=meta)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -1184,7 +1415,7 @@ def _clean_arrays(wave: np.ndarray, flux: np.ndarray, sigma: np.ndarray, sky: np
     order = np.argsort(wave[good], kind='stable')
     wave, flux, sigma = wave[good][order], flux[good][order], sigma[good][order]
     sky = None if sky is None else sky[good][order]
-    keep = np.concatenate([[True], np.diff(wave) > 0])  # drop duplicate wavelengths, keeping the first
+    keep = np.diff(wave, prepend=-np.inf) > 0  # drop duplicate wavelengths, keeping the first
     return wave[keep], flux[keep], sigma[keep], None if sky is None else sky[keep]
 
 
@@ -1236,22 +1467,32 @@ def _attach_arc_range(meta: dict[str, Any], path: Path, extname: str | None) -> 
 
 def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str = 'ciddor',
                   hdu: int | str | None = None,
-                  columns: Mapping[str, str | int] | None = None, resolution: float | None = None) -> Spectrum:
+                  columns: Mapping[str, str | int] | None = None, resolution: float | None = None,
+                  cube: Any = None) -> Spectrum:
     """
     Read a one-dimensional spectrum (FITS, ASCII/CSV/TSV, else ``specutils``) and return it in vacuum Å.
 
     ``medium`` is 'auto' (read the header; PypeIt files default to vacuum; otherwise `ValueError`), 'air' or
     'vacuum' (overrides the header, a conflict is logged); ``medium_method`` is the air formula of `rvfitter.medium`.
-    ``hdu`` selects an HDU (default: the first suitable; for a multi-object PypeIt spec1d the table matching the
-    target name, else the highest-S/N science object, which is logged). ``columns`` maps the roles 'wave', 'flux' and
-    one of 'err', 'ivar', 'var' to a column name or index. ``resolution`` (R = λ/Δλ) overrides the header's;
-    without either, R is estimated from the pixel spacing (`estimate_resolution`, WARNING), and checked against the
-    instrument (`implausible_resolution`). ``meta['resolution_source']`` is 'config', 'header' or 'estimated';
-    ``meta['resolution_implausible']`` is True for an estimate that fails the check.
+    ``path`` may be ``'file.fits[3]'`` for HDU 3 (the source `read_spectra` gives one entry of a multi-object file).
+    ``hdu`` selects an HDU (default: the first suitable one that is not an error, DQ, sky... extension (`_aux_kind`;
+    naming one raises); for a multi-object PypeIt spec1d the table matching the target name, else the highest-S/N
+    science object, which is logged). An IFU cube is extracted in an aperture set by ``cube`` (``input.cube``: its
+    ``position`` and ``radius``, see `_read_cube`). Fluxes per unit frequency are converted to fλ (`_to_flambda`).
+    ``columns`` maps the roles 'wave', 'flux' and one of 'err', 'ivar', 'var' to a column name or index.
+    ``resolution`` (R = λ/Δλ) overrides the header's; without either, R is estimated from the pixel spacing
+    (`estimate_resolution`, WARNING), and checked against the instrument (`implausible_resolution`).
+    ``meta['resolution_source']`` is 'config', 'header' or 'estimated'; ``meta['resolution_implausible']`` is True
+    for an estimate that fails the check.
 
     Raises `ValueError` if the file cannot be read or the medium cannot be determined.
     """
-    path = Path(path)
+    given = str(path)
+    path, at = split_source(path)
+    if at is not None:
+        if hdu is not None and hdu != at:
+            raise ValueError(f'{given}: HDU {at} in the source but hdu={hdu!r} given')
+        hdu = at
     medium = str(medium).strip().lower()
     medium = {'vac': 'vacuum'}.get(medium, medium)
     if medium not in ('auto', 'air', 'vacuum'):
@@ -1260,9 +1501,17 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
         raise FileNotFoundError(f'Spectrum file not found: {path}')
     errors: list[str] = []
     raw: RawSpectrum | None = None
+    if _is_fits(path):
+        with fits.open(path, memmap=False) as hdul:
+            aux = None if hdu is None else _aux_kind(hdul[_hdu_index(hdul, hdu)].name)
+            is_cube = _cube_index(hdul, hdu) is not None
+        if aux:
+            raise ValueError(f'{path}: HDU {hdu!r} is a {aux} extension, not a spectrum')
+        if is_cube:  # a cube that cannot be extracted raises: no other reader would make sense of it
+            raw = _read_cube(path, hdu, cube)
     with warnings.catch_warnings():  # Spextool's '#### Xspextool History ####' header dividers are not FITS cards
         warnings.filterwarnings('ignore', 'The following header keyword is invalid', AstropyUserWarning)
-        for name, sniff, read in _READERS:
+        for name, sniff, read in () if raw is not None else _READERS:
             try:
                 if sniff is not None and not sniff(path, hdu, columns):
                     continue
@@ -1306,7 +1555,10 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     sky = _clean_sky(sky, path.name)
 
     meta = _meta_from_header(raw.header)
-    meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader)
+    meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader, **raw.meta)
+    for key in ('flux_conversion', 'extraction'):
+        if key in raw.meta:
+            log.info('%s: %s', path.name, raw.meta[key]['text'] if key == 'extraction' else raw.meta[key])
     for key, out in (('RVF_HDU', 'hdu'), ('RVF_EXTNAME', 'extname'), ('RVF_NOBJ', 'n_objects')):
         if key in raw.header:  # which table of a multi-object file was read
             meta[out] = raw.header[key]
@@ -1331,7 +1583,206 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
         _attach_arc_range(meta, path, raw.header.get('RVF_EXTNAME'))
     log.debug('%s: %d pixels, %.1f-%.1f Å (vacuum), medium_in=%s (%s)', path.name, len(wave), wave[0], wave[-1],
               medium_in, source)
-    return Spectrum(wave, flux, sigma, float(r), meta, str(path), sky)
+    return Spectrum(wave, flux, sigma, float(r), meta, given, sky)
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# multi-object files
+# ----------------------------------------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SpectrumEntry:
+    """
+    One candidate spectrum of a file (`list_spectra`)
+
+    Attributes
+    ----------
+    hdu
+        HDU index, for ``read_spectrum(hdu=...)``; None for a file read as a whole (text, a single spectrum)
+    name
+        PypeIt MASKDEF_OBJNAME else NAME (the trace), JWST SRCNAME, else EXTNAME (else the file name)
+    kind
+        'object' or 'cube' (spectra), or what else the extension holds: 'background' (a JWST background slit),
+        'error', 'variance', 'dq', 'mask', 'wavelength', 'sky', 'weight map' (by EXTNAME, `_AUX_WORDS`)
+    snr
+        Median S/N per pixel (NaN if unknown)
+    usable
+        Whether 'auto' and 'all' select it
+    reason
+        Why it is not usable ('' if it is)
+    named
+        ``name`` is the source's own (MASKDEF_OBJNAME, SRCNAME), not a trace or extension label
+    """
+    hdu: int | None
+    name: str
+    kind: str
+    snr: float
+    usable: bool
+    reason: str = ''
+    named: bool = False
+
+
+def _entry(hdu: int, name: str, kind: str, read: Callable[[], RawSpectrum | float], named: bool = False,
+           why: str = '') -> SpectrumEntry:
+    """An entry; ``read`` gives its S/N (or the raw spectrum to take it from): a failure makes it unusable"""
+    if why:
+        return SpectrumEntry(hdu, name, kind, float('nan'), False, why, named)
+    try:
+        got = read()
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        return SpectrumEntry(hdu, name, kind, float('nan'), False, f'unreadable: {exc}', named)
+    if isinstance(got, RawSpectrum):
+        if (np.isfinite(got.flux) & np.isfinite(got.wave)).sum() < 2:
+            return SpectrumEntry(hdu, name, kind, float('nan'), False, 'fewer than two valid pixels', named)
+        ok = np.isfinite(got.flux) & np.isfinite(got.sigma) & (got.sigma > 0)
+        got = float(np.median(got.flux[ok] / got.sigma[ok])) if ok.any() else float('nan')
+    low = bool(got < SNR_USABLE_MIN)
+    return SpectrumEntry(hdu, name, kind, got, not low,
+                         f'median S/N {got:.1f} per pixel is below {SNR_USABLE_MIN:g}' if low else '', named)
+
+
+def list_spectra(path: str | Path, cube: Any = None) -> list[SpectrumEntry]:
+    """
+    The candidate spectra of a file, each with its kind, median S/N and whether it is usable
+
+    - PypeIt spec1d: one entry per object table (S/N of OPT, else BOX).
+    - FITS: one entry per extension that holds a spectrum (a table with wave/flux columns, e.g. one JWST x1d
+      EXTRACT1D per source; a 1D or 2/3×N image) or an IFU cube (S/N of its extraction with ``cube``, see
+      `read_spectrum`); JWST background slits (SRCNAME 'background…') and extensions whose EXTNAME marks error,
+      variance, DQ, mask, wavelength, sky, background or weight planes are listed as unusable, with the reason.
+    - Anything else (text, a Spextool image, ...): one entry read as a whole (hdu None, S/N not computed).
+
+    Entries below `SNR_USABLE_MIN` are unusable, with the reason; nothing is dropped silently.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f'Spectrum file not found: {path}')
+    whole = [SpectrumEntry(None, path.name, 'object', float('nan'), True)]
+    if not _is_fits(path):
+        return whole
+    with fits.open(path, memmap=False) as hdul:
+        tables = _pypeit_tables(hdul)
+        if tables:
+            out = []
+            for i in tables:
+                h, own = hdul[i].header, _clean_value(hdul[i].header.get('MASKDEF_OBJNAME'))
+                out.append(_entry(i, str(own or h.get('NAME', hdul[i].name)), 'object',
+                                  lambda i=i: _median_snr(hdul[i]), named=bool(own)))
+            return out
+        cube_idx = _cube_index(hdul)
+        found = []
+        for i, ext in enumerate(hdul):
+            aux = _aux_kind(ext.name)
+            if aux and ext.header.get('NAXIS', 0):
+                found.append((i, ext.name, aux, False, f'EXTNAME {ext.name}: {aux} plane, not a spectrum'))
+            elif i == cube_idx:
+                found.append((i, ext.name, 'cube', False, ''))
+            elif not aux and _generic_kind(ext, None):
+                src = _clean_value(ext.header.get('SRCNAME'))
+                bkg = str(src or '').lower().startswith('background')
+                found.append((i, str(src or ext.name), 'background' if bkg else 'object', bool(src),
+                              f'JWST background slit (SRCNAME {src})' if bkg else ''))
+    if not any(kind in _SPECTRUM_KINDS for _, _, kind, _, _ in found):
+        return whole
+    return [_entry(i, name, kind, lambda i=i, kind=kind: _read_cube(path, i, cube) if kind == 'cube' else
+                   _read_fits_generic(path, i), named, why) for i, name, kind, named, why in found]
+
+
+def _target_entry(path: Path, entries: list[SpectrumEntry]) -> SpectrumEntry | None:
+    """The one entry named after the primary header's OBJECT/TARGNAME/TARGET (equal or containing it), else None"""
+    target, _ = _first(_header_dict(fits.getheader(path, 0)), ('OBJECT', 'TARGNAME', 'TARGET'))
+    t = _norm_name(target or '')
+    hits = [e for e in entries if len(t) > 3 and (t == _norm_name(e.name) or t in _norm_name(e.name))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _select(path: Path, entries: list[SpectrumEntry], objects: str | list[str | int]) -> list[int | None]:
+    """
+    The HDUs to read for ``input.objects`` (None: the reader's own choice of the target)
+
+    'auto': the entry named after the header target, if exactly one is; otherwise every usable entry when the
+    entries carry their own source names (a MOS file), else the target ('target'). 'target': the reader's choice
+    (`read_spectrum` with no ``hdu``). 'all': every usable entry. A list: the entries whose HDU index or name is in
+    it (none raises). Unusable entries are skipped with a WARNING, or read with one when listed explicitly.
+    """
+    name = path.name
+    label = ', '.join(f'HDU {e.hdu} {e.name} (S/N {e.snr:.1f}{"" if e.usable else "; unusable"})' for e in entries)
+    if isinstance(objects, str):
+        mode, why = objects, ''
+        if mode == 'auto':
+            hit = _target_entry(path, entries)
+            if hit is not None:
+                log.info("%s: %d spectra (%s); input.objects 'auto': reading HDU %d (%s), named after the header "
+                         'target', name, len(entries), label, hit.hdu, hit.name)
+                return [hit.hdu]
+            mode = 'all' if any(e.named for e in entries) else 'target'
+            why = (" ('auto': the spectra carry their own source names)" if mode == 'all' else
+                   " ('auto': the spectra are not named after their sources, so they are taken as traces of one "
+                   "target; set input.objects = 'all' to measure each)")
+        if mode == 'target':
+            log.info("%s: %d spectra (%s); input.objects 'target'%s: reading the target", name, len(entries), label,
+                     why)
+            return [None]
+        if mode != 'all':
+            raise ValueError(f"input.objects must be 'auto', 'target', 'all' or a list, not {objects!r}")
+        picks = [e for e in entries if e.usable]
+        for e in entries:
+            if not e.usable:
+                log.warning('%s: skipping HDU %s (%s): %s', name, e.hdu, e.name, e.reason)
+        log.info("%s: %d spectra (%s); input.objects 'all'%s: reading %d", name, len(entries), label, why, len(picks))
+    else:
+        wanted = {str(x) for x in objects}
+        picks = [e for e in entries if str(e.hdu) in wanted or e.name in wanted]
+        for e in picks:
+            if not e.usable:
+                log.warning('%s: HDU %s (%s) is read because input.objects names it, although %s', name, e.hdu,
+                            e.name, e.reason)
+        log.info('%s: %d spectra (%s); input.objects %s: reading %s', name, len(entries), label, list(objects),
+                 ', '.join(f'HDU {e.hdu}' for e in picks) or 'none')
+    if not picks:
+        raise ValueError(f'input.objects = {objects!r} selects none of the spectra of {name} ({label})')
+    return [e.hdu for e in picks]
+
+
+def read_spectra(source: str | Path, *, objects: str | list[str | int] = 'auto', hdu: int | str | None = None,
+                 **read_kwargs: Any) -> list[Spectrum]:
+    """
+    Read the spectra of a file that ``objects`` (``input.objects``, see `_select`) selects, each as its own object
+
+    ``source`` is a path, or ``'file.fits[3]'`` for one HDU. With ``hdu`` (``input.hdu``), a single HDU, or a file with
+    one candidate spectrum (`list_spectra`), this is `read_spectrum`. Otherwise the source of each spectrum is
+    ``'file.fits[<hdu>]'`` and ``meta['entry']`` its entry name; an entry without its own source name, other than the
+    target (`read_spectrum` with no ``hdu``), is named '<object> <entry>' (e.g. 'J1745-1640 SPAT0168-SLIT0457-DET02')
+    however many are read at once, so that grouping and rereading a source never merge them. ``read_kwargs`` go to
+    `read_spectrum`.
+    """
+    path, at = split_source(source)
+    if at is not None:
+        if hdu is not None and hdu != at:
+            raise ValueError(f'{source}: HDU {at} in the source but hdu={hdu!r} given')
+        hdu = at
+    entries = [e for e in list_spectra(path, cube=read_kwargs.get('cube')) if e.kind in _SPECTRUM_KINDS]
+    if len(entries) < 2:  # the candidate's own HDU: the reader's default may be a background slit
+        return [read_spectrum(path, hdu=hdu if hdu is not None else entries[0].hdu, **read_kwargs)]
+    picks = [hdu] if hdu is not None else _select(path, entries, objects)
+    read = []
+    for h in picks:
+        spec = read_spectrum(path, hdu=h, **read_kwargs)
+        entry = next((e for e in entries if e.hdu == spec.meta.get('hdu')), None)
+        if entry is None:
+            raise ValueError(f'{path.name}: HDU {h!r} is not one of the spectra ({", ".join(e.name for e in entries)})')
+        read.append((h, spec, entry))
+    # the target (the reader's choice with no HDU) keeps the plain object name, whichever call reads it
+    target = next((spec.meta['hdu'] for h, spec, _ in read if h is None), None)
+    if target is None and not all(entry.named for _, _, entry in read):
+        target = read_spectrum(path, **read_kwargs).meta['hdu']
+    out = []
+    for _, spec, entry in read:
+        meta = {**spec.meta, 'entry': entry.name}
+        if not entry.named and entry.hdu != target:
+            meta['object'] = f"{spec.meta.get('object') or path.stem} {entry.name}"
+        out.append(replace(spec, source=f'{path}[{entry.hdu}]', meta=meta))
+    return out
 
 
 # (name, sniff, read) in the order tried; ASCII has no sniffer (its reader raises for anything else) and `specutils`

@@ -24,10 +24,12 @@ from typing import Any, NamedTuple, Union, get_args, get_origin, get_type_hints
 
 import tomli_w
 
+from .constants import C_KMS
 from .medium import METHODS as AIR_METHODS
 from .types import Spectrum
 
-__all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
+__all__ = ['Config', 'ConfigError', 'InputConfig', 'CubeConfig', 'OBJECT_MODES', 'R_MIN_RV', 'resolution_too_low',
+           'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
            'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
            'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'method_advice', 'MethodAdvice',
            'SCHEMA_VERSION']
@@ -53,10 +55,22 @@ REGIME_EDGES = (4500., 20000.)
 # the spectral regions themselves always come from the feature catalogue via `rvfitter.regions.select`.
 BAND_OPTICAL_MAX = 11000.  # coverage ending below this is 'optical'
 BAND_NIR_MIN = 9000.  # coverage starting above this (and ending above BAND_OPTICAL_MAX) is 'nir'; else 'mixed'
+# Below this resolving power no RV is constrained: one resolution element, c/R, exceeds 600 km/s, so even a centroid
+# good to a twentieth of it (30 km/s at high S/N) is as large as the RVs of nearby stars and brown dwarfs (tens of km/s)
+R_MIN_RV = 500.
+OBJECT_MODES = ('auto', 'target', 'all')  # input.objects, else a list of entry names / HDU indices
 
 
 class ConfigError(ValueError):
     """The configuration file is malformed or has invalid values; the message lists every problem found"""
+
+
+@dataclass
+class CubeConfig:
+    """IFU cube extraction: a circular aperture (`rvfitter.io.read_spectrum`)"""
+    # aperture centre (x, y) [0-based pixels of the median-collapsed cube]; unset: its brightest spaxel
+    position: tuple[float, float] | None = None
+    radius: float | None = None  # aperture radius [spaxels]; unset: rvfitter.io.CUBE_RADIUS_DEFAULT (3)
 
 
 @dataclass
@@ -72,6 +86,10 @@ class InputConfig:
     # a directory searched for '<frame number>*.fits' of each raw frame named in the reduced file (PypeIt FILENAME)
     raw_header: str | None = None
     raw_header_dir: str | None = None
+    # which spectra of a multi-object file (PypeIt spec1d, JWST x1d, multi-extension FITS) to measure, each as its own
+    # object: 'auto', 'target', 'all', or a list of entry names / HDU indices (`rvfitter.io.read_spectra`)
+    objects: str | list[int | str] = 'auto'
+    cube: CubeConfig = field(default_factory=CubeConfig)
 
 
 @dataclass
@@ -365,6 +383,16 @@ def _validate(cfg: Config) -> list[str]:
     _choice(p, 'input.medium_method', i.medium_method, tuple(AIR_METHODS))
     if i.resolution is not None and not i.resolution > 1:
         p.append(f'input.resolution = {i.resolution} must be a resolving power R > 1')
+    if isinstance(i.objects, str):
+        _choice(p, 'input.objects', i.objects, OBJECT_MODES)
+    elif not i.objects:
+        p.append("input.objects = [] selects nothing; use 'auto', 'target', 'all' or a list of names / HDU indices")
+    if i.hdu is not None and i.objects != 'auto':
+        p.append(f'input.hdu = {i.hdu!r} and input.objects = {i.objects!r} both choose the spectra; set only one')
+    if i.cube.position is not None and min(i.cube.position) < 0:
+        p.append(f'input.cube.position = {list(i.cube.position)} must be (x, y) pixel indices >= 0')
+    if i.cube.radius is not None and not i.cube.radius > 0:
+        p.append(f'input.cube.radius = {i.cube.radius} must be positive [spaxels]')
     v = cfg.velocity_frame
     _choice(p, 'velocity_frame.correction', v.correction, VELOCITY_CORRECTIONS)
     _choice(p, 'velocity_frame.frame', v.frame, VELOCITY_FRAMES)
@@ -605,10 +633,19 @@ class MethodAdvice(NamedTuple):
     options: dict[str, Any]
 
 
-def method_advice(regime: str) -> dict[str, MethodAdvice]:
+def resolution_too_low(resolution: float | None) -> str | None:
+    """Why a spectrum of this R cannot constrain an RV (R below `R_MIN_RV`), else None (also for an unknown R)"""
+    if resolution is None or resolution >= R_MIN_RV:
+        return None
+    return (f'R {resolution:.0f} is below {R_MIN_RV:.0f}: one resolution element is {C_KMS / resolution:.0f} km/s, so '
+            'the spectrum cannot constrain an RV (any value measured is flagged resolution_too_low)')
+
+
+def method_advice(regime: str, resolution: float | None = None) -> dict[str, MethodAdvice]:
     """
     Every method's `MethodAdvice` in ``regime`` ('low', 'mid' or 'high', from `regime_for`); the recommended methods,
-    in this order, are the defaults of `default_for`. The advice does not depend on the band.
+    in this order, are the defaults of `default_for`. The advice does not depend on the band. With a ``resolution``
+    below `R_MIN_RV`, every reason starts with `resolution_too_low`'s statement (the recommendations are unchanged).
     """
     if regime not in ('low', 'mid', 'high'):
         raise ValueError(f"regime must be 'low', 'mid' or 'high', not {regime!r}")
@@ -639,7 +676,9 @@ def method_advice(regime: str) -> dict[str, MethodAdvice]:
                        'RV and vsini from the mean line profile.' if high else
                 'Not recommended below R 20000: the mean line profile needs many resolved lines.'),
     }
-    return {m: MethodAdvice(ok, why, {'fit_vsini': True} if m == 'template_fit' and not low else {})
+    too_low = resolution_too_low(resolution)
+    return {m: MethodAdvice(ok, f'{too_low}. {why}' if too_low else why,
+                            {'fit_vsini': True} if m == 'template_fit' and not low else {})
             for m, (ok, why) in advice.items()}
 
 
