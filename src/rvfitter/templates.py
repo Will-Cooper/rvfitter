@@ -528,6 +528,11 @@ class TemplateGrid:
         for i, a in enumerate(self.axes):
             if a in rng:
                 lo, hi = rng[a]
+                vals = self.axis_values(a)
+                if lo == hi and not np.isclose(vals, lo, rtol=0., atol=1e-9).any():  # a single value: exactly it
+                    near = vals[np.argsort(np.abs(vals - lo))[:2]]
+                    raise ValueError(f'grid {self.name} has no {a} = {lo:g}; the nearest values are '
+                                     f'{", ".join(f"{v:g}" for v in sorted(near))}')
                 keep &= (self.points[:, i] >= lo - 1e-9) & (self.points[:, i] <= hi + 1e-9)
             elif a not in ('teff', 'logg'):
                 vals = self.axis_values(a)
@@ -774,6 +779,12 @@ def _download_zenodo(meta: GridMeta, want: dict, directory: Path, verify: bool) 
     return _finish(directory, replace(meta, medium=medium, **pv), manifest_path, manifest, verify)
 
 
+def _nearest(rows: Sequence[Mapping[str, float]], axis: str, value: float) -> list[float]:
+    """The (up to two) values of ``axis`` in ``rows`` nearest ``value``"""
+    vals = sorted({float(r[axis]) for r in rows if axis in r}, key=lambda x: abs(x - value))
+    return sorted(vals[:2])
+
+
 def _download_svo(meta: GridMeta, want: dict, directory: Path, fetch: Callable[[str], bytes],
                   verify: bool) -> TemplateGrid:
     """Download from the SVO theory server; cached files whose SHA-256 matches the manifest are not refetched"""
@@ -789,7 +800,16 @@ def _download_svo(meta: GridMeta, want: dict, directory: Path, fetch: Callable[[
     rows = _parse_ssap(fetch(f'{SVO_SSAP_URL}?{urllib.parse.urlencode(params)}'))
     rows = [r for r in rows if all(lo - 1e-9 <= r.get(a, lo) <= hi + 1e-9 for a, (lo, hi) in want.items())]
     if not rows:
-        raise FileNotFoundError(f'SVO returned no {meta.name} models in the requested ranges')
+        points = {a: lo for a, (lo, hi) in want.items() if lo == hi}
+        near = ''
+        if points:  # a single value with no model: ask again without it and name the nearest values SVO has
+            wide = {k: v for k, v in params.items() if k.rsplit('_', 1)[0] not in
+                    {svo_names.get(a, a) for a in points}}
+            seen = _parse_ssap(fetch(f'{SVO_SSAP_URL}?{urllib.parse.urlencode(wide)}'))
+            near = '; '.join(f'{a} = {v:g}: nearest {", ".join(f"{x:g}" for x in _nearest(seen, a, v))}'
+                             for a, v in points.items() if _nearest(seen, a, v) not in ([], [v]))
+        raise FileNotFoundError(f'SVO returned no {meta.name} models in the requested ranges' +
+                                (f' (no grid point at {near})' if near else ''))
     manifest_path, manifest = _manifest(directory)
     for i, r in enumerate(rows, 1):
         name = _generic_name(r)

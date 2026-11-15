@@ -109,6 +109,21 @@ class GroupingConfig:
     override: dict[str, str] | None = None  # file (path, name or stem) or header object name -> object
 
 
+def _as_range(value: Any) -> Any:
+    """A single value (a number or a one-element list) as the range (v, v) holding just it; a mapping per value;
+    anything else unchanged (the type check follows)"""
+    if isinstance(value, dict):
+        return {k: _as_range(v) for k, v in value.items()}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (value, value)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        return (value[0], value[0])
+    return value
+
+
+SINGLE = {'single': True}  # field metadata: a template range that also takes a single value (`_as_range`)
+
+
 @dataclass
 class TemplatesConfig:
     """Model-atmosphere grid and the parameter space searched"""
@@ -117,15 +132,22 @@ class TemplatesConfig:
     local_dir: str | dict[str, str] | None = None  # local template directory (first grid), or {grid: directory}
     # declared medium of the grid; None = take it from the grid's metadata
     medium: str | None = field(default=None, metadata={'choices': MEDIA})
-    teff_range: tuple[float, float] | None = None  # [K]
-    logg_range: tuple[float, float] | None = None  # [dex, cgs]
-    met_range: tuple[float, float] | None = None  # [dex]
-    alpha_range: tuple[float, float] | None = None  # [dex]
-    ranges: dict[str, tuple[float, float]] = field(default_factory=dict)  # extra grid axes, e.g. {co = [0.5, 1]}
+    # [min, max] searched, or one value (only that grid value: fewer templates downloaded and fitted)
+    teff_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [K]
+    logg_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [dex, cgs]
+    met_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [dex]
+    alpha_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [dex]
+    # extra grid axes, e.g. {co = [0.5, 1]} or {co = 1}
+    ranges: dict[str, tuple[float, float]] = field(default_factory=dict, metadata=SINGLE)
     teff_prior: float | None = None  # expected Teff [K] (e.g. from the spectral type), used to select features
     logg_prior: float | None = None
     met_prior: float | None = None  # met, alpha and extra axes without a range are held at their prior/default
     alpha_prior: float | None = None
+
+    def __post_init__(self):  # a single value from the GUI or code, as from a TOML file
+        for f in fields(self):
+            if f.metadata.get('single'):
+                setattr(self, f.name, _as_range(getattr(self, f.name)))
 
 
 @dataclass
@@ -350,7 +372,8 @@ def _from_dict(cls: type, data: Any, where: str) -> Any:
     kwargs = {}
     for name in known:
         if name in data:
-            kwargs[name] = _coerce(data[name], hints[name], f'{where}.{name}' if where else name)
+            value = _as_range(data[name]) if known[name].metadata.get('single') else data[name]
+            kwargs[name] = _coerce(value, hints[name], f'{where}.{name}' if where else name)
     return cls(**kwargs)
 
 
@@ -363,12 +386,14 @@ def _choice(problems: list[str], where: str, value: Any, choices: tuple[str, ...
         problems.append(f'{where} = {value!r} is not one of {", ".join(choices)}{_suggest(value, choices)}')
 
 
-def _range(problems: list[str], where: str, value: tuple[float, float] | None, positive: bool = False) -> None:
+def _range(problems: list[str], where: str, value: tuple[float, float] | None, positive: bool = False,
+           single: bool = False) -> None:
+    """[min, max] with min < max (min <= max if ``single``: one value)"""
     if value is None:
         return
     lo, hi = value
-    if not lo < hi:
-        problems.append(f'{where} = {list(value)} must be [min, max] with min < max')
+    if not (lo <= hi if single else lo < hi):
+        problems.append(f'{where} = {list(value)} must be [min, max] with min {"<=" if single else "<"} max')
     elif positive and lo <= 0:
         problems.append(f'{where} = {list(value)} must be positive')
 
@@ -419,12 +444,12 @@ def _validate(cfg: Config) -> list[str]:
     t = cfg.templates
     if t.medium is not None:
         _choice(p, 'templates.medium', t.medium, MEDIA)
-    _range(p, 'templates.teff_range', t.teff_range, positive=True)
-    _range(p, 'templates.logg_range', t.logg_range)
-    _range(p, 'templates.met_range', t.met_range)
-    _range(p, 'templates.alpha_range', t.alpha_range)
+    _range(p, 'templates.teff_range', t.teff_range, positive=True, single=True)
+    _range(p, 'templates.logg_range', t.logg_range, single=True)
+    _range(p, 'templates.met_range', t.met_range, single=True)
+    _range(p, 'templates.alpha_range', t.alpha_range, single=True)
     for axis, r_ in t.ranges.items():
-        _range(p, f'templates.ranges.{axis}', r_)
+        _range(p, f'templates.ranges.{axis}', r_, single=True)
     grids = [t.grid] if isinstance(t.grid, str) else list(t.grid)
     if not grids or len(set(grids)) != len(grids):
         p.append(f'templates.grid = {t.grid!r} must be a name or a list of distinct names')
@@ -791,10 +816,11 @@ def _template_advice(cfg: Config, regime: str, teff: float | None, source: str) 
                                         f' Also covering it: {others}.' * bool(others)),
         'templates.teff_range': SettingAdvice((max(lo, teff - half), min(hi, teff + half)),
                                               f'±{half:.0f} K around {source} ({teff:.0f} K), within {best}; widen it '
-                                              'if the fit reaches an edge.'),
+                                              'if the fit reaches an edge, or give one grid value to fit only it.'),
         'templates.logg_range': SettingAdvice((max(glo, 4.5), min(ghi, 5.5)),
                                               f'Below 4000 K ({source}): field dwarfs and brown dwarfs; lower the '
-                                              'minimum for young, low-gravity objects.') if teff < 4000. else
+                                              'minimum for young, low-gravity objects, or give one value (e.g. 5.0) '
+                                              'to download and fit fewer templates.') if teff < 4000. else
         SettingAdvice(None, f'At {teff:.0f} K ({source}) giants are possible: search the whole grid.'),
     }
 

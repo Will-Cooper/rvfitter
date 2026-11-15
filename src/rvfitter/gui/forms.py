@@ -76,15 +76,16 @@ TIPS = {
     'templates.local_dir': 'Folder with your own template grid (or JSON {grid: folder}). Leave empty to use the '
                            'download cache.',
     'templates.medium': 'Medium of the template wavelengths; leave at (none) to take it from the grid\'s metadata.',
-    'templates.teff_range': 'Teff range searched [K], e.g. 1500, 2500. Empty = the Teff prior ± 300 K, or the whole '
-                            'grid without a prior.',
-    'templates.logg_range': 'log g range searched [dex, cgs], e.g. 4.5, 5.5. Empty = the whole grid.',
-    'templates.met_range': 'Metallicity range searched [dex]. Empty = held at the grid point nearest the '
-                           'metallicity prior (or the grid default).',
-    'templates.alpha_range': 'Alpha-enhancement range searched [dex]. Empty = held at the grid point nearest the '
-                             'alpha prior (or the grid default).',
-    'templates.ranges': 'Ranges of any other grid axes (JSON), e.g. {"co": [0.5, 1]}. An axis without a range is held '
-                        'at its default.',
+    'templates.teff_range': 'Teff range searched [K], e.g. 1500, 2500, or one grid value, e.g. 2000 (fewer templates '
+                            'to download and fit). Empty = the Teff prior ± 300 K, or the whole grid without a prior.',
+    'templates.logg_range': 'log g range searched [dex, cgs], e.g. 4.5, 5.5, or one grid value, e.g. 5.0. Empty = '
+                            'the whole grid.',
+    'templates.met_range': 'Metallicity range searched [dex], or one grid value. Empty = held at the grid point '
+                           'nearest the metallicity prior (or the grid default).',
+    'templates.alpha_range': 'Alpha-enhancement range searched [dex], or one grid value. Empty = held at the grid '
+                             'point nearest the alpha prior (or the grid default).',
+    'templates.ranges': 'Ranges of any other grid axes (JSON), e.g. {"co": [0.5, 1]}, or one value, {"co": 1}. An '
+                        'axis without a range is held at its default.',
     'templates.teff_prior': 'Expected Teff [K] (e.g. from the spectral type), used to choose the features and the '
                             'templates, e.g. 1800 or 2400.',
     'templates.logg_prior': 'Expected log g [dex], used when no grid point lies in the ranges and for the telluric '
