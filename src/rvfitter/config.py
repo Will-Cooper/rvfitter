@@ -24,6 +24,7 @@ from typing import Any, NamedTuple, Union, get_args, get_origin, get_type_hints
 
 import tomli_w
 
+from . import barycentric
 from .constants import C_KMS
 from .medium import METHODS as AIR_METHODS
 from .types import Spectrum
@@ -32,13 +33,29 @@ __all__ = ['Config', 'ConfigError', 'InputConfig', 'CubeConfig', 'OBJECT_MODES',
            'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
            'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
            'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'method_advice', 'MethodAdvice',
-           'setting_advice', 'SettingAdvice', 'grid_advice', 'LOCATION_FIELDS',
+           'setting_advice', 'SettingAdvice', 'wavelength_status', 'WAVELENGTH_CORRECTION_DEFAULT', 'grid_advice',
+           'LOCATION_FIELDS',
            'SCHEMA_VERSION']
 
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
+# the default of calibration.wavelength_correction: every text (GUI, CLI, advice) reads it from here
+WAVELENGTH_CORRECTION_DEFAULT = 'none'
+# why: the pre-registered test on the GTC sample (docs/methods.md, "Sky correction on the GTC sample")
+WAVELENGTH_DEFAULT_WHY = ('On the GTC sample of 20 objects with literature RVs, the sky correction gave no significant '
+                          'improvement, so it is opt-in (docs/methods.md).')
+WAVELENGTH_MODE_TEXT = {  # what each mode applies
+    'sky-if-needed': 'the OH sky zero-point curve, only where it is well measured at the regions and significant',
+    'sky': 'the OH sky zero-point curve, whenever it is measured',
+    'auto': 'the sky-if-needed curve plus the star − sky constant (opt-in)',
+    'telluric': "the star's own telluric zero-point curve, if it covers the regions",
+    'none': 'nothing (the zero point is only measured and reported)',
+}
+# how big the wavelength zero point can be, honestly
+WAVELENGTH_SIZE_TEXT = ('Typically tens of km/s where the arc solution is distorted: on the GTC benchmark J1745 the '
+                        'sky correction moved the RV by −21 km/s.')
 METHOD_NAMES = ('ccf', 'template_fit', 'telluric_ref', 'linecentre', 'forward_mcmc', 'lsd')  # methods.REGISTRY keys
 METHOD_LABELS = {'ccf': 'CCF', 'template_fit': 'Template fit', 'linecentre': 'Line centring',  # display names
                  'forward_mcmc': 'Forward model', 'lsd': 'LSD', 'telluric_ref': 'Telluric reference'}
@@ -46,7 +63,7 @@ OUTPUT_FORMATS = ('csv', 'json', 'tsv', 'html')
 MEDIA = ('air', 'vacuum')
 INPUT_MEDIA = ('auto', *MEDIA)
 VELOCITY_CORRECTIONS = ('auto', 'apply', 'skip')
-VELOCITY_FRAMES = ('barycentric', 'heliocentric')
+VELOCITY_FRAMES = barycentric.FRAMES
 TEMPLATE_WINDOWS = ('features', 'full')
 PLOT_STYLES = ('quick', 'paper')
 
@@ -208,7 +225,8 @@ class CalibrationConfig:
     # 'sky-if-needed': apply the OH sky zero point only when it is safe and significant; 'auto' (opt-in): also
     # apply the star - sky constant; 'sky': sky curve alone; 'telluric': the star's telluric curve; 'none': report
     # only. See docs/methods.md. What was applied is logged and recorded (wavelength_correction_applied, zp_flags).
-    wavelength_correction: str = field(default='sky-if-needed', metadata={'choices': WAVELENGTH_CORRECTIONS})
+    wavelength_correction: str = field(default=WAVELENGTH_CORRECTION_DEFAULT,
+                                       metadata={'choices': WAVELENGTH_CORRECTIONS})
     # slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the slit width W and
     # trace FWHM F; a number [km/s]; or 'none' (unconstrained, warned)
     slit_prior: str | float = 'auto'
@@ -825,6 +843,21 @@ def _template_advice(cfg: Config, regime: str, teff: float | None, source: str) 
     }
 
 
+def wavelength_status(spectrum: Spectrum, cfg: Config) -> str:
+    """One plain line for the Setup tab: is there a sky spectrum, what the mode applies, and its typical size"""
+    cal = cfg.calibration
+    mode = cal.wavelength_correction
+    has_sky = spectrum.sky is not None or bool(cal.sky_source)
+    if not has_sky and mode != 'telluric':
+        return f'No sky spectrum: no sky zero point to measure, so {mode} applies nothing.'
+    sky = 'Sky spectrum in the file' if spectrum.sky is not None else \
+        f'Sky from {Path(cal.sky_source).name}' if cal.sky_source else 'No sky spectrum'
+    is_default = mode == WAVELENGTH_CORRECTION_DEFAULT
+    why = f' {WAVELENGTH_DEFAULT_WHY}' if is_default else ''
+    opt_in = ' Opt in to sky-if-needed to apply the sky curve.' if mode == 'none' and has_sky else ''
+    return f'{sky}; {mode}{" (the default)" * is_default} applies {WAVELENGTH_MODE_TEXT[mode]}.{why}{opt_in} ' \
+           f'{WAVELENGTH_SIZE_TEXT}'
+
 def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = None) -> dict[str, SettingAdvice]:
     """
     Advice on the data-dependent settings for ``spectrum`` (its R, band, medium, site, sky and velocity frame) under
@@ -860,19 +893,23 @@ def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = Non
         SettingAdvice(True, 'Space data: there is no telluric absorption.') if space else
         SettingAdvice(True, 'A telluric-corrected (_tellcorr) product.') if tellcorr else
         SettingAdvice(None, 'Ground-based: tick it only if the reduction removed the telluric absorption.'))
-    frame, frame_src, note = meta.get('frame_in'), meta.get('frame_source'), meta.get('frame_note')
-    if frame:
-        out['velocity_frame.correction'] = SettingAdvice('skip', f'Already {frame} ({frame_src}); auto also skips it.')
-        out['velocity_frame.frame'] = SettingAdvice(frame, f'The frame of the wavelengths ({frame_src}).')
-    else:
-        out['velocity_frame.correction'] = SettingAdvice(None, note) if note else \
-            SettingAdvice('auto', 'Computed from the header\'s coordinates, time and site.')
-        out['velocity_frame.frame'] = SettingAdvice(None, 'The frame the RVs are reported in: barycentric is usual.')
+    st = barycentric.status(spectrum, 'auto', cfg.velocity_frame.frame, cfg.velocity_frame.overrides)
+    out['velocity_frame.correction'] = (
+        SettingAdvice('skip', f'{st.text}; auto skips it too.') if st.state == 'corrected' else
+        SettingAdvice(None, f"{st.text}: set skip (already corrected) or apply (not corrected; give "
+                            'velocity_frame.overrides).') if st.state == 'unknown' else
+        SettingAdvice('auto', f'{st.text}.'))
+    out['velocity_frame.frame'] = SettingAdvice(st.frame, f'The frame of the wavelengths ({st.detail}).') \
+        if st.state == 'corrected' else \
+        SettingAdvice(None, 'The frame the RVs are reported in: barycentric is usual.')
     if spectrum.sky is not None or cfg.calibration.sky_source:
         where = 'the file\'s sky spectrum' if spectrum.sky is not None else 'Sky source'
         out['calibration.wavelength_correction'] = SettingAdvice(
-            'sky-if-needed', f'OH sky lines are available ({where}): their zero point is applied only when it is safe '
-                             'and significant.')
+            WAVELENGTH_CORRECTION_DEFAULT, f'OH sky lines are available ({where}). The default, '
+                                           f'{WAVELENGTH_CORRECTION_DEFAULT}, applies '
+                                           f'{WAVELENGTH_MODE_TEXT[WAVELENGTH_CORRECTION_DEFAULT]}. '
+                                           f'{WAVELENGTH_DEFAULT_WHY} Opt in to sky-if-needed as a check: it moves '
+                                           'the RVs by up to tens of km/s.')
     else:
         out['calibration.wavelength_correction'] = SettingAdvice(
             'none', 'No sky spectrum, and space data have no sky lines.' if space else

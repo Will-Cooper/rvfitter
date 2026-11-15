@@ -73,8 +73,15 @@ def _barycentric(spectra: Sequence[Spectrum], cfg: Any, mode: str, name: str) ->
             corrected.append(spec)
         kmss.append(float(kms))
         sources.append(source)
-    return corrected, {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame}
+    return corrected, {'applied_kms': float(np.mean(kmss)), 'source': sources[0], 'frame': frame,
+                       'frame_unknown': 'unknown' in sources}
 
+
+def wavelength_shift(spec: Spectrum, sel: dict) -> float:
+    """How much the applied wavelength correction moved the RV [km/s]: −Δv (λ' = λ / D(Δv)), averaged over the
+    centres of the measured regions (0 if nothing was applied)"""
+    centres = [0.5 * (r.wmin + r.wmax) for r in wcorr._region_list(sel)]
+    return -float(np.mean(sky_zeropoint.applied_dv(spec.meta, np.array(centres)))) if centres else 0.
 
 def region_selector(cfg: Any, names: list[str], overrides: bool = True) -> Callable[[Spectrum], dict]:
     """`regions.select` for these methods with the configured options (and ``regions.overrides`` if `overrides`)"""
@@ -271,8 +278,11 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
 
     binary_info = _binary(corrected, cal_infos, cfg, name, failures) if cfg.methods.binary else {}
     sysd = wcorr.combine_epochs(zp_epochs)
+    frame_flag = wcorr.ZP_FLAGS['frame_unknown'] * bary_info.pop('frame_unknown')
     bary_info.update(wavelength_correction=sysd.pop('applied'), wavelength_correction_mode=sysd.pop('mode'),
-                     zp_flags=int(sysd.pop('zp_flags')), sky_tests=sysd.pop('sky_tests'))
+                     zp_flags=int(sysd.pop('zp_flags')) | frame_flag,
+                     sky_tests=sysd.pop('sky_tests'), wavelength_shift_kms=float(np.mean(
+                         [wavelength_shift(s, sel) for s, sel in zip(corrected, sels, strict=True)])))
     meta = corrected[0].meta  # the curves `plotting.plot_wavelength_correction` draws (first epoch)
     bary_info['wavelength_curves'] = {k: meta.get(k) for k in ('sky_zeropoint', 'telluric_zeropoint',
                                                               'wavelength_correction')}

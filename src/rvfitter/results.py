@@ -116,7 +116,10 @@ _SPEC: tuple[str | tuple, ...] = (
     # the star's absolute zero point (slit centring): the applied star - sky constant's error, else the slit-centring
     # prior (never a measured offset's value); NaN when unconstrained (see star_sky_term)
     ('sys_star_sky', 'systematics', 'star_sky_systematic', _num, None),
-    'rv_total_err', *TEMPLATE_COLUMNS,
+    'rv_total_err',
+    # how much the applied wavelength correction moved the RV (pipeline.wavelength_shift)
+    ('wavelength_shift_kms', 'barycentric', 'wavelength_shift_kms', _num, None),
+    *TEMPLATE_COLUMNS,
     ('zp_sky_kms', 'systematics', 'zp_sky_kms', _num, None), ('zp_sky_err', 'systematics', 'zp_sky_err', _num, None),
     ('zp_sky_slope', 'systematics', 'zp_sky_slope', _num, None),
     ('zp_sky_model_spread', 'systematics', 'zp_sky_model_spread', _num, None),

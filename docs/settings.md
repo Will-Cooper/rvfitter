@@ -11,6 +11,12 @@ rvfitter works internally in vacuum wavelengths, in km/s, and in the frame chose
 An empty value in the GUI is an unset value in the TOML file (TOML has no null), and it means "automatic", as described in each entry.
 When a spectrum is opened, the GUI's Setup tab fills the resolving power, medium, methods, velocity frame and wavelength correction from the data, so most users need only check those.
 
+<a id="two-settings"></a>
+> **Two settings that move RVs by tens of km/s.** Check both for every new data set; the GUI's Setup tab says what each will do to the selected spectrum, and Measure RVs never runs on a guessed frame.
+>
+> - **Velocity frame** ([`velocity_frame.correction`](#velocity_frame-correction); default `auto`). If a header keyword says the spectrum is already corrected (`VEL_TYPE`, `SPECSYS`, `VHELIO`, JWST products), nothing is applied; else rvfitter computes the barycentric correction from RA/Dec, mid-exposure time and site; else the frame is unknown, and the GUI asks you whether the spectrum is already corrected (the command line warns and flags `frame_unknown`). A wrong answer shifts every RV by up to ±30 km/s: the Earth's orbital speed, 29.8 km/s, times the cosine of the target's ecliptic latitude. Check: the Setup tab's status line, or `bary_source` and `bary_kms` in the results; if your reduction corrected the wavelengths without saying so in the header, set `skip`.
+> - **Wavelength zero point** ([`calibration.wavelength_correction`](#calibration-wavelength_correction); default `none`). The sky (OH) zero point is measured whenever a sky spectrum is present, but by default not applied, because on the GTC sample of 20 objects with literature RVs the sky correction gave no significant improvement ([methods.md](methods.md#sky-correction-on-the-gtc-sample)). `sky-if-needed` applies it where the arc solution is distorted; that is typically tens of km/s (on the GTC benchmark J1745−1640 it moved the RV by −21 km/s). Check: `zp_sky_kms` (the measured sky offset) and, after an opt-in run, `wavelength_shift_kms` (how much the correction moved the RV), also shown in the Diagnostics tab; compare a run with and without it.
+
 ## Contents
 
 - [General](#general): [`seed`](#seed)
@@ -163,7 +169,8 @@ Spectra named by detector position rather than by source (e.g. `SPAT0240` traces
 ### `velocity_frame.correction`
 
 The barycentric correction: `auto`, `apply` or `skip`; default `auto`.
-`auto` skips a spectrum that is already corrected (e.g. `PypeIt` `VEL_TYPE`, IRAF `VHELIO`, JWST products), else computes the correction from the header coordinates, mid-exposure time and site, else uses an ESO BERV keyword with a WARNING, else warns and skips.
+`auto` skips a spectrum that is already corrected (e.g. `PypeIt` `VEL_TYPE`, FITS `SPECSYS`, IRAF `VHELIO`, JWST products), else computes the correction from the header coordinates, mid-exposure time and site, else uses an ESO BERV keyword with a WARNING; otherwise the frame is unknown, and rvfitter never guesses: the GUI asks whether the spectrum is already corrected and records the answer (`skip` with its frame, or `apply`), whilst the command line applies nothing, logs a WARNING with the bound for that target and sets the flag `frame_unknown` (`zp_flags`; `bary_source = "unknown"`).
+The bound is the Earth's orbital speed, 29.8 km/s, times the cosine of the target's ecliptic latitude (±30 km/s without coordinates).
 `apply` always computes it, and `skip` never corrects.
 We recommend `auto`.
 Set `skip` for spectra that a pipeline has corrected without recording it, because applying the correction twice shifts the RV by up to 30 km/s; we note that no Spextool velocity keyword could be verified, so SpeX spectra are treated as uncorrected.
@@ -411,15 +418,16 @@ The full analysis is in [methods.md](methods.md#wavelength-zero-point-of-the-gtc
 ### `calibration.wavelength_correction`
 
 The wavelength zero-point correction:
-- `sky-if-needed` (default): the OH sky curve Δv(λ), applied only when it is safe and significant;
+- `none` (default): measure and report only;
+- `sky-if-needed` (opt-in): the OH sky curve Δv(λ), applied only when it is safe and significant;
 - `auto` (opt-in): the sky curve plus the star − sky constant from the star's telluric lines;
 - `sky`: the sky curve alone, whenever it can be measured;
-- `telluric`: the star's telluric curve alone;
-- `none`: measure and report only.
+- `telluric`: the star's telluric curve alone.
 
-The default applies the sky curve only when three tests on the calibration data pass: at least three measured sky segments covering more than half of every region; a significant offset (|mean Δv| > 3σ) or variation between segments (χ² p < 0.001); and a correction larger than 0.05 resolution elements.
+We made `none` the default because on the GTC sample of 20 objects with literature RVs the sky correction gave no significant improvement ([methods.md](methods.md#sky-correction-on-the-gtc-sample)).
+`sky-if-needed` applies the sky curve only when three tests on the calibration data pass: at least three measured sky segments covering more than half of every region; a significant offset (|mean Δv| > 3σ) or variation between segments (χ² p < 0.001); and a correction larger than 0.05 resolution elements.
 The stellar line scatter is never used, so the decision does not depend on the RVs being measured.
-We recommend it because arc-lamp solutions can be distorted by tens of km/s with a small arc RMS: on the GTC/OSIRIS spectrum of J1745−1640 the sky shows +5 to +38 km/s over 7700–8950 Å, and correcting it reduced the line-to-line scatter from 11.3 to 3.2 km/s.
+We offer it because arc-lamp solutions can be distorted by tens of km/s with a small arc RMS: on the GTC/OSIRIS spectrum of J1745−1640 the sky shows +5 to +38 km/s over 7700–8950 Å, and correcting it reduced the line-to-line scatter from 11.3 to 3.2 km/s.
 We keep `auto` opt-in because the star − sky constant has been tested on one object only, where it moved the RV further from the literature value ([methods.md](methods.md#why-the-star--sky-constant-is-opt-in)).
 `telluric` is refused when the regions lie too far from the telluric nodes, as for the optical alkali lines.
 A spectrum without a sky (most Spextool and JWST files) is left uncorrected in every mode.
@@ -575,14 +583,12 @@ This is a lower limit: it has no zero-point term, and at low R the zero point do
 <a id="recipe-correction-mode"></a>
 ### Wavelength-correction mode
 
-We recommend the default, `sky-if-needed` ([`calibration.wavelength_correction`](#calibration-wavelength_correction)).
-Without a sky spectrum (every Spextool and JWST file, and coadds without a `sky_source`) it applies nothing, so it is then the same as `none`.
-With a sky, it applies the measured OH curve only when the calibration-data tests pass, because a distorted arc solution otherwise enters every RV.
-We note candidly what this rests on.
-Both validations ran with no correction applied: the optical set with `none` (only J1745−1640 among them has a sky spectrum), and the near-infrared set without any sky.
-The sky correction itself has been tested on J1745−1640 alone, where it reduced the line-to-line scatter from 11.3 to 3.2 km/s but moved line centring from 35.0 to 13.6 km/s, against 26.2 ± 2.3 km/s in the literature (z = 3.0 with the statistical error, against 1.5 for `none`).
+We recommend the default, `none` ([`calibration.wavelength_correction`](#calibration-wavelength_correction)).
+This was decided by a test on the GTC sample fixed before the results were seen: against 20 literature RVs, `sky-if-needed` lowered the robust scatter from 29.8 to 22.5 km/s but left the pull width unchanged (1.20 against 1.19), and the uncorrected offsets did not follow each object's sky Δv significantly (Spearman p = 0.17; [methods.md](methods.md#sky-correction-on-the-gtc-sample)).
+Without a sky spectrum (every Spextool and JWST file, and coadds without a `sky_source`) every mode applies nothing.
+With a sky, `sky-if-needed` is a useful check: on J1745−1640 it reduced the line-to-line scatter from 11.3 to 3.2 km/s but moved line centring from 35.0 to 13.6 km/s, against 26.2 ± 2.3 km/s in the literature.
 No mode agrees with the literature within the statistical errors for every method, whilst every mode lies within 1.3 of its total errors ([methods.md](methods.md#results-by-method)), so the zero point of that spectrum, not the mode, limits it.
-When you have a sky, we therefore suggest comparing the default with `none`, and treating a difference larger than the statistical errors as a zero-point problem of that spectrum.
+When you have a sky, we therefore suggest comparing a run with `sky-if-needed` against the default, and treating a difference larger than the statistical errors as a zero-point problem of that spectrum.
 
 <a id="recipe-optical-low-r"></a>
 ### Brown dwarfs in the optical at low R (e.g. GTC/OSIRIS R2500I)
@@ -608,12 +614,13 @@ teff_prior = 2100.0               # L1-L2
 enabled = ["template_fit", "ccf", "linecentre"]
 
 [calibration]
-sky_source = "spec1d_....fits"    # the spec1d of the same exposure
+sky_source = "spec1d_....fits"    # the spec1d of the same exposure: zp_sky_kms is reported
+# wavelength_correction = "sky-if-needed"  # opt-in: apply the sky zero point (moves J1745's RV by -21 km/s)
 # telluric_source = "spec1d_....fits"  # only for wavelength_correction = "auto"
 ```
 
-The low-R defaults apply: vsini fixed at 0, feature windows, and `sky-if-needed`.
-`PypeIt` corrected this coadd to the heliocentre, but its headers carry no `VEL_TYPE`, so `auto` would correct them a second time.
+The low-R defaults apply: vsini fixed at 0, feature windows, and no wavelength correction (`none`; the sky zero point is measured and reported).
+`PypeIt` corrected this coadd to the heliocentre, but its headers carry no `VEL_TYPE` (nor coordinates and time), so under `auto` its frame is unknown and the GUI asks; `skip` says so in the settings.
 `skip` applies no correction, and `frame` then only labels the output: here the RVs are heliocentric, as `PypeIt` made them.
 Leaving `frame = "barycentric"` would mislabel them by at most about 0.013 km/s ([`velocity_frame.frame`](#velocity_frame-frame)).
 With `skip`, a [`velocity_frame.overrides`](#velocity_frame-overrides) site (e.g. `{site = "lapalma"}` for the wrong GTC header longitude) has no effect, so the 0.155 km/s offset of `PypeIt`'s own correction stays in the RVs, well below their errors ([methods.md](methods.md#barycentric-correction-of-the-gtc-spectra)).

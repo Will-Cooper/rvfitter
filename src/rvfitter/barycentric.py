@@ -23,7 +23,8 @@ import numpy as np
 from .constants import C_KMS
 from .types import Spectrum
 
-__all__ = ['SITES', 'lookup_site', 'correction', 'apply', 'vel_corr_to_kms']
+__all__ = ['SITES', 'lookup_site', 'status', 'FrameStatus', 'correction', 'apply', 'vel_corr_to_kms',
+           'EARTH_ORBIT_KMS']
 
 log = logging.getLogger(__name__)
 
@@ -197,55 +198,116 @@ def _compute(meta: Mapping[str, Any], frame: str) -> tuple[float | None, list[st
     return float(coord.radial_velocity_correction(kind=frame, obstime=obstime, location=loc).to('km/s').value), []
 
 
-def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric',
-               overrides: Mapping[str, Any] | None = None) -> tuple[float, str]:
-    """
-    Decide on and compute the velocity correction [km/s] for a spectrum, and its source.
+# Earth's mean orbital speed [km/s]: the barycentric correction of a target at ecliptic latitude β is at most about
+# this × cos β (plus < 0.5 km/s from the Earth's rotation), so a wrong frame choice shifts RVs by up to that much
+EARTH_ORBIT_KMS = 29.8
+UNKNOWN_BOUND_KMS = 30.  # the bound without RA/Dec
+FRAMES = ('barycentric', 'heliocentric')
+# FrameStatus.state -> the `correction` source recorded in the results (bary_source)
+_SOURCES = {'corrected': 'header', 'header_value': 'header', 'computed': 'computed', 'skip': 'skipped',
+            'unknown': 'unknown'}
 
-    ``spectrum.meta`` may hold ra, dec [deg], mjd_mid, site, site_lat/site_lon (east, deg), site_alt [m], frame_in
-    and the raw keywords listed above; ``overrides`` (same names, plus ``mjd``) replace them.
-    'auto' skips an already-corrected spectrum, else computes the correction, else falls back to an ESO BERV header
-    value, else warns and skips. 'apply' always computes (BERV fallback, else `ValueError`). 'skip' never corrects.
-    RV_frame = RV_obs + kms; the source is 'header' (already corrected, so 0, or a pipeline value), 'computed' or
-    'skipped'.
+
+@dataclasses.dataclass(frozen=True)
+class FrameStatus:
+    """What the velocity correction does for one spectrum (`status`)"""
+    state: str  # 'corrected' (a header keyword says so), 'computed', 'header_value' (ESO BERV), 'skip', 'unknown'
+    kms: float  # the correction applied, RV = RV_obs + kms (0 unless computed or header_value)
+    detail: str  # the keyword, the inputs used, or what is missing
+    bound_kms: float  # the largest correction for this target (EARTH_ORBIT_KMS cos β; UNKNOWN_BOUND_KMS without RA/Dec)
+    frame: str  # the frame of the wavelengths ('corrected') or the requested one
+
+    @property
+    def bound_text(self) -> str:
+        return f'±{self.bound_kms:.1f} km/s'
+
+    @property
+    def text(self) -> str:
+        """One plain line: what will happen and its size"""
+        kms = f'{self.kms:+.1f}'.replace('-', '−')
+        return {
+            'corrected': f'Header says {self.frame} ({self.detail}): none applied',
+            'computed': f'Not corrected: rvfitter applies {kms} km/s ({self.detail})',
+            'header_value': f'Not corrected: rvfitter applies {kms} km/s from the header ({self.detail})',
+            'skip': f'You said already corrected ({self.frame}): none applied; if it is not, RVs are off by up to '
+                    f'{self.bound_text}',
+            'unknown': f'Unknown ({self.detail}): a wrong choice shifts RVs by up to {self.bound_text} — choose '
+                       'before measuring',
+        }[self.state]
+
+
+def _bound(meta: Mapping[str, Any]) -> float:
+    coord = _coord(meta)
+    if coord is None:
+        return UNKNOWN_BOUND_KMS
+    return EARTH_ORBIT_KMS * math.cos(math.radians(float(coord.barycentricmeanecliptic.lat.deg)))
+
+
+def status(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric',
+           overrides: Mapping[str, Any] | None = None) -> FrameStatus:
     """
-    if frame not in ('barycentric', 'heliocentric'):
+    What `correction` does for ``spectrum``, never a silent guess: 'auto' takes a header keyword saying the spectrum
+    is corrected (frame_in / PypeIt VEL_TYPE, IRAF VHELIO), else computes the correction from RA/Dec, mid-exposure
+    time and site, else uses an ESO BERV value, else the frame is 'unknown' (the user must say which). 'apply'
+    always computes ('unknown' if it cannot), 'skip' never corrects. Nothing is logged.
+    """
+    if frame not in FRAMES:
         raise ValueError(f"frame must be 'barycentric' or 'heliocentric', not {frame!r}")
     mode = mode.lower()
     if mode not in ('auto', 'apply', 'skip'):
         raise ValueError(f"mode must be 'auto', 'apply' or 'skip', not {mode!r}")
-    if mode == 'skip':
-        log.info('Velocity correction skipped by request')
-        return 0., 'skipped'
     meta = {str(k).lower(): v for k, v in {**spectrum.meta, **(overrides or {})}.items()}
-    if mode == 'auto':
-        done = _already_corrected(meta)
-        if done:
-            if done[1] != frame:
-                log.warning('Spectrum is already corrected to the %s frame (%s) but %s was requested; the '
-                            'difference is up to ~0.02 km/s and is not corrected', done[1], done[0], frame)
-            else:
-                log.info('Spectrum is already corrected (%s); no further correction applied', done[0])
-            return 0., 'header'
+    bound = _bound(meta)
+    if mode == 'skip':
+        return FrameStatus('skip', 0., 'velocity_frame.correction = skip', bound, frame)
+    done = _already_corrected(meta)
+    if mode == 'auto' and done:  # io records which header keyword gave frame_in (frame_source)
+        src = meta.get('frame_source') if done[0].startswith('frame_in') else None
+        return FrameStatus('corrected', 0., str(src or done[0]).removeprefix('header:'), bound, done[1])
     kms, missing = _compute(meta, frame)
-    if kms is None:
-        hv = _header_value(meta, frame)
-        if hv:
-            log.warning('Cannot compute the %s correction (missing %s); using %+.3f km/s from header keyword %s '
-                        '(RV = RV_obs + value)', frame, ', '.join(missing), hv[0], hv[1])
-            return hv[0], 'header'
-    if kms is None:
-        if mode == 'apply':
-            raise ValueError('Cannot compute the velocity correction; missing ' + ', '.join(missing)
-                             + ' (supply them in the overrides)')
-        log.warning('Cannot compute the %s correction for %s (missing %s); skipping it. Measured RVs are then in '
-                    "the frame of the input's wavelengths: %s", frame, spectrum.source or 'spectrum',
-                    ', '.join(missing), meta.get('frame_note') or 'the observed (topocentric) frame unless a '
-                    'velocity correction was applied without a header record')
-        return 0., 'skipped'
-    log.info('Computed %s correction %+.3f km/s', frame, kms)
-    return kms, 'computed'
+    if kms is not None:
+        return FrameStatus('computed', kms, 'RA/Dec, time, site' + (f'; although the header says {done[0]}'
+                                                                     if done else ''), bound, frame)
+    hv = _header_value(meta, frame)
+    if hv:
+        return FrameStatus('header_value', hv[0], f'{hv[1]}; cannot compute it: missing {", ".join(missing)}',
+                           bound, frame)
+    note = meta.get('frame_note')
+    return FrameStatus('unknown', 0., f'no header keyword says corrected, and {", ".join(missing)} missing to '
+                                      'compute it' + (f'; {note}' if note else ''), bound, frame)
 
+
+def correction(spectrum: Spectrum, mode: str = 'auto', frame: str = 'barycentric',
+               overrides: Mapping[str, Any] | None = None) -> tuple[float, str]:
+    """
+    Decide on and compute the velocity correction [km/s] for a spectrum (`status`), and its source.
+
+    ``spectrum.meta`` may hold ra, dec [deg], mjd_mid, site, site_lat/site_lon (east, deg), site_alt [m], frame_in
+    and the raw keywords listed above; ``overrides`` (same names, plus ``mjd``) replace them.
+    RV_frame = RV_obs + kms; the source is 'header' (already corrected, so 0, or a pipeline value), 'computed',
+    'skipped' or 'unknown' ('auto' could not tell: nothing applied, with a loud WARNING). 'apply' that cannot
+    compute raises `ValueError`.
+    """
+    st = status(spectrum, mode, frame, overrides)
+    name = spectrum.source or 'spectrum'
+    if st.state == 'unknown' and mode.lower() == 'apply':
+        raise ValueError(f'Cannot compute the velocity correction for {name}: {st.detail} (supply them in '
+                         'velocity_frame.overrides)')
+    if st.state == 'corrected' and st.frame != frame:
+        log.warning('Spectrum is already corrected to the %s frame (%s) but %s was requested; the difference is up '
+                    'to ~0.02 km/s and is not corrected', st.frame, st.detail, frame)
+    elif st.state == 'header_value':
+        log.warning('%s: using %+.3f km/s for the %s correction (%s; RV = RV_obs + value)', name, st.kms, frame,
+                    st.detail)
+    elif st.state == 'unknown':
+        log.warning('VELOCITY FRAME UNKNOWN for %s: %s. Nothing is applied, so the RVs are in the frame of the '
+                    'input wavelengths; if that is not %s they are off by up to %s. Say which: '
+                    "velocity_frame.correction = 'skip' (already corrected) or 'apply' (not corrected; give "
+                    'velocity_frame.overrides if needed). Results flag: frame_unknown', name, st.detail, frame,
+                    st.bound_text)
+    else:
+        log.info('%s: %s', name, st.text)
+    return st.kms, _SOURCES[st.state]
 
 def apply(spectrum: Spectrum, kms: float) -> Spectrum:
     """

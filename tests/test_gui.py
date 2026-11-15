@@ -852,3 +852,72 @@ def test_settings_guide_has_an_anchor_for_every_setting_shown():
     paths = set(TIPS) | {p.split('.')[0] for p in TIPS if '.' in p}
     missing = [p for p in sorted(paths) if f'<a id="{guide_url(p).split("#")[1]}"></a>' not in guide]
     assert not missing
+
+
+def test_setup_shows_the_frame_and_wavelength_status(qtbot, win, backend, spectra_dir):
+    from rvfitter.gui.setup import FRAME_PATH, WAVE_PATH
+    backend.frame_state = 'unknown'
+    _load(qtbot, win, spectra_dir)
+    frame = win.setup.status[FRAME_PATH]
+    assert frame.text().startswith('Unknown (test inputs): a wrong choice shifts RVs by up to ±25.0 km/s')
+    assert 'two-settings' in frame.text() and 'color' in frame.styleSheet()  # gold, with the docs link
+    assert win.setup.status[WAVE_PATH].text().startswith('test wavelength status (none)')
+
+
+@pytest.mark.parametrize('answer, correction, frame', [('heliocentric', 'skip', 'heliocentric'),
+                                                       ('apply', 'apply', 'barycentric')])
+def test_measure_asks_for_an_unknown_frame_and_records_it(qtbot, win, backend, spectra_dir, monkeypatch, answer,
+                                                          correction, frame):
+    backend.frame_state = 'unknown'
+    _load(qtbot, win, spectra_dir)
+    asked = []
+    monkeypatch.setattr(win, '_ask_frame', lambda unknown: asked.append(sorted(unknown)) or answer)
+    win.run()
+    qtbot.waitUntil(lambda: bool(backend.runs) and win.worker is None, timeout=10000)
+    assert asked == [['alpha', 'beta']]
+    run_cfg = backend.runs[0]['cfg']
+    want = {'correction': 'apply'} if correction == 'apply' else {'correction': correction, 'frame': frame}
+    assert run_cfg.refits == [{'object': n, 'patch': {'velocity_frame': want}} for n in ('alpha', 'beta')]
+    assert run_cfg.velocity_frame.correction == 'auto'  # the answer is per object, never global
+    assert win.current_config().refits == run_cfg.refits  # saved with the settings
+
+
+def test_frame_answer_leaves_computable_objects_alone(qtbot, win, backend, spectra_dir, monkeypatch):
+    """Only the unknown objects get the answer: a computable object keeps 'auto' (its correction is still applied)"""
+    backend.frame_state = 'unknown'
+    _load(qtbot, win, spectra_dir)
+    backend.frame_state = 'computed'
+    unknown_only = {'alpha': win.backend.frame_status(win.first_spectra['alpha'], win.current_config())}
+    unknown_only['alpha'] = unknown_only['alpha'].__class__('unknown', 0., 'test inputs', 25., 'barycentric')
+    monkeypatch.setattr(win, '_ask_frame', lambda unknown: 'barycentric')
+    cfg = win.current_config()
+    assert win._settle_frame(cfg, unknown_only)
+    assert cfg.refits == [{'object': 'alpha', 'patch': {'velocity_frame': {'correction': 'skip',
+                                                                          'frame': 'barycentric'}}}]
+    assert cfg.velocity_frame.correction == 'auto'  # beta (computable) is untouched
+
+
+def test_measure_does_not_run_on_an_unknown_frame_without_an_answer(qtbot, win, backend, spectra_dir, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    backend.frame_state = backend.frame_apply_state = 'unknown'
+    _load(qtbot, win, spectra_dir)
+    monkeypatch.setattr(win, '_ask_frame', lambda unknown: 'cancel')
+    assert win.run() is None and not backend.runs
+    shown = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *a: shown.append(a[2]))
+    monkeypatch.setattr(win, '_ask_frame', lambda unknown: 'apply')  # not corrected, but it cannot be computed
+    assert win.run() is None and not backend.runs
+    assert 'velocity_frame.overrides' in shown[0]
+    assert win.current_config().velocity_frame.correction == 'auto'
+
+
+def test_diagnostics_say_how_much_the_wavelength_correction_moved_the_rv():
+    from types import SimpleNamespace
+
+    from rvfitter.gui.diagnostics import DiagnosticsPanel
+    res = SimpleNamespace(barycentric={'applied_kms': 0., 'source': 'unknown', 'frame': 'barycentric',
+                                       'wavelength_correction': 'sky', 'wavelength_shift_kms': -21.4})
+    text = DiagnosticsPanel.bary_text(res)
+    assert 'The sky correction moved this RV by −21.4 km/s' in text and 'frame_unknown' in text
+    res.barycentric.update(wavelength_correction='none', wavelength_correction_mode='none', source='computed')
+    assert 'No wavelength correction applied (none)' in DiagnosticsPanel.bary_text(res)

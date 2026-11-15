@@ -50,6 +50,7 @@ ZP_FLAGS: dict[str, int] = {
     'sky_window_fallback': 16384,  # a region's own sky window failed: the sky curve is used there instead
     'seeing_assumed': 32768,  # no trace FWHM: the slit prior uses calibration.seeing_fwhm
     'wave_rms_assumed': 131072,  # no arc RMS in the file: calibration.wave_rms_kms or the instrument-typical value
+    'frame_unknown': 262144,  # velocity_frame.correction auto could not tell the input frame: nothing applied
     'total_err_undefined': 65536,  # a term of rv_total_err is NaN (unknown), so the total is NaN (results.to_table)
 }
 

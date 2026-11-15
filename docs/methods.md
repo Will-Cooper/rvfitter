@@ -50,11 +50,11 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 | Method | Previous release | Previous release, bug-fixed | rvfitter | z (quadrature) |
 |---|---|---|---|---|
-| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (default): 13.55 ± 3.62 (σ_total 19.42); `none`: 34.99 ± 5.55 (σ_total 22.83) | default 2.95 (0.65 total); none 1.46 (0.38 total) |
+| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (opt-in): 13.55 ± 3.62 (σ_total 19.42); `none` (default): 34.99 ± 5.55 (σ_total 22.83) | sky-if-needed 2.95 (0.65 total); none 1.46 (0.38 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
-| Forward model (MCMC) | — | | `sky-if-needed` (default): 18.83 ± 2.45 (σ_total 20.62); `none`: 37.58 ± 4.85 (σ_total 21.04); vsini 39–88 km/s and Teff 1810–1970 K per window (not physical at R 2600) | default 2.19 (0.36 total); none 2.12 (0.54 total) |
-| LSD | — | | `sky-if-needed` (default): 10.61 ± 10.63 (σ_total 22.26); `none`: 33.57 ± 10.94 (σ_total 22.40); template mask (BT-Settl 2000/5.0, ~2720 lines), χ²/ν ≈ 94 inflates the error; vsini unresolved (< 126 km/s) | default 1.43 (0.70 total); none 0.66 (0.33 total) |
+| Forward model (MCMC) | — | | `sky-if-needed` (opt-in): 18.83 ± 2.45 (σ_total 20.62); `none` (default): 37.58 ± 4.85 (σ_total 21.04); vsini 39–88 km/s and Teff 1810–1970 K per window (not physical at R 2600) | sky-if-needed 2.19 (0.36 total); none 2.12 (0.54 total) |
+| LSD | — | | `sky-if-needed` (opt-in): 10.61 ± 10.63 (σ_total 22.26); `none` (default): 33.57 ± 10.94 (σ_total 22.40); template mask (BT-Settl 2000/5.0, ~2720 lines), χ²/ν ≈ 94 inflates the error; vsini unresolved (< 126 km/s) | sky-if-needed 1.43 (0.70 total); none 0.66 (0.33 total) |
 | Telluric-referenced | — | | | |
 | Adopted | 32.7 ± 6.5 | | | |
 
@@ -102,7 +102,7 @@ Each node's error includes the spread over the neighbouring templates (±100 K).
 We fixed the following error budget before running the benchmark, and did not change it afterwards.
 An offset is either applied, with its error carried as a systematic, or unknown, with a physically motivated prior width; a measured offset's value is never added to the error budget.
 
-By default (`wavelength_correction = "sky-if-needed"`), rvfitter measures the sky zero point whenever a sky spectrum is present and applies its shape only when three tests on the calibration data pass:
+rvfitter measures the sky zero point whenever a sky spectrum is present, in every mode. The default, `none`, only reports it, because the sky correction did not improve the agreement with the literature on the GTC sample ([Sky correction on the GTC sample](#sky-correction-on-the-gtc-sample)). With the opt-in `wavelength_correction = "sky-if-needed"`, it applies the sky shape only when three tests on the calibration data pass:
 (a) at least three measured sky segments, with every region more than half covered by them;
 (b) a significant offset (|mean Δv| > 3σ, with σ combining the curve and arc-RMS errors) or a significant variation between segments (χ² p < 0.001);
 (c) a correction larger than 0.05 resolution elements.
@@ -156,12 +156,12 @@ Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky
 
 | Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|---|
-| none | none | 37.73 | 5.03 (2.08) | 22.21 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior ⊕ DAR) |
-| sky-if-needed (default) | sky | 16.26 | 3.50 (2.37) | 21.09 (0.47) | 2.7 | 8.7 | 5.6 | 18.0 (slit prior ⊕ DAR) |
+| none (default) | none | 37.73 | 5.03 (2.08) | 22.21 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior ⊕ DAR) |
+| sky-if-needed | sky | 16.26 | 3.50 (2.37) | 21.09 (0.47) | 2.7 | 8.7 | 5.6 | 18.0 (slit prior ⊕ DAR) |
 | auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 41.18 | 3.34 (3.70) | 11.75 (1.25) | 2.7 | 8.8 | 5.6 | 4.3 (measured) |
 | auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.62 | 3.38 (2.55) | 14.05 (0.73) | 2.4 | 8.0 | 5.6 | 9.5 (measured) |
 
-The per-region sky windows lower `sys_wavezp` from 9.7 to 5.6 km/s and τ_line stays small (2.4–2.7 km/s), whilst the default moves from 18.95 to 16.26 km/s.
+The per-region sky windows lower `sys_wavezp` from 9.7 to 5.6 km/s and τ_line stays small (2.4–2.7 km/s), whilst `sky-if-needed` moves from 18.95 to 16.26 km/s.
 With the PA known, the DAR barely changes the constant, and `auto` lands 15.0 km/s above the benchmark (z = 1.25 with the total error, 3.7 with the statistical error alone), much as before (42.86 km/s).
 With the PA unknown, the fitted s takes up some of the slope between the 8200 Å node and the 9300 Å nodes and the RV falls to 36.6 km/s; this is not evidence for either value of s, since the known s is well inside the fitted posterior.
 We therefore do not regard the DAR as the cause of the `auto` offset on this spectrum: the slit was close to the parallactic angle.
@@ -187,15 +187,15 @@ Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky
 
 | Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|---|
-| none | none | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
+| none (default) | none | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
 | sky | sky | 18.95 | 3.32 (1.80) | 22.12 (0.33) | 2.0 | 7.6 | 9.7 | 18.0 (slit prior) |
-| sky-if-needed (default) | sky | 18.95 | 3.32 (1.80) | 22.12 (0.33) | 2.0 | 7.6 | 9.7 | 18.0 (slit prior) |
+| sky-if-needed | sky | 18.95 | 3.32 (1.80) | 22.12 (0.33) | 2.0 | 7.6 | 9.7 | 18.0 (slit prior) |
 | auto (opt-in) | sky + star (−23.8) | 42.86 | 3.25 (4.18) | 13.16 (1.25) | 1.9 | 7.5 | 9.7 | 3.6 (measured) |
 | telluric | refused (coverage) | 37.73 | 5.03 (2.08) | 22.23 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior) |
 
 Correcting the sky shape collapses the line-to-line scatter (τ_line falls from 8.3 to 1.9 km/s), a test that does not use the benchmark.
 The modes without a measured constant now carry the 18.0 km/s slit prior instead of the measured offset's value, so their total errors (22.1–22.2 km/s) are honest but large.
-The default applies the measured constant and lands 16.7 km/s above the benchmark, at z = 1.25 with the total error but z = 4.2 with the statistical error alone.
+`auto` applies the measured constant and lands 16.7 km/s above the benchmark, at z = 1.25 with the total error but z = 4.2 with the statistical error alone.
 The two methods agree (CCF 43.2 and template fit 42.5 km/s), so the offset is common to both.
 We note three possible causes, none of which we tested against the benchmark: the H2O 9300 nodes, three of the four, lie 540–1260 Å redward of Cs I 8523, the reddest alkali line, so the constant assumes that the star − sky difference is the same at 7800–8500 Å, which only the 8200 Å node (−17.3 ± 10.6 km/s) tests directly; the BT-Settl template in the telluric fit may bias the nodes (a smooth star gave a constant 3.5 km/s less negative in the audit); and the literature value itself, from a different instrument and epoch, has its own zero point.
 In conclusion, on this spectrum the wavelength calibration, not the RV method, limits the absolute RV, and the budget now says so without ever counting a measured offset as an error.
@@ -205,12 +205,12 @@ In conclusion, on this spectrum the wavelength calibration, not the RV method, l
 On J1745−1640 the telluric nodes measure the star 23.8 ± 3.6 km/s bluer than the sky (4 nodes, χ² 0.4/3), and applying it moves the RV from 18.9 to 42.9 km/s, further from Burgasser et al. (2015).
 The physics of the correction is sound, but it has been tested on one object only, and three of the four nodes lie 540–1260 Å redward of the bluest alkali line used.
 We therefore keep it opt-in (`wavelength_correction = "auto"`) until it is validated on a larger sample with independent RVs, and report the measured constant (`zp_star_sky`) in every mode.
-In the default, the star's slit-centring term enters only through the slit prior (18.0 km/s for J1745).
+In the other modes, the star's slit-centring term enters only through the slit prior (18.0 km/s for J1745).
 
 ### Regions on unmeasured parts of the sky curve
 
 A region that lies on an unmeasured part of the sky curve (held flat, ramped or extrapolated over more than half its width) is dropped from every method when the sky correction is applied, with a WARNING naming it. The correction is refused (`sky_unsafe`) only when such regions are the majority.
-This was decided after line centring added K I 7667, which lies in the O2 A gap of J1745's sky: under the earlier rule that single line refused the correction for every method, silently returning J1745's default to the uncorrected values. With the current rule, J1745's line centring moves from 34.0 (uncorrected) to 15.5 km/s, consistent with the sky-corrected CCF and template fit (≈19 km/s); whether the sky correction itself brings the star closer to its true RV is investigated separately.
+This was decided after line centring added K I 7667, which lies in the O2 A gap of J1745's sky: under the earlier rule that single line refused the correction for every method, silently returning J1745's sky-if-needed result to the uncorrected values. With the current rule, J1745's line centring moves from 34.0 (uncorrected) to 15.5 km/s, consistent with the sky-corrected CCF and template fit (≈19 km/s); whether the sky correction itself brings the star closer to its true RV is tested on the GTC sample ([Sky correction on the GTC sample](#sky-correction-on-the-gtc-sample)).
 
 ## Sky and star zero points across the slit
 
@@ -244,7 +244,29 @@ The pull is ΔRV/√(σ₁² + σ₂²), and a robust pull width of 0.8–1.2 (1
 - `rv_total_err` is undefined for the near-infrared spectra, because no wavelength-calibration accuracy could be sourced for SpeX or ARCoIRIS; setting `calibration.wave_rms_kms` gives one.
 - The largest outliers are 2MASS J1331+3407 (−97 km/s; the Rb I 7802 line lies where that wavelength solution is distorted) and 2MASS J0940+2946 (+55 km/s; the previous release was also high, so the cause is probably the zero point or the low-resolution literature value).
 - Several optical coadds have solutions distorted blueward of about 7950 Å; a leave-one-out line-outlier test removes the affected lines.
-- Only J1745−1640 has a sky spectrum, so it alone cannot choose a wavelength-correction mode: `sky-if-needed` stays the default on physical grounds, and `auto` stays opt-in.
+- Only J1745−1640 has a sky spectrum among these coadds, so this set alone cannot choose a wavelength-correction mode; the GTC sample below does.
+
+### Sky correction on the GTC sample
+
+Here, we present the test that set the default wavelength-correction mode.
+We reran the GTC/OSIRIS sample with each spectrum's sky (its `PypeIt` spec1d) in the three modes `none`, `sky-if-needed` and `auto`, and compared each with the literature RVs, under a decision rule that we fixed before looking at the results.
+The table gives the comparison with the literature for the 20 objects that have a literature RV.
+
+| Mode | N | Median Δ [km/s] | Robust σ [km/s] | Pull width (total error) |
+|---|---|---|---|---|
+| `none` | 20 | −5.4 | 29.8 | 1.20 |
+| `sky-if-needed` | 20 | −8.7 | 22.5 | 1.19 |
+| `auto` | 20 | +1.7 | 32.7 | 1.31 |
+
+The sky correction lowered the robust scatter from 29.8 to 22.5 km/s, but it did not change the pull width, and the physical test did not support it.
+If the sky distortion were what moves each RV away from the literature, the uncorrected offset (`none` − literature) would follow each object's sky Δv at its RV lines.
+For 19 objects, the weighted slope is 1.52 ± 0.34, but with χ²/dof = 5.3 and no significant rank correlation (Spearman p = 0.17, Pearson p = 0.27), so the apparent slope rests on a few objects.
+On the nine literature objects where `sky-if-needed` applied the sky, the robust scatter fell from 19.4 to 16.6 km/s, whilst the rms rose from 29.3 to 29.7 km/s.
+The sky distortion shapes agree within a night (correlation r ≥ 0.9 on 10 of 14 nights) but vary between nights, so a correction from one night's sky cannot be carried to another.
+We could not test `auto`, because the sample has only H₂O telluric nodes and no O₂ A band.
+On J1745−1640 the adopted RV (template fit, CCF and line centring) was 36.6 km/s with `none`, 15.2 km/s with `sky-if-needed` and 40.5 km/s with `auto`, against the sample's literature value of 26.0 ± 2.0 km/s, so even the benchmark does not favour one mode.
+As a result, `none` is the default, and `sky-if-needed` and `auto` are opt-in; we recommend `sky-if-needed` only as a check when a sky spectrum is present, since it moves RVs by up to tens of km/s.
+The sky zero point is still measured and reported in every mode (`zp_sky_kms`), and the Diagnostics tab and the `wavelength_shift_kms` column give how much an applied correction moved each RV.
 
 ## References
 

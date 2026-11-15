@@ -63,12 +63,12 @@ def test_berv_is_fallback_only(key, caplog):
     assert correction(_spec(**{key: -12.3}, **FULL), 'auto')[1] == 'computed'
     assert correction(_spec(**{key: -12.3}, **FULL), 'apply')[1] == 'computed'
     # a heliocentric request does not use a barycentric value
-    assert correction(_spec(**{key: -12.3}), 'auto', 'heliocentric') == (0., 'skipped')
+    assert correction(_spec(**{key: -12.3}), 'auto', 'heliocentric') == (0., 'unknown')
 
 
 @pytest.mark.parametrize('key', ['BCV', 'HCV', 'HIERARCH ESO QC VRAD BARYCOR'])
 def test_uncited_sign_keywords_ignored(key):
-    assert correction(_spec(**{key: -12.3}), 'auto') == (0., 'skipped')
+    assert correction(_spec(**{key: -12.3}), 'auto') == (0., 'unknown')
 
 
 def test_site_alias_is_whole_word():
@@ -76,10 +76,10 @@ def test_site_alias_is_whole_word():
     assert lookup_site('basalt hill') is None
 
 
-def test_auto_warns_and_skips(caplog):
+def test_auto_unknown_warns_loudly(caplog):
     with caplog.at_level(logging.WARNING):
         kms, src = correction(_spec(), 'auto')
-    assert (kms, src) == (0., 'skipped')
+    assert (kms, src) == (0., 'unknown')
     assert any(r.levelno == logging.WARNING and 'missing' in r.message for r in caplog.records)
 
 
@@ -190,7 +190,38 @@ def test_coadd_without_spec1d_frame_message(tmp_path, caplog):
     spec = io.read_spectrum(tmp_path / 'X_tellcorr.fits')
     assert 'probably heliocentric' in spec.meta['frame_note']
     caplog.clear()
-    assert correction(spec, 'auto') == (0., 'skipped')
+    assert correction(spec, 'auto') == (0., 'unknown')
     assert 'probably heliocentric' in caplog.text and 'observed' not in caplog.text
     assert regions.meta_airmass(spec.meta, 1., 'the telluric band depths') == 1.
     assert 'the telluric band depths assume airmass 1.0' in caplog.text
+
+
+def test_status_corrected_names_the_keyword_and_frame():
+    from rvfitter.barycentric import status
+    st = status(_spec(frame_in='heliocentric', frame_source='header:VEL_TYPE', **FULL))
+    assert (st.state, st.kms, st.frame) == ('corrected', 0., 'heliocentric')
+    assert st.text == 'Header says heliocentric (VEL_TYPE): none applied'
+
+
+def test_status_computable_gives_the_value():
+    from rvfitter.barycentric import status
+    st = status(_spec(**FULL))
+    assert st.state == 'computed' and st.kms == pytest.approx(correction(_spec(**FULL))[0])
+    assert st.text == f"Not corrected: rvfitter applies {st.kms:+.1f} km/s (RA/Dec, time, site)".replace('-', '−')
+
+
+def test_status_unknown_bound_from_the_ecliptic_latitude():
+    from rvfitter.barycentric import EARTH_ORBIT_KMS, status
+    st = status(_spec(ra=FULL['ra'], dec=FULL['dec']))  # no time or site: cannot compute
+    beta = SkyCoord(FULL['ra'], FULL['dec'], unit='deg').barycentricmeanecliptic.lat.radian
+    assert st.state == 'unknown' and st.bound_kms == pytest.approx(EARTH_ORBIT_KMS * np.cos(beta))
+    assert 0. < st.bound_kms < EARTH_ORBIT_KMS
+    assert 'mjd_mid' in st.detail and f'±{st.bound_kms:.1f} km/s' in st.text and 'choose before measuring' in st.text
+    assert status(_spec()).bound_kms == 30.  # no coordinates
+    assert status(_spec(), 'skip').state == 'skip'
+
+
+def test_auto_unknown_logs_the_bound(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert correction(_spec(ra=FULL['ra'], dec=FULL['dec']), 'auto') == (0., 'unknown')
+    assert 'VELOCITY FRAME UNKNOWN for test' in caplog.text and 'frame_unknown' in caplog.text

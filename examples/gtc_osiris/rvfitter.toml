@@ -19,7 +19,10 @@ teff_prior = 2100.0
 enabled = ["linecentre"]
 
 [calibration]
-# the spec1d holds the sky spectrum, used to measure the wavelength zero point
+# the spec1d holds the sky spectrum: its zero point is measured and reported (zp_sky_kms) but, by default
+# (wavelength_correction = "none"), not applied. Opt in with the line below: it moves this RV by about -21 km/s
+# (line centring 35.0 -> 13.6 km/s; literature 26.2 +/- 2.3 km/s; see docs/methods.md).
+# wavelength_correction = "sky-if-needed"
 sky_source = "spec1d_0000809229-20150803-OSIRIS-OsirisLongSlitSpectroscopy-DENISJ174534.6-164053_OSIRIS_20150804T003233.951.fits"
 
 [output]
