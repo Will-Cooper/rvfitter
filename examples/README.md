@@ -7,7 +7,7 @@ seconds. Results, the config actually used, a log and figures are written to `ou
 
 | Folder | Object | Instrument | Literature RV [km/s] | rvfitter (line centring) [km/s] |
 |---|---|---|---|---|
-| `gtc_osiris/` | DENIS J174534.6−164053 (L1.5) | GTC/OSIRIS R2500I, optical (Cooper et al. 2024) | 26.2 ± 2.3 (Burgasser et al. 2015) | 13.6 ± 3.6 |
+| `gtc_osiris/` | DENIS J174534.6−164053 (L1.5) | GTC/OSIRIS R2500I, optical (Cooper et al. 2024) | 26.2 ± 2.3 (Burgasser et al. 2015) | 35.0 ± 5.6 (13.6 ± 3.6 with the opt-in sky correction) |
 | `near_infrared/` | J0808+3157 | IRTF/SpeX SXD, near-infrared (Cheng et al. 2025) | 31.1 ± 0.1 (Jönsson et al. 2020) | 33.6 ± 6.7 |
 | `near_infrared/` | J1536+0646 | Blanco/ARCoIRIS, near-infrared (Cheng et al. 2025) | 41.7 ± 13.7 (Kiman et al. 2019) | 31.8 ± 5.4 |
 
@@ -45,5 +45,5 @@ In the GUI, open either folder (Open spectra > Folder…):
 
 ## Things to try
 - **Template methods:** download a grid once, e.g. `rvfitter templates download --grid bt-settl-cifist --teff 1900 2300`, then add `"ccf"` and `"template_fit"` to `[methods] enabled`. A downloaded grid covers the optical and near-infrared examples alike (its wavelength range is in the grid table of `docs/settings.md`); choose the grid by Teff as that table advises.
-- **Wavelength zero point:** the optical example measures the sky (OH) lines in its `spec1d` file and corrects the wavelength scale (`calibration.wavelength_correction`). Set it to `"none"` to compare. J1745−1640 is a known hard case: its GTC wavelength solution is distorted, so the RV moves by about 20 km/s between modes (line centring 35.0 km/s with `none`, 13.6 km/s with the default, against 26.2 ± 2.3 km/s); no mode matches the literature within the statistical errors for every method, and all lie within 1.3 of their total errors (see `docs/methods.md`).
+- **Wavelength zero point:** the optical example measures the sky (OH) lines in its `spec1d` file and reports the offset (`zp_sky_kms`), but by default (`calibration.wavelength_correction = "none"`) does not apply it, because on the GTC sample the sky correction gave no significant improvement. Uncomment `wavelength_correction = "sky-if-needed"` in its `rvfitter.toml` to compare. J1745−1640 is a known hard case: its GTC wavelength solution is distorted, so the RV moves by about 21 km/s between modes (line centring 35.0 km/s with the default `none`, 13.6 km/s with `sky-if-needed`, against 26.2 ± 2.3 km/s); no mode matches the literature within the statistical errors for every method, and all lie within 1.3 of their total errors (see `docs/methods.md`). The Diagnostics tab and the `wavelength_shift_kms` column say how much the correction moved the RV.
 - **Total error for the near-infrared spectra:** SpeX and ARCoIRIS files do not record a wavelength-calibration accuracy, so `rv_total_err` is left undefined. Add `[calibration] wave_rms_kms = 5.0` (your estimate) to get one.
