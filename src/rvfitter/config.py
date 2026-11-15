@@ -27,7 +27,8 @@ import tomli_w
 from .medium import METHODS as AIR_METHODS
 from .types import Spectrum
 
-__all__ = ['Config', 'ConfigError', 'InputConfig', 'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
+__all__ = ['Config', 'ConfigError', 'InputConfig', 'CubeConfig', 'OBJECT_MODES',
+           'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
            'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
            'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'method_advice', 'MethodAdvice',
            'SCHEMA_VERSION']
@@ -53,10 +54,19 @@ REGIME_EDGES = (4500., 20000.)
 # the spectral regions themselves always come from the feature catalogue via `rvfitter.regions.select`.
 BAND_OPTICAL_MAX = 11000.  # coverage ending below this is 'optical'
 BAND_NIR_MIN = 9000.  # coverage starting above this (and ending above BAND_OPTICAL_MAX) is 'nir'; else 'mixed'
+OBJECT_MODES = ('auto', 'target', 'all')  # input.objects, else a list of entry names / HDU indices
 
 
 class ConfigError(ValueError):
     """The configuration file is malformed or has invalid values; the message lists every problem found"""
+
+
+@dataclass
+class CubeConfig:
+    """IFU cube extraction: a circular aperture (`rvfitter.io.read_spectrum`)"""
+    # aperture centre (x, y) [0-based pixels of the median-collapsed cube]; unset: its brightest spaxel
+    position: tuple[float, float] | None = None
+    radius: float | None = None  # aperture radius [spaxels]; unset: rvfitter.io.CUBE_RADIUS_DEFAULT (3)
 
 
 @dataclass
@@ -72,6 +82,10 @@ class InputConfig:
     # a directory searched for '<frame number>*.fits' of each raw frame named in the reduced file (PypeIt FILENAME)
     raw_header: str | None = None
     raw_header_dir: str | None = None
+    # which spectra of a multi-object file (PypeIt spec1d, JWST x1d, multi-extension FITS) to measure, each as its own
+    # object: 'auto', 'target', 'all', or a list of entry names / HDU indices (`rvfitter.io.read_spectra`)
+    objects: str | list[int | str] = 'auto'
+    cube: CubeConfig = field(default_factory=CubeConfig)
 
 
 @dataclass
@@ -365,6 +379,16 @@ def _validate(cfg: Config) -> list[str]:
     _choice(p, 'input.medium_method', i.medium_method, tuple(AIR_METHODS))
     if i.resolution is not None and not i.resolution > 1:
         p.append(f'input.resolution = {i.resolution} must be a resolving power R > 1')
+    if isinstance(i.objects, str):
+        _choice(p, 'input.objects', i.objects, OBJECT_MODES)
+    elif not i.objects:
+        p.append("input.objects = [] selects nothing; use 'auto', 'target', 'all' or a list of names / HDU indices")
+    if i.hdu is not None and i.objects != 'auto':
+        p.append(f'input.hdu = {i.hdu!r} and input.objects = {i.objects!r} both choose the spectra; set only one')
+    if i.cube.position is not None and min(i.cube.position) < 0:
+        p.append(f'input.cube.position = {list(i.cube.position)} must be (x, y) pixel indices >= 0')
+    if i.cube.radius is not None and not i.cube.radius > 0:
+        p.append(f'input.cube.radius = {i.cube.radius} must be positive [spaxels]')
     v = cfg.velocity_frame
     _choice(p, 'velocity_frame.correction', v.correction, VELOCITY_CORRECTIONS)
     _choice(p, 'velocity_frame.frame', v.frame, VELOCITY_FRAMES)

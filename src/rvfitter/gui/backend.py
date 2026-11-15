@@ -29,6 +29,8 @@ class Backend(Protocol):
 
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any: ...
 
+    def list_spectra(self, path: str | Path, cfg: Any) -> list[Any]: ...
+
     def default_for(self, spectrum: Any) -> Any: ...
 
     def regime(self, spectrum: Any) -> str: ...
@@ -78,11 +80,16 @@ class LazyBackend:
         return list(archives.collect_inputs(path))
 
     def read_spectrum(self, path: str | Path, cfg: Any) -> Any:
-        """Read one spectrum honouring ``cfg.input`` (medium, medium_method, hdu, resolution)."""
+        """Read one spectrum ('file.fits[hdu]' for one entry) honouring ``cfg.input`` (medium, hdu, R, cube)."""
         from rvfitter import io
         i = cfg.input
         return io.read_spectrum(path, medium=i.medium, medium_method=i.medium_method, hdu=i.hdu,
-                                resolution=i.resolution)
+                                resolution=i.resolution, cube=i.cube)
+
+    def list_spectra(self, path: str | Path, cfg: Any) -> list[Any]:
+        """The candidate spectra of a file (``io.list_spectra``: hdu, name, kind, snr, usable, reason, named)."""
+        from rvfitter import io
+        return io.list_spectra(path, cube=cfg.input.cube)
 
     def default_for(self, spectrum: Any) -> Any:
         """The regime defaults of ``spectrum`` (``config.default_for``)."""
@@ -96,11 +103,13 @@ class LazyBackend:
         return f'{regime}-resolution {band}'
 
     def group_objects(self, files: Sequence[Path], cfg: Any) -> dict[str, list[str]]:
-        from rvfitter import archives
+        from rvfitter import archives, io
         spectra = []
+        i = cfg.input
         for f in files:
-            try:
-                spectra.append(self.read_spectrum(f, cfg))
+            try:  # every spectrum input.objects selects ('file.fits[hdu]' sources for multi-object files)
+                spectra += io.read_spectra(f, objects=i.objects, medium=i.medium, medium_method=i.medium_method,
+                                           hdu=i.hdu, resolution=i.resolution, cube=i.cube)
             except (OSError, ValueError) as exc:  # an unreadable file is skipped, never fatal
                 log.warning('Skipping %s: %s', f, exc)
         groups = archives.group_by_object(spectra, cfg.grouping.override)

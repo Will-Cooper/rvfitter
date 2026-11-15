@@ -312,10 +312,12 @@ def _config_hash(cfg: Any) -> str:
 
 def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str, failures: Failures | None = None
               ) -> list[Spectrum]:
+    """The spectra of ``inputs`` (files, directories, archives, or 'file.fits[hdu]' sources) as ``cfg.input`` says"""
     spectra = []
     for inp in ([inputs] if isinstance(inputs, (str, Path)) else inputs):
         spectra += archives.load_spectra(archives.collect_inputs(Path(inp)), failures, medium=medium,
-                                         hdu=cfg.input.hdu, resolution=cfg.input.resolution)
+                                         hdu=cfg.input.hdu, resolution=cfg.input.resolution,
+                                         objects=cfg.input.objects, cube=cfg.input.cube)
     return spectra
 
 

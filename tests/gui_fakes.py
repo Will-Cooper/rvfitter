@@ -136,6 +136,9 @@ class FakeBackend:
             out.setdefault(Path(f).stem.split('_')[0], []).append(str(f))
         return out
 
+    def list_spectra(self, path, cfg):
+        return []
+
     def read_spectrum(self, path, cfg):
         spec, _ = make_spectrum(rv=0., resolution=self.resolution, snr=50., wave_range=(7500., 8000.),
                                 rng=np.random.default_rng(1))

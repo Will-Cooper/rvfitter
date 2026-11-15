@@ -479,9 +479,13 @@ def test_lazy_backend_honours_config(monkeypatch):
     from rvfitter.gui.backend import LazyBackend
     seen = {}
 
-    def fake_read(path, *, medium='auto', medium_method='ciddor', hdu=None, resolution=None):
-        seen['read'] = (medium, medium_method, hdu, resolution)
+    def fake_read(path, *, medium='auto', medium_method='ciddor', hdu=None, resolution=None, cube=None):
+        seen['read'] = (medium, medium_method, hdu, resolution, cube)
         return SimpleNamespace(source=str(path))
+
+    def fake_read_many(path, *, objects='auto', **kw):
+        seen['objects'] = objects
+        return [fake_read(path, **kw)]
 
     def fake_group(spectra, override=None):
         seen['override'] = override
@@ -492,6 +496,7 @@ def test_lazy_backend_honours_config(monkeypatch):
         return {}
 
     monkeypatch.setattr(io, 'read_spectrum', fake_read, raising=False)
+    monkeypatch.setattr(io, 'read_spectra', fake_read_many, raising=False)
     monkeypatch.setattr(archives, 'group_by_object', fake_group, raising=False)
     monkeypatch.setattr(regions, 'select', fake_select, raising=False)
     cfg = config.Config()
@@ -502,8 +507,9 @@ def test_lazy_backend_honours_config(monkeypatch):
     cfg.regions.overrides = {'ccf': [{'name': 'x', 'remove': True}]}
     be = LazyBackend()
     spec = be.read_spectrum('f.fits', cfg)
-    assert seen['read'] == ('air', 'edlen', 2, 4000.)
+    assert seen['read'] == ('air', 'edlen', 2, 4000., cfg.input.cube)
     assert be.group_objects(['f.fits'], cfg) == {'obj': ['f.fits']}
+    assert seen['objects'] == 'auto'
     assert seen['override'] == {'a': 'obj'}
     be.select_regions(spec, cfg, True)
     assert seen['select'][:3] == (2000., ['ccf'], cfg.regions.overrides)
