@@ -72,6 +72,12 @@ def test_relative_locations_follow_the_toml(tmp_path):
     assert moved.hash() == cfg.hash()  # where the files are does not change the analysis
 
 
+def test_file_qualified_object_selectors_follow_the_toml(tmp_path):
+    (tmp_path / 'c.toml').write_text('[input]\npaths = ["night.fits"]\nobjects = ["night.fits[1]", "1229_9", 2]\n')
+    cfg = config.load(tmp_path / 'c.toml')
+    assert cfg.input.objects == [f'{tmp_path / "night.fits"}[1]', '1229_9', 2]
+
+
 def test_relative_locations_in_refits_and_grouping(tmp_path):
     (tmp_path / 'c.toml').write_text('[input]\npaths = ["night1/a.fits"]\n'
                                      '[grouping.override]\n"night1/a.fits" = "X"\n"b.fits" = "Y"\n'

@@ -738,3 +738,25 @@ def test_real_jwst_examples_list_spectra_and_cube():
     assert [e.kind for e in b.list_spectra(cube, cfg)] == ['cube', 'error', 'dq']
     img, (x, y) = b.cube_image(cube)
     assert img.shape == (17, 17) and img[y, x] == np.nanmax(img)
+
+
+def test_tick_of_a_detector_position_selects_only_its_file(qtbot, tmp_path):
+    """Real backend: two nights share a PypeIt trace name; ticking it in one file never selects the other file's"""
+    from PySide6.QtCore import Qt
+
+    from rvfitter.gui.backend import LazyBackend
+    from test_io import _multi_spec1d
+    names = ['SPAT0123-SLIT0456-DET01', 'SPAT0300-SLIT0456-DET01']
+    a, b = (_multi_spec1d(tmp_path / f'night{n}.fits', [17., 86.], names, ['science'] * 2) for n in (1, 2))
+    w = MainWindow(LazyBackend(), QSettings(str(tmp_path / 'q.ini'), QSettings.Format.IniFormat))
+    qtbot.addWidget(w)
+    _load(qtbot, w, a)
+    w.load_paths([b])
+    qtbot.waitUntil(lambda: len(w.entries) == 2, timeout=10000)
+    night1 = next(w.input_tree.topLevelItem(i) for i in range(w.input_tree.topLevelItemCount())
+                  if w.input_tree.topLevelItem(i).text(0) == 'night1.fits')
+    night1.child(0).setCheckState(0, Qt.CheckState.Checked)
+    assert f'{a}[1]' in w.current_config().input.objects
+    qtbot.waitUntil(lambda: 'My Star SPAT0123-SLIT0456-DET01 (night1)' in w.groups, timeout=10000)
+    assert not any('night2' in name for name in w.groups)
+    w.close()

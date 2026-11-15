@@ -1703,7 +1703,9 @@ def _select(path: Path, entries: list[SpectrumEntry], objects: str | list[str | 
     'auto': the entry named after the header target, if exactly one is; otherwise every usable entry when the
     entries carry their own source names (a MOS file), else the target ('target'). 'target': the reader's choice
     (`read_spectrum` with no ``hdu``). 'all': every usable entry. A list: the entries whose HDU index or name is in
-    it (none raises). Unusable entries are skipped with a WARNING, or read with one when listed explicitly.
+    it, or whose source 'file.fits[hdu]' is (that file only; how the GUI selects entries without their own source
+    name, which another file may share), none raising. Unusable entries are skipped with a WARNING, or read with one
+    when listed explicitly.
     """
     name = path.name
     label = ', '.join(f'HDU {e.hdu} {e.name} (S/N {e.snr:.1f}{"" if e.usable else "; unusable"})' for e in entries)
@@ -1732,7 +1734,8 @@ def _select(path: Path, entries: list[SpectrumEntry], objects: str | list[str | 
         log.info("%s: %d spectra (%s); input.objects 'all'%s: reading %d", name, len(entries), label, why, len(picks))
     else:
         wanted = {str(x) for x in objects}
-        picks = [e for e in entries if str(e.hdu) in wanted or e.name in wanted]
+        here = {h for p, h in map(split_source, wanted) if h is not None and p.resolve() == path.resolve()}
+        picks = [e for e in entries if str(e.hdu) in wanted or e.name in wanted or e.hdu in here]
         for e in picks:
             if not e.usable:
                 log.warning('%s: HDU %s (%s) is read because input.objects names it, although %s', name, e.hdu,
@@ -1752,9 +1755,10 @@ def read_spectra(source: str | Path, *, objects: str | list[str | int] = 'auto',
     ``source`` is a path, or ``'file.fits[3]'`` for one HDU. With ``hdu`` (``input.hdu``), a single HDU, or a file with
     one candidate spectrum (`list_spectra`), this is `read_spectrum`. Otherwise the source of each spectrum is
     ``'file.fits[<hdu>]'`` and ``meta['entry']`` its entry name; an entry without its own source name, other than the
-    target (`read_spectrum` with no ``hdu``), is named '<object> <entry>' (e.g. 'J1745-1640 SPAT0168-SLIT0457-DET02')
-    however many are read at once, so that grouping and rereading a source never merge them. ``read_kwargs`` go to
-    `read_spectrum`.
+    target (`read_spectrum` with no ``hdu``), is named '<object> <entry> (<file stem>)' (e.g. 'J1745-1640
+    SPAT0168-SLIT0457-DET02 (spec1d_night1)'; '<file stem> <entry>' without an object) however many are read at once,
+    so that grouping and rereading a source never merge them, nor merge spectra at the same detector position in
+    different files. ``read_kwargs`` go to `read_spectrum`.
     """
     path, at = split_source(source)
     if at is not None:
@@ -1780,7 +1784,8 @@ def read_spectra(source: str | Path, *, objects: str | list[str | int] = 'auto',
     for _, spec, entry in read:
         meta = {**spec.meta, 'entry': entry.name}
         if not entry.named and entry.hdu != target:
-            meta['object'] = f"{spec.meta.get('object') or path.stem} {entry.name}"
+            obj = spec.meta.get('object')
+            meta['object'] = f'{obj} {entry.name} ({path.stem})' if obj else f'{path.stem} {entry.name}'
         out.append(replace(spec, source=f'{path}[{entry.hdu}]', meta=meta))
     return out
 
