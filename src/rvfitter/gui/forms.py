@@ -10,11 +10,13 @@ import copy
 import dataclasses
 import enum
 import json
+import re
 import types
 import typing
 from typing import Any, Literal, Union, get_args, get_origin
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -31,8 +34,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import METHOD_LABELS, METHOD_NAMES, OUTPUT_FORMATS
+from ..config import LOCATION_FIELDS, METHOD_LABELS, METHOD_NAMES, OUTPUT_FORMATS
 from ..templates import KNOWN_GRIDS
+from . import theme
 
 # tooltip of every setting the forms show, by dotted config path (a missing one is a KeyError when the form is built)
 TIPS = {
@@ -152,8 +156,63 @@ METHOD_TIPS = {  # what each method does; the Setup tab adds why it is or is not
     'forward_mcmc': 'Pixel-level forward model (grid template, vsini, LSF, continuum) sampled by MCMC.',
     'lsd': 'Least-squares deconvolution: the mean line profile against a template line mask; RV and vsini.',
 }
+# why the default of each setting that `config.setting_advice` does not cover suits any spectrum (the Advanced
+# dialog shows it as that setting's recommendation)
+DEFAULT_WHY = {
+    'seed': 'only the Monte Carlo draws depend on it.',
+    'input.paths': 'the GUI uses the spectra you open.',
+    'input.medium_method': 'Ciddor (1996) is the standard air-to-vacuum formula; the others differ by under 1 m/s.',
+    'input.hdu': 'the extension is chosen from the file\'s structure.',
+    'input.raw_header': 'needed only for the slit position angle, if the reduced file lacks it.',
+    'input.raw_header_dir': 'needed only for PypeIt files whose raw frames are elsewhere.',
+    'input.objects': 'auto measures the target, else every spectrum with its own source name.',
+    'input.cube.position': 'the brightest spaxel is the target in most cubes.',
+    'input.cube.radius': '3 spaxels holds most of the light of a point source.',
+    'grouping.override': 'spectra are grouped by the object name in their headers.',
+    'velocity_frame.overrides': 'the header values are used; set them only where the header is wrong or empty.',
+    'templates.local_dir': 'the grids are downloaded to the cache when first needed.',
+    'templates.medium': 'the grid\'s own metadata gives its medium.',
+    'templates.met_range': '[M/H] is held at the prior (or the grid default); free it for subdwarfs.',
+    'templates.alpha_range': '[α/M] is held at the prior (or the grid default).',
+    'templates.ranges': 'the extra axes are held at their defaults.',
+    'templates.teff_prior': 'set it from the spectral type to choose the features and the grid.',
+    'templates.logg_prior': 'the grid\'s default is used.',
+    'templates.met_prior': 'solar; set it for metal-poor objects (the grid advice then ranks the metal-poor grids '
+                           'first).',
+    'templates.alpha_prior': 'the grid\'s default is used.',
+    'methods.binary': 'the single- versus two-template test is needed only for suspected binaries.',
+    'regions.overrides': 'the regions are chosen from the spectrum.',
+    'regions.min_snr': 'features below S/N 5 add noise rather than information.',
+    'regions.telluric_strictness': 'the airmass-dependent threshold suits most sites.',
+    'regions.max_regions': '12 regions hold most of the RV information.',
+    'regions.continuum_fwhm': '5 resolution elements give a stable local continuum.',
+    'combine.tau_scale': 'the median error sets the scale of the scatter prior.',
+    'combine.systematic_floor': 'add only a known instrument floor.',
+    'calibration.slit_prior': 'auto uses the slit width and the trace FWHM.',
+    'calibration.seeing_fwhm': 'used only when the trace FWHM is unknown.',
+    'calibration.wave_rms_kms': 'the file\'s arc RMS, else the instrument\'s typical value, is used.',
+    'calibration.sky_source': 'needed only for spectra without their own sky.',
+    'calibration.sky_segment_width': '250 Å holds enough sky lines per segment.',
+    'calibration.telluric_source': 'needed only when the input is telluric-corrected.',
+    'calibration.telluric_segment_width': '250 Å holds enough telluric lines per segment.',
+    'calibration.telluric_template': 'modelling the star separates its lines from the telluric ones.',
+    'calibration.wave_valid_range': 'the arc-line range next to a PypeIt file is used.',
+    'output.path': 'results are saved with Export.',
+    'output.formats': 'CSV opens everywhere.',
+    'output.plots': 'the GUI shows the plots in the Diagnostics tab.',
+    'output.plot_style': 'quick needs no LaTeX.',
+    'output.medium': 'vacuum wavelengths are the standard.',
+}
 
-_PATH_NAMES = {'output_dir', 'out_dir', 'local_dir', 'template_dir', 'cache_dir', 'logfile', 'raw_header_dir'}
+
+def guide_url(path: str = '') -> str:
+    """The settings guide, at the entry of a dotted config path or a section name (anchor: dots replaced by '-')"""
+    return f'{GUIDE_URL}#{path.replace(".", "-")}' if path else GUIDE_URL
+
+
+def open_guide(path: str = '') -> None:
+    QDesktopServices.openUrl(QUrl(guide_url(path)))
+
 _CHOICE_LISTS = {'methods': METHOD_NAMES, 'enabled': METHOD_NAMES, 'formats': OUTPUT_FORMATS,
                  'grid': tuple(KNOWN_GRIDS)}
 LABELS = {'seed': 'Random seed', 'hdu': 'FITS HDU', 'raw_header_dir': 'Raw header folder', 'n_procs': 'Processes',
@@ -161,7 +220,9 @@ LABELS = {'seed': 'Random seed', 'hdu': 'FITS HDU', 'raw_header_dir': 'Raw heade
           'telluric_corrected': 'Telluric corrected'}
 # kept from the loaded config, never shown: the file-format version and the refit button's per-object patches
 HIDDEN = {'config.schema_version', 'config.refits'}
-OPEN_SECTIONS = {'input', 'methods', 'velocity_frame', 'calibration', 'output'}  # the common settings
+GUIDE_URL = 'https://github.com/Will-Cooper/rvfitter/blob/main/docs/settings.md'
+MORE_TIP = '\nMore… in the settings guide (the link under the box).'  # ends every Advanced tooltip
+BROWSE_TEXT = {'files': 'Add files…', 'file': 'Browse…', 'folder': 'Browse…', 'save': 'Browse…'}  # by kind
 NUMBER_WIDTH, CHOICE_WIDTH, TEXT_WIDTH = 120, 180, 320  # maximum widths [px]; paths and lists stretch
 
 
@@ -243,31 +304,64 @@ class ChoiceEditor(Editor):
         self.widget.setCurrentIndex(idx)
 
 
+def _choose(parent: QWidget, kind: str, start: str) -> list[str]:
+    """The paths picked in the file dialog of a `config.LOCATION_FIELDS` kind (empty if cancelled)"""
+    if kind == 'files':
+        return QFileDialog.getOpenFileNames(parent, 'Add files', start)[0]
+    if kind == 'file':
+        name = QFileDialog.getOpenFileName(parent, 'Choose file', start)[0]
+    elif kind == 'folder':
+        name = QFileDialog.getExistingDirectory(parent, 'Choose folder', start)
+    elif kind == 'save':
+        name = QFileDialog.getSaveFileName(parent, 'Save as', start)[0]
+    else:
+        raise ValueError(f'Unknown location kind {kind!r}: not one of {sorted(BROWSE_TEXT)}')
+    return [name] if name else []
+
+
+def _with_browse(edit: QWidget, kind: str | None, slot) -> tuple[QWidget, QPushButton | None]:
+    """``edit`` alone, or in a row with a Browse button (its ``kind`` attribute is the dialog's kind)"""
+    if kind is None:
+        return edit, None
+    if kind not in BROWSE_TEXT:
+        raise ValueError(f'Unknown location kind {kind!r}: not one of {sorted(BROWSE_TEXT)}')
+    row = QWidget()
+    lay = QHBoxLayout(row)
+    lay.setContentsMargins(0, 0, 0, 0)
+    btn = QPushButton(BROWSE_TEXT[kind])
+    btn.kind = kind
+    btn.clicked.connect(slot)
+    lay.addWidget(edit, 1)
+    lay.addWidget(btn)
+    return row, btn
+
+
 class TextEditor(Editor):
     """Line edit parsing to ``kind`` (str, float, int or json); an empty box is ``None`` if optional."""
 
-    def __init__(self, kind: type | str = str, optional: bool = False, browse: bool = False):
+    def __init__(self, kind: type | str = str, optional: bool = False, browse: str | None = None):
         self.kind, self.optional = kind, optional
         self.edit = QLineEdit()
         if kind in (int, float):
             self.edit.setMaximumWidth(NUMBER_WIDTH)
         elif not browse and kind is str:
             self.edit.setMaximumWidth(TEXT_WIDTH)
-        if browse:
-            self.widget = QWidget()
-            lay = QHBoxLayout(self.widget)
-            lay.setContentsMargins(0, 0, 0, 0)
-            btn = QPushButton('Browse…')
-            btn.clicked.connect(self._browse)
-            lay.addWidget(self.edit, 1)
-            lay.addWidget(btn)
-        else:
-            self.widget = self.edit
+        self.widget, self.browse_btn = _with_browse(self.edit, browse, self._browse)
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self.widget, 'Choose folder', self.edit.text())
-        if d:
-            self.edit.setText(d)
+        """Fill the box from the dialog of its kind; a JSON mapping {grid: folder} gets the folder of its first grid"""
+        chosen = _choose(self.widget, self.browse_btn.kind, self.edit.text())
+        if not chosen:
+            return
+        if self.kind != 'json':
+            self.edit.setText(chosen[0])
+            return
+        current = self.get() if self.edit.text().strip() else None
+        if isinstance(current, dict) and current:
+            current[next(iter(current))] = chosen[0]
+            self.set(current)
+        else:
+            self.set(chosen[0])
 
     def get(self):
         text = self.edit.text().strip()
@@ -297,13 +391,19 @@ class TextEditor(Editor):
 class SeqEditor(Editor):
     """Comma-separated list/tuple of scalars."""
 
-    def __init__(self, container: type, elem: type, optional: bool = False):
+    def __init__(self, container: type, elem: type, optional: bool = False, browse: str | None = None):
         self.container, self.elem, self.optional = container, elem, optional
-        self.widget = QLineEdit()
-        self.widget.setPlaceholderText('comma-separated')
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText('comma-separated')
+        self.widget, self.browse_btn = _with_browse(self.edit, browse, self._browse)
+
+    def _browse(self):
+        chosen = _choose(self.widget, self.browse_btn.kind, '')
+        if chosen:
+            self.set([*(self.get() or []), *chosen])
 
     def get(self):
-        text = self.widget.text().strip()
+        text = self.edit.text().strip()
         if not text:
             return None if self.optional else self.container()
         items = [t.strip() for t in text.split(',') if t.strip()]
@@ -311,7 +411,7 @@ class SeqEditor(Editor):
         return self.container(conv(t) for t in items)
 
     def set(self, value):
-        self.widget.setText('' if value is None else ', '.join(str(v) for v in value))
+        self.edit.setText('' if value is None else ', '.join(str(v) for v in value))
 
 
 class CheckListEditor(Editor):
@@ -388,14 +488,21 @@ class GroupEditor(Editor):
         font.setBold(True)
         self.toggle.setFont(font)
         self.toggle.toggled.connect(self._expand)
-        outer.addWidget(self.toggle)
+        section_name = path.rsplit('.', 1)[-1]
+        self.help = QToolButton(text='?', autoRaise=True, toolTip=f'{title} in the settings guide')
+        self.help.clicked.connect(lambda: open_guide(section_name))
+        header = QHBoxLayout()
+        header.addWidget(self.toggle)
+        header.addWidget(self.help)
+        header.addStretch(1)
+        outer.addLayout(header)
         outer.addWidget(self.box)
-        self.toggle.setChecked(path.rsplit('.', 1)[-1] in OPEN_SECTIONS)
-        self._expand(self.toggle.isChecked())
+        self._expand(False)  # every section starts collapsed: the Setup tab is the everyday view
         self._add_fields(cls, path, tooltips)
 
     def _add_fields(self, cls: type, path: str, tooltips: dict[str, str]) -> None:
         self.children: dict[str, Editor] = {}
+        self.rows: dict[str, _FieldRow] = {}  # the leaf fields' rows (editor, comment, recommendation)
         hints = typing.get_type_hints(cls)
         for f in dataclasses.fields(cls):
             if not f.init or f'{path}.{f.name}' in HIDDEN:
@@ -403,17 +510,17 @@ class GroupEditor(Editor):
             sub = f'{path}.{f.name}'
             ed = make_editor(hints.get(f.name, f.type), f, sub, tooltips)
             self.children[f.name] = ed
-            tip = ed.cls.__doc__.strip().splitlines()[0] if isinstance(ed, GroupEditor) else \
-                tooltips[sub.removeprefix('config.')]
-            ed.widget.setToolTip(tip)
             label = LABELS.get(f.name, f.name.replace('_', ' ').capitalize())
             if isinstance(ed, GroupEditor):
+                ed.widget.setToolTip(ed.cls.__doc__.strip().splitlines()[0])
                 self.layout.addRow(ed.widget)
-            else:
-                self.layout.addRow(label, ed.widget)
-                lab = self.layout.labelForField(ed.widget)
-                if lab is not None:
-                    lab.setToolTip(tip)
+                continue
+            key = sub.removeprefix('config.')
+            tip = tooltips[key] + MORE_TIP
+            ed.widget.setToolTip(tip)
+            self.rows[f.name] = row = _FieldRow(ed, key, tooltips[key])
+            self.layout.addRow(label, row)
+            self.layout.labelForField(row).setToolTip(tip)
 
     def _expand(self, on: bool) -> None:
         self.box.setVisible(on)
@@ -429,6 +536,68 @@ class GroupEditor(Editor):
     def set(self, value: Any) -> None:
         for name, ed in self.children.items():
             ed.set(getattr(value, name))
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equal settings values (lists of names in any order; a lone name equals a one-name list)"""
+    if isinstance(a, (str, list)) and isinstance(b, (str, list)):
+        return sorted([a] if isinstance(a, str) else a) == sorted([b] if isinstance(b, str) else b)
+    return a == b
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, tuple):
+        return '–'.join(f'{v:g}' for v in value)
+    if isinstance(value, list):
+        return ', '.join(METHOD_LABELS.get(v, v) for v in value) or '(none)'
+    if isinstance(value, dict):
+        return json.dumps(value) if value else '(none)'
+    return str(value)
+
+
+class _FieldRow(QWidget):
+    """An editor, the first sentence of its tip with a link to its settings-guide entry (grey), and a recommendation
+    line with Apply (blue; gold when the box differs) once `show_advice` is called"""
+
+    def __init__(self, ed: Editor, path: str, tip: str):
+        super().__init__()
+        self.ed = ed
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(1)
+        lay.addWidget(ed.widget)
+        first = re.split(r'(?<!e\.g)(?<!i\.e)\. (?=[A-Z])', tip)[0].rstrip('.')  # its first sentence
+        self.comment = QLabel(f'{first}. <a href="{guide_url(path)}">More…</a>', wordWrap=True,
+                              openExternalLinks=True)
+        grey = self.comment.palette().color(QPalette.ColorRole.PlaceholderText).name()
+        self.comment.setStyleSheet(f'color: {grey}')
+        lay.addWidget(self.comment)
+        self.advice = QLabel(wordWrap=True)
+        self.apply = QPushButton('Apply', toolTip='Set the recommended value')
+        self.apply.clicked.connect(self._apply)
+        row = QHBoxLayout()
+        row.addWidget(self.advice, 1)
+        row.addWidget(self.apply, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(row)
+        self.advice.hide()
+        self.apply.hide()
+        self.value: Any = None
+
+    def show_advice(self, text: str, value: Any = None) -> None:
+        """Show ``text``; a ``value`` (None: nothing to apply) gets Apply"""
+        self.value = value
+        self.advice.setText(text)
+        self.advice.show()
+        self.apply.setVisible(value is not None)
+        self._colour()
+
+    def _colour(self) -> None:
+        role = 'flagged' if self.value is not None and not _same(self.ed.get(), self.value) else 'primary'
+        self.advice.setStyleSheet(f'color: {theme.colour(role, self.advice.palette()).name()}')
+
+    def _apply(self) -> None:
+        self.ed.set(self.value)
+        self._colour()
 
 
 def make_editor(tp: Any, f: dataclasses.Field, path: str, tooltips: dict[str, str]) -> Editor:
@@ -453,16 +622,17 @@ def make_editor(tp: Any, f: dataclasses.Field, path: str, tooltips: dict[str, st
         return IntEditor(optional)
     if tp is float:
         return TextEditor(tp, optional=True)
+    browse = LOCATION_FIELDS.get(tuple(path.removeprefix('config.').split('.')))
     if tp is str:
-        return TextEditor(str, optional=optional, browse=name in _PATH_NAMES)
+        return TextEditor(str, optional=optional, browse=browse)
     if origin in (list, tuple, set, frozenset) or tp in (list, tuple, set, frozenset):
         container = origin or tp
         args = [a for a in get_args(tp) if a is not Ellipsis]
         elem = args[0] if args else str
         if name in _CHOICE_LISTS and elem is str:
             return CheckListEditor(_CHOICE_LISTS[name], container)
-        return SeqEditor(container, elem, optional)
-    return TextEditor('json', optional=optional or type(None) in get_args(tp))  # e.g. hdu: int | str | None
+        return SeqEditor(container, elem, optional, browse=browse)
+    return TextEditor('json', optional=optional or type(None) in get_args(tp), browse=browse)  # e.g. local_dir, hdu
 
 
 class ConfigForm(QWidget):
@@ -497,6 +667,26 @@ class ConfigForm(QWidget):
                 return None
             ed = ed.children[part]
         return ed
+
+    def rows(self) -> dict[str, _FieldRow]:
+        """Every leaf field's row, by dotted path"""
+        out, todo = {}, [('', self.root)]
+        while todo:
+            prefix, g = todo.pop()
+            out.update({prefix + n: r for n, r in g.rows.items()})
+            todo += [(f'{prefix}{n}.', e) for n, e in g.children.items() if isinstance(e, GroupEditor)]
+        return out
+
+    def show_advice(self, name: str, advice: dict[str, Any]) -> None:
+        """Under every box, the recommendation for object ``name``: its `config.setting_advice` entry, else why the
+        default suits it (`DEFAULT_WHY`)"""
+        for path, row in self.rows().items():
+            if path in advice:
+                value, reason = advice[path]
+                row.show_advice(f'Recommended for {name}: {_shown(value)}. {reason}' if value is not None else
+                                f'For {name}: {reason}', value)
+            elif path in DEFAULT_WHY:
+                row.show_advice(f'The default suits this spectrum: {DEFAULT_WHY[path]}')
 
     def get_value(self, path: str) -> Any:
         ed = self.editor(path)
