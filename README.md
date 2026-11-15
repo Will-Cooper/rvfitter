@@ -17,7 +17,7 @@ Download the standalone app (no Python needed) from the [latest release](https:/
 3. Press **Measure RVs**. The progress bar shows the object and method being run; the adopted RV appears next to each object, and the **Results** and **Diagnostics** tabs show the fits.
 
 Results are saved as a table together with `results_config.toml`, the settings actually used, so any result can be reproduced (File > Open settings…).
-[examples/](examples/README.md) has three ultracool dwarfs (optical and near-infrared) to try; [docs/install.md](docs/install.md) covers other install routes and troubleshooting; [docs/methods.md](docs/methods.md) describes the methods, the benchmark and the validation.
+[examples/](examples/README.md) has three ultracool dwarfs (optical and near-infrared) to try; [docs/install.md](docs/install.md) covers other install routes and troubleshooting; [docs/settings.md](docs/settings.md) explains every setting, why its default is what it is, and which settings suit your data; [docs/methods.md](docs/methods.md) describes the methods, the benchmark and the validation.
 
 ## Command line and Python
 

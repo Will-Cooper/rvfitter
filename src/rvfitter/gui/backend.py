@@ -37,6 +37,8 @@ class Backend(Protocol):
 
     def regime(self, spectrum: Any) -> str: ...
 
+    def setting_advice(self, spectrum: Any, cfg: Any, result: Any = None) -> dict[str, tuple[Any, str]]: ...
+
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
 
     def run(self, cfg: Any, groups: Mapping[str, Sequence[str]], n_procs: int | None,
@@ -103,6 +105,14 @@ class LazyBackend:
         """The regime defaults of ``spectrum`` (``config.default_for``)."""
         from rvfitter import config
         return config.default_for(spectrum)
+
+    def setting_advice(self, spectrum: Any, cfg: Any, result: Any = None) -> dict[str, tuple[Any, str]]:
+        """``config.setting_advice`` for ``spectrum``, with the best-fit Teff of ``result`` (its object's last run)"""
+        import math
+
+        from rvfitter import config, results
+        teff = results._template_row(result)['template_teff'] if result is not None else math.nan
+        return config.setting_advice(spectrum, cfg, None if math.isnan(teff) else teff)
 
     def regime(self, spectrum: Any) -> str:
         """E.g. 'low-resolution optical' (``config.regime_for``)."""

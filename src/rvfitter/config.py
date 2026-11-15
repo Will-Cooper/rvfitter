@@ -32,6 +32,7 @@ __all__ = ['Config', 'ConfigError', 'InputConfig', 'CubeConfig', 'OBJECT_MODES',
            'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
            'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
            'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'method_advice', 'MethodAdvice',
+           'setting_advice', 'SettingAdvice', 'grid_advice', 'LOCATION_FIELDS',
            'SCHEMA_VERSION']
 
 log = logging.getLogger(__name__)
@@ -108,6 +109,21 @@ class GroupingConfig:
     override: dict[str, str] | None = None  # file (path, name or stem) or header object name -> object
 
 
+def _as_range(value: Any) -> Any:
+    """A single value (a number or a one-element list) as the range (v, v) holding just it; a mapping per value;
+    anything else unchanged (the type check follows)"""
+    if isinstance(value, dict):
+        return {k: _as_range(v) for k, v in value.items()}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (value, value)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        return (value[0], value[0])
+    return value
+
+
+SINGLE = {'single': True}  # field metadata: a template range that also takes a single value (`_as_range`)
+
+
 @dataclass
 class TemplatesConfig:
     """Model-atmosphere grid and the parameter space searched"""
@@ -116,15 +132,22 @@ class TemplatesConfig:
     local_dir: str | dict[str, str] | None = None  # local template directory (first grid), or {grid: directory}
     # declared medium of the grid; None = take it from the grid's metadata
     medium: str | None = field(default=None, metadata={'choices': MEDIA})
-    teff_range: tuple[float, float] | None = None  # [K]
-    logg_range: tuple[float, float] | None = None  # [dex, cgs]
-    met_range: tuple[float, float] | None = None  # [dex]
-    alpha_range: tuple[float, float] | None = None  # [dex]
-    ranges: dict[str, tuple[float, float]] = field(default_factory=dict)  # extra grid axes, e.g. {co = [0.5, 1]}
+    # [min, max] searched, or one value (only that grid value: fewer templates downloaded and fitted)
+    teff_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [K]
+    logg_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [dex, cgs]
+    met_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [dex]
+    alpha_range: tuple[float, float] | None = field(default=None, metadata=SINGLE)  # [dex]
+    # extra grid axes, e.g. {co = [0.5, 1]} or {co = 1}
+    ranges: dict[str, tuple[float, float]] = field(default_factory=dict, metadata=SINGLE)
     teff_prior: float | None = None  # expected Teff [K] (e.g. from the spectral type), used to select features
     logg_prior: float | None = None
     met_prior: float | None = None  # met, alpha and extra axes without a range are held at their prior/default
     alpha_prior: float | None = None
+
+    def __post_init__(self):  # a single value from the GUI or code, as from a TOML file
+        for f in fields(self):
+            if f.metadata.get('single'):
+                setattr(self, f.name, _as_range(getattr(self, f.name)))
 
 
 @dataclass
@@ -147,10 +170,11 @@ class RegionsConfig:
     overrides: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     min_snr: float = 5.  # drop features whose local S/N is below this
     telluric_strictness: float = 1.  # scales the airmass-dependent telluric threshold (larger masks more)
-    max_regions: int = 12  # keep at most this many, ranked by forecast information content
-    continuum_fwhm: float = 5.  # continuum windows extend this many resolution elements around a feature
-    # windows for ccf/template_fit at R <= 5000: 'features' (around well-modelled atomic/CO features; the
-    # default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric span)
+    max_regions: int | None = None  # keep at most this many, ranked by forecast information content; None: all
+    continuum_fwhm: float = 3.  # continuum windows extend this many resolution elements around a feature
+    # windows for ccf/template_fit below R 4500 (REGIME_EDGES[0]): 'features' (around well-modelled atomic/CO
+    # features; the default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric
+    # span)
     template_windows: str = field(default='features', metadata={'choices': TEMPLATE_WINDOWS})
 
 
@@ -229,12 +253,11 @@ class Config:
         """
         SHA-256 (hex) of the canonical JSON dump (sorted keys) of the analysis.
 
-        ``input.paths``, the other file locations (`LOCATION_FIELDS`) and the whole ``output`` section are excluded:
+        The file locations (`LOCATION_FIELDS`) and the whole ``output`` section are excluded:
         they say where data come from and where results go, not how the analysis is done (the results record
         input-file checksums separately).
         """
         plain = self.to_dict(drop_none=False)
-        plain['input'].pop('paths')
         for section, name in LOCATION_FIELDS:
             plain[section].pop(name)
         plain.pop('output')
@@ -349,7 +372,8 @@ def _from_dict(cls: type, data: Any, where: str) -> Any:
     kwargs = {}
     for name in known:
         if name in data:
-            kwargs[name] = _coerce(data[name], hints[name], f'{where}.{name}' if where else name)
+            value = _as_range(data[name]) if known[name].metadata.get('single') else data[name]
+            kwargs[name] = _coerce(value, hints[name], f'{where}.{name}' if where else name)
     return cls(**kwargs)
 
 
@@ -362,12 +386,14 @@ def _choice(problems: list[str], where: str, value: Any, choices: tuple[str, ...
         problems.append(f'{where} = {value!r} is not one of {", ".join(choices)}{_suggest(value, choices)}')
 
 
-def _range(problems: list[str], where: str, value: tuple[float, float] | None, positive: bool = False) -> None:
+def _range(problems: list[str], where: str, value: tuple[float, float] | None, positive: bool = False,
+           single: bool = False) -> None:
+    """[min, max] with min < max (min <= max if ``single``: one value)"""
     if value is None:
         return
     lo, hi = value
-    if not lo < hi:
-        problems.append(f'{where} = {list(value)} must be [min, max] with min < max')
+    if not (lo <= hi if single else lo < hi):
+        problems.append(f'{where} = {list(value)} must be [min, max] with min {"<=" if single else "<"} max')
     elif positive and lo <= 0:
         problems.append(f'{where} = {list(value)} must be positive')
 
@@ -418,12 +444,12 @@ def _validate(cfg: Config) -> list[str]:
     t = cfg.templates
     if t.medium is not None:
         _choice(p, 'templates.medium', t.medium, MEDIA)
-    _range(p, 'templates.teff_range', t.teff_range, positive=True)
-    _range(p, 'templates.logg_range', t.logg_range)
-    _range(p, 'templates.met_range', t.met_range)
-    _range(p, 'templates.alpha_range', t.alpha_range)
+    _range(p, 'templates.teff_range', t.teff_range, positive=True, single=True)
+    _range(p, 'templates.logg_range', t.logg_range, single=True)
+    _range(p, 'templates.met_range', t.met_range, single=True)
+    _range(p, 'templates.alpha_range', t.alpha_range, single=True)
     for axis, r_ in t.ranges.items():
-        _range(p, f'templates.ranges.{axis}', r_)
+        _range(p, f'templates.ranges.{axis}', r_, single=True)
     grids = [t.grid] if isinstance(t.grid, str) else list(t.grid)
     if not grids or len(set(grids)) != len(grids):
         p.append(f'templates.grid = {t.grid!r} must be a name or a list of distinct names')
@@ -467,7 +493,7 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f'regions.min_snr = {r.min_snr} must be >= 0')
     if not r.telluric_strictness > 0:
         p.append(f'regions.telluric_strictness = {r.telluric_strictness} must be > 0')
-    if r.max_regions < 1:
+    if r.max_regions is not None and r.max_regions < 1:
         p.append(f'regions.max_regions = {r.max_regions} must be >= 1')
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')
@@ -525,24 +551,26 @@ def loads(text: str) -> Config:
     return from_dict(data)
 
 
-# file locations besides input.paths and output.path: relative ones in a TOML file are relative to that file
-LOCATION_FIELDS = (('input', 'raw_header'), ('input', 'raw_header_dir'), ('templates', 'local_dir'),
-                   ('calibration', 'sky_source'), ('calibration', 'telluric_source'))
+# every file location, (section, name) -> what it names (the GUI's Browse dialog): 'files' (a list of files, folders
+# or globs), 'file', 'folder' or 'save' (a file written); relative ones in a TOML file are relative to that file
+LOCATION_FIELDS = {('input', 'paths'): 'files', ('input', 'raw_header'): 'file', ('input', 'raw_header_dir'): 'folder',
+                   ('templates', 'local_dir'): 'folder', ('calibration', 'sky_source'): 'file',
+                   ('calibration', 'telluric_source'): 'file', ('output', 'path'): 'save'}
 
 
 def resolve_locations(cfg: Config, base: str | Path) -> Config:
-    """A copy of ``cfg`` with its relative file locations (``input.paths``, ``output.path``, `LOCATION_FIELDS`, also
-    inside ``[[refits]]`` patches, ``grouping.override`` keys that contain a folder, and ``input.objects`` items
-    ``file.fits[hdu]``) made absolute against ``base``; absolute ones, and override keys and objects that are a file
-    name, stem, object name or HDU number, are kept."""
+    """A copy of ``cfg`` with its relative file locations (`LOCATION_FIELDS`, also inside ``[[refits]]`` patches,
+    ``grouping.override`` keys that contain a folder, and ``input.objects`` items ``file.fits[hdu]``) made
+    absolute against ``base``; absolute ones, and override keys and objects that are a file name, stem, object name
+    or HDU number, are kept."""
     cfg, base = copy.deepcopy(cfg), Path(base).resolve()
 
     def fix(p):
         if isinstance(p, dict):
             return {k: fix(v) for k, v in p.items()}
+        if isinstance(p, list):
+            return [fix(v) for v in p]
         return p if p is None or Path(p).is_absolute() else str(base / p)
-    cfg.input.paths = [fix(p) for p in cfg.input.paths]
-    cfg.output.path = fix(cfg.output.path)
     for section, name in LOCATION_FIELDS:
         setattr(getattr(cfg, section), name, fix(getattr(getattr(cfg, section), name)))
         for r in cfg.refits:
@@ -689,7 +717,8 @@ def method_advice(regime: str, resolution: float | None = None) -> dict[str, Met
 
 def default_for(spectrum: Spectrum) -> Config:
     """
-    Regime defaults for a spectrum: the methods that `method_advice` recommends at its resolving power, i.e.
+    Regime defaults for a spectrum: the methods that `setting_advice` (from `method_advice`) recommends at its
+    resolving power, i.e.
     template_fit, ccf and linecentre at low R (R < 4500); template_fit (free vsini) and ccf at R 4500-20000;
     template_fit (free vsini) and telluric_ref above.
 
@@ -706,8 +735,173 @@ def default_for(spectrum: Spectrum) -> Config:
     log.info('Default settings for the %s-resolution regime, %s band', regime, band)
     cfg.input.resolution = None if R is None else float(R)
     cfg.input.medium = spectrum.meta['medium_in']
-    advice = method_advice(regime)
-    cfg.methods.enabled = [m for m, a in advice.items() if a.recommended]
-    cfg.methods.options = {m: a.options for m, a in advice.items() if a.recommended and a.options}
+    advice = setting_advice(spectrum, cfg)  # one rule set: the methods the Advanced dialog recommends
+    cfg.methods.enabled, cfg.methods.options = advice['methods.enabled'].value, advice['methods.options'].value
     cfg.validate()
     return cfg
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# per-setting advice (the Advanced dialog; default_for takes its methods from it)
+# ----------------------------------------------------------------------------------------------------------------------
+
+SPACE_SITES = ('JWST',)  # meta['site'] of observatories without telluric absorption or sky lines
+# what each known grid models (from its KNOWN_GRIDS reference), for the grid advice
+GRID_PHYSICS = {
+    'bt-settl-cifist': 'BT-Settl CIFIST (Allard et al. 2012): condensate settling (clouds) with the CIFIST solar '
+                       'abundances, the reference grid for M and L dwarfs, validated on the GTC/OSIRIS benchmark; '
+                       'solar metallicity only',
+    'bt-settl-agss2009': 'BT-Settl AGSS2009 (Allard et al. 2012): [M/H] and [α/M] vary, and it extends to hot stars',
+    'sonora-diamondback': 'Sonora Diamondback (Morley et al. 2024): silicate and iron clouds (fsed), which shape the '
+                          'spectra of L and L/T-transition dwarfs',
+    'sonora-elfowl': 'Sonora Elf Owl (Mukherjee et al. 2024): disequilibrium chemistry (Kzz) and C/O, cloud-free, '
+                     'as T and Y dwarfs need',
+    'sonora-bobcat': 'Sonora Bobcat (Marley et al. 2021): cloud-free, equilibrium chemistry, C/O; T and Y dwarfs',
+    'sand': 'SAND (Alvarado et al. 2024): metal-poor, α-enhanced cool dwarfs',
+    'lowz': 'LOWZ (Meisner et al. 2021): metal-poor, cloud-free cool atmospheres with disequilibrium chemistry',
+}
+# grid preference by Teff band [K] (the first lower edge the Teff reaches); `grid_advice` keeps the grids covering it
+GRID_ORDER = ((4000., ('bt-settl-agss2009', 'bt-settl-cifist')),
+              (2000., ('bt-settl-cifist', 'bt-settl-agss2009', 'sonora-diamondback', 'sand')),
+              (1300., ('bt-settl-cifist', 'sonora-diamondback', 'sonora-elfowl')),
+              (0., ('sonora-elfowl', 'sonora-bobcat', 'sonora-diamondback')))
+METAL_POOR = -0.5  # [dex]; a templates.met_prior at or below this ranks the metal-poor grids first
+METAL_POOR_GRIDS = ('sand', 'lowz', 'bt-settl-agss2009')
+REGIME_GRID = {'low': 'bt-settl-cifist', 'mid': 'bt-settl-cifist', 'high': 'bt-settl-agss2009'}  # no Teff known
+REGIME_TARGETS = {'low': 'M and L dwarfs', 'mid': 'M and L dwarfs', 'high': 'FGK and M stars'}
+
+
+class SettingAdvice(NamedTuple):
+    """A recommended value of one setting (None: no value to apply; the reason says what to do) and why"""
+    value: Any
+    reason: str
+
+
+def grid_advice(teff: float, met: float | None = None) -> list[tuple[str, str]]:
+    """
+    The known grids whose documented coverage contains ``teff`` [K], best first, each with what it models: by Teff
+    band (`GRID_ORDER`), the metal-poor grids first when ``met`` [dex] is at most `METAL_POOR`. Empty if none covers it.
+    """
+    from .templates import KNOWN_GRIDS  # templates is heavy; config is imported everywhere
+    order = next(names for edge, names in GRID_ORDER if teff >= edge)
+    if met is not None and met <= METAL_POOR:
+        order = (*METAL_POOR_GRIDS, *order)
+    return [(g, GRID_PHYSICS[g]) for g in dict.fromkeys(order)
+            if KNOWN_GRIDS[g].coverage['teff'][0] <= teff <= KNOWN_GRIDS[g].coverage['teff'][1]]
+
+
+def _template_advice(cfg: Config, regime: str, teff: float | None, source: str) -> dict[str, SettingAdvice]:
+    from .methods._common import TEMPLATE_DEFAULTS
+    from .templates import KNOWN_GRIDS
+    t = cfg.templates
+    if teff is None:
+        g = REGIME_GRID[regime]
+        return {'templates.grid': SettingAdvice(g, f'No Teff known (no Teff prior, no run yet): at {regime} R the '
+                                                   f'usual targets are {REGIME_TARGETS[regime]}, so {GRID_PHYSICS[g]}. '
+                                                   'Set Templates > Teff prior for a better choice.'),
+                'templates.teff_range': SettingAdvice(None, 'No Teff known: search the whole grid.'),
+                'templates.logg_range': SettingAdvice(None, 'No Teff known: search the whole grid.')}
+    ranked = grid_advice(teff, t.met_prior)
+    if not ranked:
+        none = SettingAdvice(None, f'No known grid covers {teff:.0f} K ({source}): use a local grid that does '
+                                   '(Templates > Local folder).')
+        return dict.fromkeys(('templates.grid', 'templates.teff_range', 'templates.logg_range'), none)
+    best, why = ranked[0]
+    others = ', '.join(g for g, _ in ranked[1:])
+    lo, hi = KNOWN_GRIDS[best].coverage['teff']
+    glo, ghi = KNOWN_GRIDS[best].coverage['logg']
+    half = TEMPLATE_DEFAULTS['teff_window']
+    return {
+        'templates.grid': SettingAdvice(best, f'From {source} ({teff:.0f} K): {why}.' +
+                                        f' Also covering it: {others}.' * bool(others)),
+        'templates.teff_range': SettingAdvice((max(lo, teff - half), min(hi, teff + half)),
+                                              f'±{half:.0f} K around {source} ({teff:.0f} K), within {best}; widen it '
+                                              'if the fit reaches an edge, or give one grid value to fit only it.'),
+        'templates.logg_range': SettingAdvice((max(glo, 4.5), min(ghi, 5.5)),
+                                              f'Below 4000 K ({source}): field dwarfs and brown dwarfs; lower the '
+                                              'minimum for young, low-gravity objects, or give one value (e.g. 5.0) '
+                                              'to download and fit fewer templates.') if teff < 4000. else
+        SettingAdvice(None, f'At {teff:.0f} K ({source}) giants are possible: search the whole grid.'),
+    }
+
+
+def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = None) -> dict[str, SettingAdvice]:
+    """
+    Advice on the data-dependent settings for ``spectrum`` (its R, band, medium, site, sky and velocity frame) under
+    ``cfg``, by dotted config path (always the same paths); ``fit_teff`` [K] is the best-fit Teff of the last run of
+    its object. The methods and their options are `method_advice`'s, and `default_for` takes them from here. The grid
+    follows the Teff (the Teff prior, else ``fit_teff``, else the regime), ranked by `grid_advice`. Nothing is changed.
+    """
+    from .features import features
+    from .regions import SelectOptions  # regions imports io, which imports config
+    meta = spectrum.meta
+    # the run uses input.resolution when set (as `SetupPanel._show_advice`), so the advice follows it too
+    typed = cfg.input.resolution is not None
+    R = cfg.input.resolution if typed else spectrum.resolution
+    regime, band = regime_for(R, (spectrum.wmin, spectrum.wmax))
+    space = meta.get('site') in SPACE_SITES
+    r_src = 'settings' if typed else meta.get('resolution_source', 'header')
+    too_low = resolution_too_low(R)
+    r_why = ('Unknown R: the low-R defaults are used; type the instrument\'s R.' if R is None else
+             f'R {R:.0f} as set in the settings, used for every spectrum.' if typed else
+             f'R {R:.0f} is outside the plausible range: type the instrument\'s R.'
+             if not typed and meta.get('resolution_implausible') else
+             f'R {R:.0f} was estimated from the pixel spacing (2.5 pixels per resolution element): type the '
+             'instrument\'s R if you know it.' if r_src == 'estimated' else
+             f'R {R:.0f} from the {r_src}: leave it empty, so that each spectrum keeps its own.')
+    out = {'input.resolution': SettingAdvice(None, f'{too_low}. {r_why}' if too_low else r_why)}
+    medium, m_src = meta.get('medium_in'), str(meta.get('medium_source', ''))
+    out['input.medium'] = SettingAdvice(None, f'The header gives {medium} ({m_src.removeprefix("header:")}): auto '
+                                              'reads it.') if m_src.startswith('header') else \
+        SettingAdvice(medium, f'No header keyword gives the medium; {medium} is the reader\'s assumption '
+                              f'({m_src or "none"}): change it if you know otherwise.')
+    tellcorr = 'tellcorr' in Path(spectrum.source.split('[')[0]).name.lower()
+    out['input.telluric_corrected'] = (
+        SettingAdvice(True, 'Space data: there is no telluric absorption.') if space else
+        SettingAdvice(True, 'A telluric-corrected (_tellcorr) product.') if tellcorr else
+        SettingAdvice(None, 'Ground-based: tick it only if the reduction removed the telluric absorption.'))
+    frame, frame_src, note = meta.get('frame_in'), meta.get('frame_source'), meta.get('frame_note')
+    if frame:
+        out['velocity_frame.correction'] = SettingAdvice('skip', f'Already {frame} ({frame_src}); auto also skips it.')
+        out['velocity_frame.frame'] = SettingAdvice(frame, f'The frame of the wavelengths ({frame_src}).')
+    else:
+        out['velocity_frame.correction'] = SettingAdvice(None, note) if note else \
+            SettingAdvice('auto', 'Computed from the header\'s coordinates, time and site.')
+        out['velocity_frame.frame'] = SettingAdvice(None, 'The frame the RVs are reported in: barycentric is usual.')
+    if spectrum.sky is not None or cfg.calibration.sky_source:
+        where = 'the file\'s sky spectrum' if spectrum.sky is not None else 'Sky source'
+        out['calibration.wavelength_correction'] = SettingAdvice(
+            'sky-if-needed', f'OH sky lines are available ({where}): their zero point is applied only when it is safe '
+                             'and significant.')
+    else:
+        out['calibration.wavelength_correction'] = SettingAdvice(
+            'none', 'No sky spectrum, and space data have no sky lines.' if space else
+            'No sky spectrum (none in the file, no Sky source): nothing to measure the zero point against; on a '
+            'spectrum that is not telluric-corrected, "telluric" uses the star\'s own telluric lines.')
+    out['calibration.zero_point_known'] = SettingAdvice(True, f'{meta["no_slit"]}: no slit, so no slit-centring '
+                                                              'term.') if meta.get('no_slit') else \
+        SettingAdvice(None, 'Slit data (or unknown): keep the slit-centring term; tick it for fibre data.')
+    teff, source = (cfg.templates.teff_prior, 'the Teff prior') if cfg.templates.teff_prior is not None else \
+        (fit_teff, 'the best-fit Teff of the last run') if fit_teff is not None else (None, '')
+    r_max = SelectOptions.template_windows_r_max
+    feature_teff = max(f.teff_max for f in features() if f.model_fidelity == 'good')  # the catalogue's limit
+    out['regions.template_windows'] = (
+        SettingAdvice(None, f'Not used from R {r_max:.0f} up.') if R is not None and R >= r_max else
+        SettingAdvice('full', f'{teff:.0f} K ({source}) is above the {feature_teff:.0f} K limit of the feature '
+                              'catalogue: there are no feature windows at this Teff.')
+        if teff is not None and teff > feature_teff else
+        SettingAdvice('features', f'Below R {r_max:.0f} the synthetic grids reproduce the molecular bands of late-M '
+                                  'and L dwarfs poorly, so the CCF and template fit use windows around well-modelled '
+                                  'atomic and CO features.'))
+    advice = method_advice(regime, R)
+    rec = [m for m, a in advice.items() if a.recommended]
+    out['methods.enabled'] = SettingAdvice(rec, f'{too_low}. ' * bool(too_low) + f'For {regime} R ({band}): '
+                                           f'{", ".join(METHOD_LABELS[m] for m in rec)}; the Setup tab says why '
+                                           'for each method.')
+    out['methods.options'] = SettingAdvice({m: advice[m].options for m in rec if advice[m].options},
+                                           f'The default options of the recommended methods at {regime} R.')
+    out['parallel.n_procs'] = SettingAdvice(None, 'auto: all but one core, as the forward model runs.'
+                                            if 'forward_mcmc' in cfg.methods.enabled else
+                                            'auto: serial, the fastest without the forward model.')
+    out.update(_template_advice(cfg, regime, teff, source))
+    return out

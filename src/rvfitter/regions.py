@@ -23,6 +23,7 @@ import numpy as np
 from scipy.ndimage import find_objects, gaussian_filter1d, label
 
 from .broadening import FWHM_TO_SIGMA
+from .config import REGIME_EDGES
 from .constants import C_KMS
 from .features import Feature, features
 from .io import estimate_resolution
@@ -105,10 +106,10 @@ class SelectOptions:
     template_windows
         Windows for the template methods (ccf, template_fit, forward_mcmc): 'features' (default) uses windows of
         ±``template_window_resel`` resolution elements around catalogue features with ``model_fidelity ==
-        'good'`` (atomic lines, CO bandheads), merged where they overlap, when R <= ``template_windows_r_max``.
+        'good'`` (atomic lines, CO bandheads), merged where they overlap, when R < ``template_windows_r_max``.
         Synthetic grids reproduce molecular bands (TiO, VO, CrH, FeH, H2O) poorly in late-M/L dwarfs, which
         shifts template RVs band by band.
-        'full' uses every non-telluric span. Above ``template_windows_r_max`` the full spans are always used
+        'full' uses every non-telluric span. From ``template_windows_r_max`` up the full spans are always used
         (at high R the forward model handles mismatch with many resolved lines)
     template_window_resel, template_windows_r_max
         Half-width of a feature window in resolution elements, and the R up to which 'features' applies
@@ -133,7 +134,7 @@ class SelectOptions:
     max_regions: int | None = None
     template_windows: str = 'features'
     template_window_resel: float = 10.
-    template_windows_r_max: float = 5000.
+    template_windows_r_max: float = REGIME_EDGES[0]  # the low-R edge, where vsini is freed too
 
     @classmethod
     def from_config(cls, cfg: Any = None) -> 'SelectOptions':
@@ -160,6 +161,13 @@ class SelectOptions:
             if val is not None:
                 kwargs[alias.get(key, key)] = val
         return cls(**kwargs)
+
+
+def options_for(cfg: Any) -> SelectOptions:
+    """The selection options of a Config: its ``regions`` section and ``input.telluric_corrected`` (the one place
+    every caller builds them)"""
+    return dataclasses.replace(SelectOptions.from_config(cfg.regions),
+                               telluric_corrected=bool(cfg.input.telluric_corrected))
 
 
 # ---------------------------------------------------------------------------------------------------- statistics
@@ -683,11 +691,11 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
         line_masks = masks
     if opts.template_windows not in TEMPLATE_WINDOW_MODES:
         raise ValueError(f'template_windows must be one of {TEMPLATE_WINDOW_MODES}, not {opts.template_windows!r}')
-    use_features = opts.template_windows == 'features' and ctx.R <= opts.template_windows_r_max
+    use_features = opts.template_windows == 'features' and ctx.R < opts.template_windows_r_max
     if any(m in TEMPLATE_METHODS for m in methods):
         if use_features:
             log.info('Template methods use feature windows (+-%g resolution elements around atomic/CO features): '
-                     'synthetic grids reproduce molecular bands poorly in late-M/L dwarfs at R %.0f <= %.0f '
+                     'synthetic grids reproduce molecular bands poorly in late-M/L dwarfs at R %.0f < %.0f '
                      '(regions.template_windows = "full" to use every non-telluric span)',
                      opts.template_window_resel, ctx.R, opts.template_windows_r_max)
         else:

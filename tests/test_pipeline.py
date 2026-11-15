@@ -53,7 +53,6 @@ def fakes(monkeypatch):
         return {m: [] for m in kw['methods']}
 
     monkeypatch.setattr(regions, 'select', select, raising=False)
-    monkeypatch.setattr(regions, 'SelectOptions', types.SimpleNamespace, raising=False)
     def combine_regions(ms, details):
         details['tau_line'] = 0.
         return float(np.mean([m.rv for m in ms])), 1.0

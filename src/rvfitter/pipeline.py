@@ -78,10 +78,7 @@ def _barycentric(spectra: Sequence[Spectrum], cfg: Any, mode: str, name: str) ->
 
 def region_selector(cfg: Any, names: list[str], overrides: bool = True) -> Callable[[Spectrum], dict]:
     """`regions.select` for these methods with the configured options (and ``regions.overrides`` if `overrides`)"""
-    knobs = {'snr_min': cfg.regions.min_snr, 'telluric': cfg.regions.telluric_strictness,
-             'telluric_corrected': True if cfg.input.telluric_corrected else None,
-             'template_windows': cfg.regions.template_windows}
-    opts = regions.SelectOptions(**{k: v for k, v in knobs.items() if v is not None})  # None: the default
+    opts = regions.options_for(cfg)
     ov = cfg.regions.overrides if overrides else None
     return lambda spec: regions.select(spec, teff=cfg.templates.teff_prior, methods=names, overrides=ov, options=opts)
 

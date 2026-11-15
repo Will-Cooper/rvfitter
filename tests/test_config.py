@@ -124,7 +124,7 @@ def test_velocity_overrides():
     ('[methods]\nenabled = []\n', 'methods.enabled is empty'),
     ('[methods.options.bogus]\nx = 1\n', 'methods.options key'),
     ('[templates]\nteff_range = [2500, 1500]\n', 'templates.teff_range'),
-    ('[templates]\nteff_range = [1500]\n', 'templates.teff_range: expected a list of 2'),
+    ('[templates]\nteff_range = [1500, 2000, 2500]\n', 'templates.teff_range: expected a list of 2'),
     ('[templates]\nteff_prior = [2000, 100]\n', 'templates.teff_prior: expected'),
     ('[templates]\nteff_prior = -5.0\n', 'positive temperature'),
     ('[output]\nformats = ["pdf"]\n', "output.formats[0] = 'pdf'"),

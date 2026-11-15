@@ -75,7 +75,7 @@ def test_every_setting_has_a_tooltip(qtbot, win):
     """Every field of the real Config that the forms show has its own TIPS entry (building the form fails without
     one), and TIPS has no entry for a field that does not exist"""
     from rvfitter import config
-    from rvfitter.gui.forms import TIPS, ConfigForm, GroupEditor
+    from rvfitter.gui.forms import MORE_TIP, TIPS, ConfigForm, GroupEditor
     form = ConfigForm(config.Config())
     qtbot.addWidget(form)
     shown = {}
@@ -88,7 +88,7 @@ def test_every_setting_has_a_tooltip(qtbot, win):
             else:
                 shown[prefix + name] = ed.widget.toolTip()
     walk(form.root, '')
-    assert shown == {k: TIPS[k] for k in shown} and set(shown) == set(TIPS)
+    assert shown == {k: TIPS[k] + MORE_TIP for k in shown} and set(shown) == set(TIPS)
     assert all(ed.widget.toolTip() == TIPS[p] for p, ed in win.setup.editors.items())
 
 
@@ -525,6 +525,22 @@ def test_diagnostic_figures_render(qtbot, win):
     assert tabs.count() == 0
 
 
+def test_text_or_number_fields_are_plain_boxes(qtbot):
+    """slit_prior ('auto' or km/s) and hdu (index or name) are shown without JSON quotes and parse to their type"""
+    from rvfitter import config
+    from rvfitter.gui.forms import ConfigForm
+    form = ConfigForm(config.Config())
+    slit = form.editor('calibration.slit_prior')
+    assert slit.edit.text() == 'auto'
+    slit.edit.setText('2.5')
+    assert form.get_config().calibration.slit_prior == 2.5
+    hdu = form.editor('input.hdu')
+    hdu.edit.setText('3')
+    assert form.get_config().input.hdu == 3
+    hdu.edit.setText('SCI')
+    assert form.get_config().input.hdu == 'SCI'
+
+
 def test_choice_fields_are_combo_boxes_from_config(qtbot):
     from PySide6.QtWidgets import QCheckBox, QComboBox
 
@@ -760,3 +776,79 @@ def test_tick_of_a_detector_position_selects_only_its_file(qtbot, tmp_path):
     qtbot.waitUntil(lambda: 'My Star SPAT0123-SLIT0456-DET01 (night1)' in w.groups, timeout=10000)
     assert not any('night2' in name for name in w.groups)
     w.close()
+
+
+def test_every_location_has_a_browse_dialog_of_its_kind(qtbot, monkeypatch, tmp_path):
+    """Each config.LOCATION_FIELDS entry (input.paths and output.path included) gets the dialog of its kind"""
+    from PySide6.QtWidgets import QFileDialog, QLineEdit
+
+    from rvfitter import config
+    from rvfitter.gui import forms
+    picked = str(tmp_path / 'x')
+    calls = []
+    for fn, ret in (('getOpenFileNames', ([picked], '')), ('getOpenFileName', (picked, '')),
+                    ('getExistingDirectory', picked), ('getSaveFileName', (picked, ''))):
+        monkeypatch.setattr(QFileDialog, fn, staticmethod(lambda *a, fn=fn, ret=ret: calls.append(fn) or ret))
+    dialog = {'files': 'getOpenFileNames', 'file': 'getOpenFileName', 'folder': 'getExistingDirectory',
+              'save': 'getSaveFileName'}
+    form = forms.ConfigForm(config.Config())
+    qtbot.addWidget(form)
+    for (section, name), kind in config.LOCATION_FIELDS.items():
+        ed = form.editor(f'{section}.{name}')
+        assert ed.browse_btn.kind == kind and ed.browse_btn.text() == forms.BROWSE_TEXT[kind]
+        calls.clear()
+        ed.browse_btn.click()
+        assert calls == [dialog[kind]]
+        assert ed.get() in (picked, [picked]), (section, name)
+    form.set_value('templates.local_dir', {'lowz': 'a', 'sand': 'b'})  # a mapping: the first grid's folder
+    form.editor('templates.local_dir').browse_btn.click()
+    assert form.get_value('templates.local_dir') == {'lowz': picked, 'sand': 'b'}
+    with pytest.raises(ValueError, match='Unknown location kind'):
+        forms._with_browse(QLineEdit(), 'archive', lambda: None)
+
+
+def test_advanced_groups_start_collapsed(qtbot, win):
+    from rvfitter.gui.forms import GroupEditor
+    dlg = win.advanced_settings()
+    sections = [e for e in dlg.form.root.children.values() if isinstance(e, GroupEditor)]
+    assert sections and all(not e.toggle.isChecked() and e.box.isHidden() for e in sections)
+    dlg.reject()
+
+
+def test_advanced_rows_show_comments_advice_and_apply(qtbot, win, spectra_dir):
+    from rvfitter.gui import theme
+    from rvfitter.gui.forms import DEFAULT_WHY, guide_url
+    _load(qtbot, win, spectra_dir)
+    dlg = win.advanced_settings()
+    rows = dlg.form.rows()
+    medium = rows['input.medium']
+    assert guide_url('input.medium') in medium.comment.text() and 'More…' in medium.comment.text()
+    assert medium.advice.text() == 'Recommended for alpha: air. the test advice' and not medium.apply.isHidden()
+
+    def colour(row):
+        return row.advice.styleSheet().split(': ')[1]
+    assert colour(medium) == theme.colour('flagged', medium.palette()).name()  # differs from the box
+    medium.apply.click()
+    assert dlg.form.get_value('input.medium') == 'air'
+    assert colour(medium) == theme.colour('primary', medium.palette()).name()
+    assert rows['input.resolution'].advice.text() == 'For alpha: a reason only'
+    assert rows['input.resolution'].apply.isHidden()
+    assert rows['seed'].advice.text() == f'The default suits this spectrum: {DEFAULT_WHY["seed"]}'
+    dlg.reject()
+
+
+def test_guide_links(win):
+    from rvfitter.gui.forms import guide_url
+    assert guide_url('input.resolution').endswith('docs/settings.md#input-resolution')
+    assert guide_url('calibration').endswith('#calibration')
+    assert 'Settings guide' in [a.text() for m in win.menuBar().actions() for a in m.menu().actions()]
+
+
+def test_settings_guide_has_an_anchor_for_every_setting_shown():
+    from pathlib import Path
+
+    from rvfitter.gui.forms import TIPS, guide_url
+    guide = (Path(__file__).resolve().parents[1] / 'docs' / 'settings.md').read_text()
+    paths = set(TIPS) | {p.split('.')[0] for p in TIPS if '.' in p}
+    missing = [p for p in sorted(paths) if f'<a id="{guide_url(p).split("#")[1]}"></a>' not in guide]
+    assert not missing

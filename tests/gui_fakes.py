@@ -186,6 +186,9 @@ class FakeBackend:
         cfg.methods.enabled = ['ccf', 'template_fit']
         return cfg
 
+    def setting_advice(self, spectrum, cfg, result=None):
+        return {'input.medium': ('air', 'the test advice'), 'input.resolution': (None, 'a reason only')}
+
     def regime(self, spectrum):
         return 'low-resolution optical'
 

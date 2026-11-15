@@ -9,6 +9,7 @@ template-spread and wavelength zero-point terms are reported separately, plus th
 - `wavelength_zero_point`: the uncertainty of the wavelength zero point at the measurements' wavelengths.
 """
 import copy
+import dataclasses
 import logging
 from collections.abc import Sequence
 from concurrent.futures import Executor
@@ -95,8 +96,7 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
     other = 'full' if mode == 'features' else 'features'
     out['window_modes'][mode] = run(cfg, regs, seeds[2])
     sel = _regions.select(spectrum, teff=cfg.templates.teff_prior, methods=[method],
-                          options=_regions.SelectOptions(telluric_corrected=bool(cfg.input.telluric_corrected),
-                                                         template_windows=other))
+                          options=dataclasses.replace(_regions.options_for(cfg), template_windows=other))
     out['window_modes'][other] = run(cfg, sel.get(method, []), seeds[2])
     out['sd_templates'] = _sd(out['templates'].values())
     out['sd_grids'] = _sd(out['grids'].values())

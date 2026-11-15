@@ -46,7 +46,7 @@ from . import theme
 from .backend import Backend, LazyBackend
 from .cube import CubeDialog
 from .diagnostics import DiagnosticsPanel, rv_text
-from .forms import ConfigForm
+from .forms import ConfigForm, open_guide
 from .logpane import LogPane, QtLogHandler
 from .regions_editor import RegionEditor
 from .setup import SetupPanel
@@ -353,7 +353,10 @@ class MainWindow(QMainWindow):
         qs.triggered.connect(self.show_quick_start)
         ab = QAction('About rvfitter', self)
         ab.triggered.connect(self.show_about)
+        guide = QAction('Settings guide', self)
+        guide.triggered.connect(lambda: open_guide())
         h.addAction(qs)
+        h.addAction(guide)
         h.addAction(ab)
 
     # ---- helpers -------------------------------------------------------------------------------------------
@@ -387,8 +390,13 @@ class MainWindow(QMainWindow):
         lay.addWidget(buttons)
         dlg.accepted.connect(lambda: self.set_config(form.get_config()))
         dlg.finished.connect(dlg.deleteLater)
+        name = self.current_object if self.current_object in self.first_spectra else \
+            next(iter(self.first_spectra), None)
+        if name is not None:
+            res = next((r for r in self.results if getattr(r, 'object', None) == name), None)
+            form.show_advice(name, self.backend.setting_advice(self.first_spectra[name], form.get_config(), res))
         dlg.form = form
-        dlg.resize(720, 640)
+        dlg.resize(760, 680)
         dlg.open()
         return dlg
 
