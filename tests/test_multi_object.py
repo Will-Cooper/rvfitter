@@ -240,3 +240,26 @@ def test_jwst_resolution_rows():
     assert io._slit_meta({'TELESCOP': 'JWST', 'INSTRUME': 'NIRSPEC', 'GRATING': 'G395H'})['instrument_names'] == \
         ('NIRSPEC', 'JWST_NIRSPEC_G395H')
 
+
+# ----------------------------------------------------------------------------------------------------------------------
+# the committed real examples (examples/jwst_*)
+# ----------------------------------------------------------------------------------------------------------------------
+
+def test_example_jwst_mos():
+    a, b = sorted((EXAMPLES / 'jwst_mos').glob('*_x1d.fits'))
+    assert [e.name for e in io.list_spectra(a)] == ['1229_9', '1229_1', '1229_2', '1229_3']
+    entries = io.list_spectra(b)
+    assert [(e.name, e.usable) for e in entries] == [('1229_13', False), ('1229_6', True), ('1229_7', True)]
+    spectra = io.read_spectra(a)
+    assert [s.meta['object'] for s in spectra] == ['1229_9', '1229_1', '1229_2', '1229_3']
+    assert all(s.resolution < config.R_MIN_RV and not s.meta['resolution_implausible'] for s in spectra)
+
+
+def test_example_jwst_ifu():
+    (path,) = (EXAMPLES / 'jwst_ifu').glob('*_s3d_cutout.fits.gz')
+    (spec,) = io.read_spectra(path)
+    ext = spec.meta['extraction']
+    assert (ext['x'], ext['y'], ext['n_spaxels']) == (8., 8., 29)
+    assert 1320. < spec.resolution < 3600. and not spec.meta['resolution_implausible']
+    assert spec.meta['frame_in'] == 'barycentric' and spec.meta['frame_source'] == 'header:SPECSYS'
+    assert np.nanmedian(spec.flux / spec.sigma) > 100.
