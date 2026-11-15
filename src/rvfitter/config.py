@@ -150,8 +150,9 @@ class RegionsConfig:
     telluric_strictness: float = 1.  # scales the airmass-dependent telluric threshold (larger masks more)
     max_regions: int | None = None  # keep at most this many, ranked by forecast information content; None: all
     continuum_fwhm: float = 3.  # continuum windows extend this many resolution elements around a feature
-    # windows for ccf/template_fit at R <= 5000: 'features' (around well-modelled atomic/CO features; the
-    # default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric span)
+    # windows for ccf/template_fit below R 4500 (REGIME_EDGES[0]): 'features' (around well-modelled atomic/CO
+    # features; the default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric
+    # span)
     template_windows: str = field(default='features', metadata={'choices': TEMPLATE_WINDOWS})
 
 
@@ -855,11 +856,11 @@ def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = Non
     r_max = SelectOptions.template_windows_r_max
     feature_teff = max(f.teff_max for f in features() if f.model_fidelity == 'good')  # the catalogue's limit
     out['regions.template_windows'] = (
-        SettingAdvice(None, f'Not used above R {r_max:.0f}.') if R is not None and R > r_max else
+        SettingAdvice(None, f'Not used from R {r_max:.0f} up.') if R is not None and R >= r_max else
         SettingAdvice('full', f'{teff:.0f} K ({source}) is above the {feature_teff:.0f} K limit of the feature '
                               'catalogue: there are no feature windows at this Teff.')
         if teff is not None and teff > feature_teff else
-        SettingAdvice('features', f'At R ≤ {r_max:.0f} the synthetic grids reproduce the molecular bands of late-M '
+        SettingAdvice('features', f'Below R {r_max:.0f} the synthetic grids reproduce the molecular bands of late-M '
                                   'and L dwarfs poorly, so the CCF and template fit use windows around well-modelled '
                                   'atomic and CO features.'))
     advice = method_advice(regime, R)

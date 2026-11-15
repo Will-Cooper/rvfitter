@@ -107,9 +107,9 @@ TIPS = {
     'regions.max_regions': 'Keep at most this many regions per method, ranked by their forecast RV information. '
                            'Default auto: no limit.',
     'regions.continuum_fwhm': 'Continuum windows extend this many resolution elements around a feature. Default 3.',
-    'regions.template_windows': 'Windows for CCF and template fit at R ≤ 5000: features (around well-modelled atomic '
+    'regions.template_windows': 'Windows for CCF and template fit below R 4500: features (around well-modelled atomic '
                                 'and CO features; default, since model grids reproduce molecular bands poorly) or '
-                                'full (every non-telluric span). Above R 5000 the full spans are always used.',
+                                'full (every non-telluric span). From R 4500 up the full spans are always used.',
     'combine.tau_scale': 'Scale [km/s] of the half-Cauchy prior on the region-to-region and method-to-method scatter '
                          'when combining. Empty = automatic (the median error).',
     'combine.systematic_floor': 'Added in quadrature to the adopted error [km/s], e.g. a known instrument floor. '

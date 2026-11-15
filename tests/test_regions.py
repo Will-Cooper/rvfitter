@@ -266,6 +266,10 @@ def test_config_region_options_take_effect():
     assert res['linecentre'] and all(len(v) == 1 for v in res.values())
 
 
+def test_feature_windows_end_where_vsini_is_freed():
+    from rvfitter import config
+    assert SelectOptions().template_windows_r_max == config.REGIME_EDGES[0]
+
 
 def test_telluric_corrected_relaxes_only_o2_for_lines():
     """H2O stays masked for spans and lines on a telluric-corrected spectrum; only O2 is relaxed, for lines only"""
