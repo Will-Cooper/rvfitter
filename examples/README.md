@@ -37,6 +37,11 @@ rvfitter run examples/jwst_ifu/rvfitter.toml
 rvfitter run examples/jwst_mos/rvfitter.toml
 ```
 
+In the GUI, open either folder (Open spectra > Folder…):
+
+- `jwst_mos/`: each x1d file is listed with its sources (name, S/N) as tick boxes; 1229_13 is greyed and unticked, and hovering over it says why. Untick a source to leave it out, or right-click for Tick all usable / Target only; Measure RVs measures exactly the ticked sources. The Setup tab says in gold that R ≈ 120 is too low for an RV.
+- `jwst_ifu/`: the Setup tab gains a row, IFU extraction: brightest spaxel (8, 8), radius 3 spaxels. Choose… shows the collapsed cube with the aperture: click to move its centre, set the radius, or go back to the brightest spaxel; the extracted spectrum is previewed, and OK applies the choice.
+
 ## Things to try
 - **Template methods:** download a grid once, e.g. `rvfitter templates download --grid bt-settl-cifist --teff 1900 2300`, then add `"ccf"` and `"template_fit"` to `[methods] enabled`. The optical example has the grid's coverage; the near-infrared ones need a near-infrared grid (Sonora Bobcat or SAND, from Zenodo).
 - **Wavelength zero point:** the optical example measures the sky (OH) lines in its `spec1d` file and corrects the wavelength scale (`calibration.wavelength_correction`). Set it to `"none"` to compare. J1745−1640 is a known hard case: its GTC wavelength solution is distorted, and no correction mode reproduces the literature value (see `docs/methods.md`).
