@@ -119,8 +119,8 @@ TIPS = {
                                          'only when safe and significant), auto (also the star - sky constant), sky, '
                                          'telluric or none (report only).',
     'calibration.slit_prior': 'Slit-centring error when the star - sky constant is not applied: auto ((W - F)/√12 '
-                              'from the slit width and trace FWHM), a velocity [km/s], or none (unconstrained; the '
-                              'total error is then undefined).',
+                              'from the slit width and trace FWHM; without a slit width the total error is '
+                              'undefined), a velocity [km/s], or none (no slit-centring term: 0, with a warning).',
     'calibration.seeing_fwhm': 'Seeing FWHM [arcsec] assumed for the auto slit prior when the file has no trace FWHM '
                                '(flagged seeing_assumed). Default 0.8.',
     'calibration.wave_rms_kms': 'Wavelength-calibration accuracy [km/s] assumed when the file records no arc RMS '
