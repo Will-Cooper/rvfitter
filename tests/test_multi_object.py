@@ -32,9 +32,9 @@ def test_pypeit_entries_and_selection(tmp_path, caplog):
     assert spec.source == f'{path}[2]' and spec.meta['object'] == 'My Star' and spec.meta['entry'] == 'SPAT0240'
     assert "'auto': the spectra are not named after their sources" in caplog.text
     both = io.read_spectra(path, objects='all')
-    assert [s.meta['object'] for s in both] == ['My Star SPAT0168', 'My Star SPAT0240']  # never merged by grouping
+    assert [s.meta['object'] for s in both] == ['My Star SPAT0168', 'My Star']  # the target keeps the plain name
     assert 'skipping HDU 3 (SPAT0300): median S/N 2.0' in caplog.text
-    assert sorted(archives.group_by_object(both)) == ['My Star SPAT0168', 'My Star SPAT0240']
+    assert sorted(archives.group_by_object(both)) == ['My Star', 'My Star SPAT0168']
     picked = io.read_spectra(path, objects=['SPAT0300', 1])
     assert [s.meta['hdu'] for s in picked] == [1, 3] and 'is read because input.objects names it' in caplog.text
     with pytest.raises(ValueError, match='selects none'):
@@ -42,6 +42,18 @@ def test_pypeit_entries_and_selection(tmp_path, caplog):
     assert io.read_spectra(f'{path}[1]')[0].source == f'{path}[1]'  # a refit reads its own source back
     assert io.read_spectrum(f'{path}[3]').meta['hdu'] == 3
 
+
+def test_object_names_survive_source_round_trips(tmp_path):
+    """GUI path: group_objects with 'all', then each source reread alone (as measure does) keeps its own object"""
+    from rvfitter.gui.backend import LazyBackend
+    path = _multi_spec1d(tmp_path / 'm.fits', [17., 86., 30.], ['SPAT0168', 'SPAT0240', 'SPAT0300'], ['science'] * 3)
+    cfg = config.Config()
+    cfg.input.objects = 'all'
+    groups = LazyBackend().group_objects([path], cfg)
+    assert groups == {'My Star SPAT0168': [f'{path}[1]'], 'My Star': [f'{path}[2]'],
+                      'My Star SPAT0300': [f'{path}[3]']}
+    for name, sources in groups.items():
+        assert list(archives.group_by_object(archives.load_spectra([Path(s) for s in sources]))) == [name]
 
 def test_pypeit_mask_objects_are_named_and_all_read(tmp_path):
     path = _multi_spec1d(tmp_path / 'm.fits', [50., 40.], ['SPAT0100', 'SPAT0200'], ['science'] * 2,
@@ -95,6 +107,28 @@ def test_jwst_x1d_sources_units_and_frame(tmp_path, caplog):
     assert spec.meta['medium_in'] == 'vacuum' and spec.meta['medium_source'] == 'default:jwst'
     assert spec.meta['frame_in'] == 'barycentric' and spec.meta['frame_source'] == io.JWST_FRAME_SOURCE
     assert barycentric.correction(spec, mode='auto') == (0., 'header')  # already corrected by the JWST pipeline
+
+
+def test_single_science_after_background_is_read(tmp_path):
+    """One usable candidate behind a background slit: its own HDU is read, not the reader's first EXTRACT1D"""
+    (spec,) = io.read_spectra(_x1d(tmp_path / 'x1d.fits', ['background_7', '1229_9']))
+    assert spec.meta['hdu'] == 2 and spec.meta['object'] == '1229_9'
+
+
+def test_error_image_matched_by_extver(tmp_path, caplog):
+    """Each SCI takes the ERR of its EXTVER (FITS default 1); several equally matching ERR images: none, WARNING"""
+    def img(value: float, name: str, ver: int | None = None) -> fits.ImageHDU:
+        h = fits.ImageHDU(np.full(200, value), name=name, ver=ver)
+        h.header.update(CRVAL1=7000., CDELT1=1., CRPIX1=1., CTYPE1='WAVE')
+        return h
+    path = tmp_path / 'mef.fits'
+    fits.HDUList([fits.PrimaryHDU(), img(1., 'SCI', 1), img(1., 'SCI', 2), img(.2, 'ERR', 2),
+                  img(.1, 'ERR', 1)]).writeto(path)
+    assert [np.median(io.read_spectrum(path, hdu=h, medium='air').sigma) for h in (1, 2)] == pytest.approx([.1, .2])
+    bad = tmp_path / 'bad.fits'
+    fits.HDUList([fits.PrimaryHDU(), img(1., 'SCI'), img(.1, 'ERR'), img(.2, 'ERR')]).writeto(bad)
+    assert np.isnan(io.read_spectrum(bad, hdu=1, medium='air').sigma).all()
+    assert '2 error images (ERR, ERR) match its length and EXTVER 1, so none is used' in caplog.text
 
 
 def test_specsys_marks_the_frame():

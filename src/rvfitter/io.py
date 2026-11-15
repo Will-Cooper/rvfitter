@@ -1125,13 +1125,16 @@ def _read_fits_generic(path: Path, hdu: int | str | None = None, columns: Any = 
         elif kind == 'wcs':
             flux = np.asarray(np.squeeze(ext.data), dtype=float)
             wave = _wcs_wave(header, len(flux))
-            sigma = np.full(len(flux), np.nan)
-            for j, other in enumerate(hdul):  # optional error image
-                if j == idx or getattr(other, 'data', None) is None or _table_columns(other):
-                    continue
-                if _aux_kind(other.name) == 'error' and np.size(other.data) == len(flux):
-                    sigma = _clean_sigma(np.asarray(other.data, dtype=float).ravel())
-                    break
+            # optional error image: an ERR... image of the same length and EXTVER (FITS default 1), as in STScI files
+            ver = ext.header.get('EXTVER', 1)
+            errs = [other for j, other in enumerate(hdul) if j != idx and getattr(other, 'data', None) is not None
+                    and not _table_columns(other) and _aux_kind(other.name) == 'error'
+                    and np.size(other.data) == len(flux) and other.header.get('EXTVER', 1) == ver]
+            if len(errs) > 1:  # a warning, not an error: other readers would retry the file silently
+                log.warning('%s: HDU %d: %d error images (%s) match its length and EXTVER %s, so none is used; give '
+                            'each its own EXTVER', path.name, idx, len(errs), ', '.join(e.name for e in errs), ver)
+            one = len(errs) == 1
+            sigma = _clean_sigma(np.asarray(errs[0].data, dtype=float).ravel()) if one else np.full(len(flux), np.nan)
             unit = _image_unit(header)
         else:  # rows
             arr = np.asarray(np.squeeze(ext.data), dtype=float)
@@ -1748,9 +1751,10 @@ def read_spectra(source: str | Path, *, objects: str | list[str | int] = 'auto',
 
     ``source`` is a path, or ``'file.fits[3]'`` for one HDU. With ``hdu`` (``input.hdu``), a single HDU, or a file with
     one candidate spectrum (`list_spectra`), this is `read_spectrum`. Otherwise the source of each spectrum is
-    ``'file.fits[<hdu>]'`` and ``meta['entry']`` its entry name; when several are read from one file, an entry without
-    its own source name is named '<object> <entry>' (e.g. 'J1745-1640 SPAT0240-SLIT0457-DET02'), so that grouping
-    never merges them. ``read_kwargs`` go to `read_spectrum`.
+    ``'file.fits[<hdu>]'`` and ``meta['entry']`` its entry name; an entry without its own source name, other than the
+    target (`read_spectrum` with no ``hdu``), is named '<object> <entry>' (e.g. 'J1745-1640 SPAT0168-SLIT0457-DET02')
+    however many are read at once, so that grouping and rereading a source never merge them. ``read_kwargs`` go to
+    `read_spectrum`.
     """
     path, at = split_source(source)
     if at is not None:
@@ -1758,17 +1762,24 @@ def read_spectra(source: str | Path, *, objects: str | list[str | int] = 'auto',
             raise ValueError(f'{source}: HDU {at} in the source but hdu={hdu!r} given')
         hdu = at
     entries = [e for e in list_spectra(path, cube=read_kwargs.get('cube')) if e.kind in _SPECTRUM_KINDS]
-    if len(entries) < 2:
-        return [read_spectrum(path, hdu=hdu, **read_kwargs)]
+    if len(entries) < 2:  # the candidate's own HDU: the reader's default may be a background slit
+        return [read_spectrum(path, hdu=hdu if hdu is not None else entries[0].hdu, **read_kwargs)]
     picks = [hdu] if hdu is not None else _select(path, entries, objects)
-    out = []
+    read = []
     for h in picks:
         spec = read_spectrum(path, hdu=h, **read_kwargs)
         entry = next((e for e in entries if e.hdu == spec.meta.get('hdu')), None)
         if entry is None:
             raise ValueError(f'{path.name}: HDU {h!r} is not one of the spectra ({", ".join(e.name for e in entries)})')
+        read.append((h, spec, entry))
+    # the target (the reader's choice with no HDU) keeps the plain object name, whichever call reads it
+    target = next((spec.meta['hdu'] for h, spec, _ in read if h is None), None)
+    if target is None and not all(entry.named for _, _, entry in read):
+        target = read_spectrum(path, **read_kwargs).meta['hdu']
+    out = []
+    for _, spec, entry in read:
         meta = {**spec.meta, 'entry': entry.name}
-        if len(picks) > 1 and not entry.named:
+        if not entry.named and entry.hdu != target:
             meta['object'] = f"{spec.meta.get('object') or path.stem} {entry.name}"
         out.append(replace(spec, source=f'{path}[{entry.hdu}]', meta=meta))
     return out
