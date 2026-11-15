@@ -299,7 +299,7 @@ def plot_wavelength_correction(result: ObjectResult) -> Figure:
 _AVAILABLE = {
     'line_fits': (plot_line_fits, lambda r: _measurements(r, 'linecentre', 'model')),
     'ccf': (plot_ccf, lambda r: _measurements(r, 'ccf', 'ccf')),
-    'adopted': (plot_adopted, lambda r: bool(r.methods)),
+    'adopted': (plot_adopted, lambda r: any(np.isfinite(m.rv) for x in r.methods.values() for m in x.measurements)),
     'corner': (plot_corner, lambda r: _measurements(r, 'forward_mcmc', 'samples')),
     'wavelength_correction': (plot_wavelength_correction, lambda r: (r.barycentric.get('wavelength_curves') or {})
                               .get('sky_zeropoint') or (r.barycentric.get('wavelength_curves') or {})
