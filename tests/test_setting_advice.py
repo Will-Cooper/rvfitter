@@ -52,8 +52,19 @@ def test_setting_advice_for_the_examples(name, expected):
         assert advice['templates.grid'].reason.startswith('No Teff known')
 
 
+def test_advice_follows_a_typed_resolution():
+    """input.resolution overrides the spectrum's R in the run, so the advice must use it too (here 50 000: high R)"""
+    _, cfg, spec = _example('gtc_osiris')
+    cfg.input.resolution = 50000.
+    advice = config.setting_advice(spec, cfg)
+    assert advice['input.resolution'].reason == 'R 50000 as set in the settings, used for every spectrum.'
+    assert advice['methods.enabled'].value == [m for m, a in config.method_advice('high', 50000.).items()
+                                               if a.recommended]
+
+
 def test_every_setting_has_advice_or_a_default_reason():
     """The data-dependent settings (always the same paths) and DEFAULT_WHY together cover every field once"""
+    pytest.importorskip('PySide6')  # DEFAULT_WHY and TIPS live with the GUI forms
     from rvfitter.gui.forms import DEFAULT_WHY, TIPS
     _, cfg, spec = _example('jwst_ifu')
     advised = set(config.setting_advice(spec, cfg))

@@ -45,6 +45,16 @@ def test_single_value_selects_only_it_and_names_the_nearest_otherwise(tmp_path):
         grid.select(logg_range=(4.8, 4.8))
 
 
+def test_single_values_with_no_joint_model_raise(tmp_path):
+    """Each value exists on its axis but no model has both: raise, so no nearest-to-prior fallback can break them"""
+    from test_templates import _make_grid
+    directory = _make_grid(tmp_path / 'g')
+    (directory / 'lte019.0-4.5.txt').unlink()  # sparse: (1900, 4.5) missing, (1900, 5.0) and (1800, 4.5) present
+    grid = T.TemplateGrid(directory)
+    with pytest.raises(ValueError, match=r'no model with teff = 1900, logg = 4.5 within the other ranges'):
+        grid.select(teff_range=(1900., 1900.), logg_range=(4.5, 4.5))
+
+
 def test_single_value_reaches_the_download(monkeypatch):
     from rvfitter.gui.backend import LazyBackend
     calls = []

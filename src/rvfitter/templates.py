@@ -538,6 +538,11 @@ class TemplateGrid:
                 vals = self.axis_values(a)
                 target = priors.get(a, defaults.get(a, vals[len(vals) // 2]))
                 keep &= np.isclose(self.points[:, i], vals[np.argmin(np.abs(vals - target))])
+        singles = {a: lo for a, (lo, hi) in rng.items() if lo == hi}
+        if singles and not keep.any():  # never let a caller's nearest-point fallback break a single-value constraint
+            raise ValueError(f'grid {self.name} has no model with '
+                             f'{", ".join(f"{a} = {v:g}" for a, v in singles.items())} within the other ranges '
+                             f'({", ".join(f"{a} {lo:g}-{hi:g}" for a, (lo, hi) in rng.items() if lo != hi)})')
         return sorted(tuple(float(x) for x in p) for p in self.points[keep])
 
 

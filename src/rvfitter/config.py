@@ -834,14 +834,18 @@ def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = Non
     """
     from .features import features
     from .regions import SelectOptions  # regions imports io, which imports config
-    meta, R = spectrum.meta, spectrum.resolution
+    meta = spectrum.meta
+    # the run uses input.resolution when set (as `SetupPanel._show_advice`), so the advice follows it too
+    typed = cfg.input.resolution is not None
+    R = cfg.input.resolution if typed else spectrum.resolution
     regime, band = regime_for(R, (spectrum.wmin, spectrum.wmax))
     space = meta.get('site') in SPACE_SITES
-    r_src = meta.get('resolution_source', 'header')
+    r_src = 'settings' if typed else meta.get('resolution_source', 'header')
     too_low = resolution_too_low(R)
     r_why = ('Unknown R: the low-R defaults are used; type the instrument\'s R.' if R is None else
+             f'R {R:.0f} as set in the settings, used for every spectrum.' if typed else
              f'R {R:.0f} is outside the plausible range: type the instrument\'s R.'
-             if meta.get('resolution_implausible') else
+             if not typed and meta.get('resolution_implausible') else
              f'R {R:.0f} was estimated from the pixel spacing (2.5 pixels per resolution element): type the '
              'instrument\'s R if you know it.' if r_src == 'estimated' else
              f'R {R:.0f} from the {r_src}: leave it empty, so that each spectrum keeps its own.')
