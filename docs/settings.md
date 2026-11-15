@@ -88,6 +88,7 @@ We recommend setting it whenever the header lacks R, because the estimate is onl
 
 Below R 500 no RV is constrained, because one resolution element, c/R, exceeds 600 km/s; even a centroid good to a twentieth of it (30 km/s at high S/N) is as large as the RVs of nearby stars and brown dwarfs.
 The run then warns, and any value measured is flagged `resolution_too_low`.
+In practice, `linecentre`, `ccf`, `template_fit`, `forward_mcmc` and `lsd` already refuse below R 1000, the smallest `r_min` of the catalogue features they measure (an ERROR naming the method, recorded as that method's failure; the other objects of a batch still run), because at R 1000 one resolution element, 300 km/s, is wider than the alkali line cores.
 When R is unknown, the low-resolution defaults are used, with a WARNING.
 
 <a id="input-telluric_corrected"></a>
@@ -179,6 +180,7 @@ The two frames differ by at most about 0.013 km/s (0.007 km/s for J1745−1640),
 
 Values used instead of the header: `ra`, `dec` [deg], `mjd` (mid-exposure), `site` (an astropy site name) or `site_lat` and `site_lon` [deg] together; default empty.
 Use it when the header is wrong or incomplete.
+The overrides enter only a computed correction (`auto` or `apply`); with `correction = "skip"` they have no effect.
 For example, GTC/OSIRIS headers record `LON-OBS` = +17.877°, whereas GTC lies at 17.89° west, which shifts the correction by 0.155 km/s ([methods.md](methods.md#barycentric-correction-of-the-gtc-spectra)); `{site = "lapalma"}` avoids it.
 
 <a id="templates"></a>
@@ -429,7 +431,7 @@ A spectrum without a sky (most Spextool and JWST files) is left uncorrected in e
 The slit-centring error, used when the star − sky constant is not applied: `auto`, a velocity in km/s, or `none`; default `auto`.
 `auto` takes the star to sit anywhere within the slit, which gives σ ≈ (W − F)/√12 for a slit width W and trace FWHM F, converted to a velocity through the plate scale and dispersion (18.0 km/s for J1745−1640).
 This is because the sky fills the slit uniformly, whilst the star may be off-centre, so the sky cannot measure the star's own offset.
-`none` leaves the term, and the total error, undefined (flag `total_err_undefined`); it is never counted as 0.
+`none` sets the term to 0 with a WARNING and the flag `zp_unconstrained`, so the total error then omits the slit centring and is understated.
 Give a number when the acquisition accuracy is known better than this uniform prior.
 
 <a id="calibration-seeing_fwhm"></a>
@@ -443,8 +445,12 @@ Set it to the seeing of your night: a better seeing (smaller F) gives a larger s
 ### `calibration.wave_rms_kms`
 
 The wavelength-calibration accuracy assumed when the file records no arc RMS, in km/s; default unset (flag `wave_rms_assumed` when used).
-Unset, the instrument's typical value from `data/instruments.csv` is used, but no instrument has a documented typical value yet, so `rv_total_err` stays undefined for files without an arc RMS, such as every Spextool file.
-Set it to your own estimate (e.g. from the arc fit of your reduction) to obtain a total error; we do not guess a value, because the published numbers are the arc-fit RMS of one reduction rather than a typical accuracy.
+Unset, the instrument's typical value from `data/instruments.csv` is used, but no instrument has a documented typical value yet, so the arc term is unknown for files without an arc RMS.
+`sys_wavezp` is the larger of the arc term and the zero-point term of a measured sky or telluric curve, so it, and `rv_total_err`, is NaN (flag `total_err_undefined`) only when both are unknown.
+For `PypeIt` files (e.g. GTC/OSIRIS), rvfitter reads the arc RMS from the `WaveCalib` file in the spectrum's folder or up to three parents (each also as `Calibrations/`); without it, a measured sky curve still gives the zero-point term.
+Spextool and JWST files record neither an arc RMS nor a sky, so they need this setting for a total error.
+Set it to your own estimate, converted to a velocity as c Δλ/λ: e.g. the RMS of the arc-line residuals of your wavelength solution, the RMS offset of sky or telluric line centroids from their rest wavelengths over your range, or, for JWST, the documented calibration accuracy of your mode, which we have not sourced.
+We do not guess a value, because the published numbers are the arc-fit RMS of one reduction rather than a typical accuracy; an arc RMS is also a lower bound, since a well-fitted arc can hide a distortion of the whole solution, as the sky lines of J1745−1640 show ([`calibration.wavelength_correction`](#calibration-wavelength_correction)).
 
 <a id="calibration-zero_point_known"></a>
 ### `calibration.zero_point_known`
@@ -560,6 +566,7 @@ In this Section, we give a starting point for common kinds of data:
 
 In every case, set [`input.resolution`](#input-resolution) if the header lacks it and a [Teff prior](#templates-teff_prior) from the spectral type, and look at the diagnostics before trusting an RV.
 The input must be one merged 1D spectrum per object (or an IFU cube, or a multi-object x1d file): rvfitter has no reader for per-order or 2D echelle files, except Spextool's order stack, which it merges (where orders overlap, the bluer order's pixels are kept).
+For other echelle data, merge the orders into one 1D spectrum with your reduction pipeline's order-merging or coadd step first, and trim the low-S/N order edges or weight the overlaps by their inverse variance, because a noisy order edge spliced in unweighted adds spurious features at the order joins.
 
 To see what precision to expect before observing or measuring, run `rvfitter forecast --snr <S/N per pixel> --resolution <R> --wave-range <min> <max>` (or `--spectrum <file>` for its pixels and R), with `--teff` and `--logg` or the config's priors and a downloaded grid.
 It writes the photon-noise RV error (Bouchy et al. 2001) per feature window, per band and in total, and the windows that hold 90 per cent of the information, to `forecast.csv`.
@@ -608,7 +615,9 @@ sky_source = "spec1d_....fits"    # the spec1d of the same exposure
 The low-R defaults apply: vsini fixed at 0, feature windows, and `sky-if-needed`.
 `PypeIt` corrected this coadd to the heliocentre, but its headers carry no `VEL_TYPE`, so `auto` would correct them a second time.
 `skip` applies no correction, and `frame` then only labels the output: here the RVs are heliocentric, as `PypeIt` made them.
-Leaving `frame = "barycentric"` would mislabel them by at most about 0.013 km/s ([`velocity_frame.frame`](#velocity_frame-frame)); for a file with `VEL_TYPE` (e.g. a `PypeIt` spec1d), `auto` recognises the correction and only warns if the frames differ.
+Leaving `frame = "barycentric"` would mislabel them by at most about 0.013 km/s ([`velocity_frame.frame`](#velocity_frame-frame)).
+With `skip`, a [`velocity_frame.overrides`](#velocity_frame-overrides) site (e.g. `{site = "lapalma"}` for the wrong GTC header longitude) has no effect, so the 0.155 km/s offset of `PypeIt`'s own correction stays in the RVs, well below their errors ([methods.md](methods.md#barycentric-correction-of-the-gtc-spectra)).
+For a file with `VEL_TYPE` (e.g. a `PypeIt` spec1d), `auto` recognises the correction and only warns if the frames differ.
 We expect the zero point, not the method, to limit the absolute RV here: on J1745−1640 the slit prior alone is 18.0 km/s, against statistical errors of 3–5 km/s.
 `regions.template_windows = "features"` matters most in this regime, because of the poorly modelled TiO, VO, CrH and FeH bands.
 
@@ -622,16 +631,19 @@ This recipe is for SpeX SXD (R ≈ 2000 with the 0.3 arcsec slit) and ARCoIRIS (
 paths = ["sxd_J0808+3157.fits", "xtc_J1536+0646.fits"]
 
 [methods]
-enabled = ["linecentre"]          # J-band K I lines; add "ccf", "template_fit" once a grid is downloaded
+enabled = ["template_fit", "ccf", "linecentre"]   # the low-R defaults; needs a downloaded grid
 
 [calibration]
 wave_rms_kms = 5.0                # your estimate; otherwise rv_total_err is undefined
 ```
 
-Line centring on the J-band K I lines needs no templates; [Features by band](#features-by-band) lists what else each band offers at a given Teff.
-Every grid whose files we have checked covers 0.6–15 µm or more, the J, H and K bands included ([Choosing a model grid](#choosing-a-model-grid)); the validation ran line centring only because our local BT-Settl-CIFIST grid had been cut to 4000–11 000 Å before rvfitter read it.
-Spextool files record no arc RMS and no sky, so no sky correction is possible and the calibration term needs [`calibration.wave_rms_kms`](#calibration-wave_rms_kms).
-SpeX prism spectra (R ≈ 80–220) are refused, as intended, because they are below R 500.
+We recommend the low-R defaults, as in the optical: every grid whose files we have checked covers 0.6–15 µm or more, the J, H and K bands included ([Choosing a model grid](#choosing-a-model-grid)).
+We note candidly that the near-infrared validation ran line centring only, because our local BT-Settl-CIFIST grid had been cut to 4000–11 000 Å before rvfitter read it, so the template methods are not yet validated in this band.
+Without a grid, `enabled = ["linecentre"]` (the setting of `examples/near_infrared/`) runs on the J-band lines with no download.
+At R ≈ 2000 (SXD) the features that survive are K I (from R 1000), Na I 11385, 11407 (from R 1500) and the CO bandheads (from R 1000); ARCoIRIS at R ≈ 3500 adds Al I 13127, 13154 (from R 3000); Fe I needs R ≥ 4000 ([Features by band](#features-by-band) gives the Teff ranges).
+Spextool files record no arc RMS and no sky, so no sky correction is possible and the calibration term needs [`calibration.wave_rms_kms`](#calibration-wave_rms_kms); the `auto` slit prior is computed from the slit width (`SLTW_ARC`) and the plate scale of `data/instruments.csv`, with the assumed [`calibration.seeing_fwhm`](#calibration-seeing_fwhm), because Spextool records no trace FWHM.
+Below R 1000 the catalogue offers no near-infrared feature (the lowest `r_min` there is 1000), so line centring gets no regions and the template methods fall back to the full spans, each with a WARNING; all three methods then refuse the spectrum (R below their minimum of 1000, an ERROR per method), and no RV is reported for it.
+This holds, for example, for a T dwarf at R 750 and for SpeX prism spectra (R ≈ 80–220), as intended: such R cannot constrain an RV, so the only thing to do is check that the R used is right (set [`input.resolution`](#input-resolution) if the header or the pixel-spacing estimate is wrong), not raise it to get past the limit.
 rvfitter treats every Spextool file as not velocity-corrected, because no Spextool velocity keyword could be verified, and computes the barycentric correction from the header (`bary_source = "computed"` in the results); if yours were already corrected, set `velocity_frame.correction = "skip"`.
 
 <a id="recipe-high-r"></a>
@@ -673,17 +685,20 @@ The catalogue has no feature at 2.9–5 µm ([Features by band](#features-by-ban
 VHS 1256 b is an L/T object at about 1100–1400 K, where the grid advice ranks `sonora-elfowl` first below 1300 K and `bt-settl-cifist` first above it; all the Sonora grids reach 4.1 µm.
 We recommend `sonora-elfowl` for such an object; our example run used `sonora-bobcat` at 1000–1400 K only because that download was already in our cache, and its best template sat at the 1400 K edge, so we would extend the range upwards before trusting the result.
 The resolving power is not in the headers, so rvfitter estimates it from the pixel spacing (R ≈ 2090 for this cube, assuming 2.5 pixels per resolution element; flag `resolution_estimated`) and checks it against the documented range of the grating in `data/instruments.csv` (Jakobsen et al. 2022: PRISM 30–330, the M gratings 500–1340, the H gratings 1320–3600), widened by a factor 1.5.
-R varies along each grating, so set [`input.resolution`](#input-resolution) to the value at your wavelengths when you know it.
+For G395H our only sourced value is that range, R 1320–3600 for the H gratings as a whole (the abstract of Jakobsen et al. 2022), which does not give R at 2.9–4.1 µm; the estimate of 2090 lies within it even without the widening.
+R varies along each grating, so set [`input.resolution`](#input-resolution) to the value at your wavelengths when you know it, e.g. from the dispersion curve the JWST documentation gives for the grating.
 G395H is therefore in the low-R regime (below R 4500), so the vsini cannot be measured, and the absolute zero point rests on the JWST wavelength calibration, which rvfitter cannot check without sky lines.
 
 <a id="recipe-mos"></a>
 ### Multi-object spectra (e.g. JWST NIRSpec MOS PRISM)
 
 Each source of an x1d file becomes its own object, named by its `SRCNAME`, with [`input.objects = "auto"`](#input-objects); sources with S/N below 3 per pixel are skipped.
-The PRISM, however, has R ≈ 30–330, so one resolution element is about 2500 km/s at R 120, and no RV can be constrained: the run warns, and any value is flagged `resolution_too_low`.
+The PRISM, however, has R ≈ 30–330, so one resolution element is about 2500 km/s at R 120, and no RV can be constrained: the run warns, and every method refuses the spectrum, because it is below R 1000 ([`input.resolution`](#input-resolution)).
 This is a property of the data, not a setting to work around.
 The NIRSpec gratings (R 500–1340 and 1320–3600) may give RVs, with the same caveats as the IFU about R and `wave_rms_kms`.
-A MOS shutter is a slit, but rvfitter has no plate scale for it, so it cannot compute the slit-centring prior: `sys_star_sky`, and so `rv_total_err`, is NaN (WARNING, flag `zp_unconstrained`) unless you set [`calibration.slit_prior`](#calibration-slit_prior) to a velocity in km/s, e.g. your estimate of the source's offset within the shutter converted through the dispersion.
+A MOS shutter is a slit, but rvfitter has no plate scale for it, so it cannot compute the slit-centring prior: `sys_star_sky`, and so `rv_total_err`, is NaN (WARNING, flag `zp_unconstrained`) unless you set [`calibration.slit_prior`](#calibration-slit_prior) to a velocity in km/s.
+To estimate it, take the uncertainty of the source's position across the shutter along the dispersion, Δx in detector pixels, and convert it as σ_v ≈ c Δx D/λ, with D the dispersion in Å per pixel at λ (the spacing of the x1d wavelengths).
+The x1d headers record the planned position in the shutter (`SRCXPOS`, `SRCYPOS`, 'Source position in slit') but not the pointing error, and rvfitter has no sourced shutter size in pixels, so take both from the JWST documentation of your mode; the uniform form of the `auto` prior, (W − F)/√12 with W the shutter width and F the trace FWHM, assumes a source anywhere in the shutter, which suits an unknown position.
 We do not recommend `zero_point_known = true` here, because it would drop the term rather than estimate it.
 
 All sources of one file share one configuration.
@@ -732,7 +747,7 @@ Line centring uses the atomic lines; the template methods use windows around the
 | K (1.9–2.4 µm) | – | CO 22935, 23227, 23535 (1200–3500, R 1000) | H2O 1.9 µm (500–3000); CH4 2.2 µm (400–1500) |
 | L and M (2.9–5 µm) | – | – | – |
 
-For example, an M5 dwarf (about 3000 K) in the near infrared gets the J-band K I, Na I, Fe I (R ≥ 4000) and Al I (R ≥ 3000) lines and the K-band CO bandheads; a T5 dwarf (about 1100 K) at J, H and K gets only the four J-band K I lines; and an L or T dwarf at 2.9–4.1 µm gets no catalogue feature, so line centring cannot run and the template methods use the full spans.
+For example, an M5 dwarf (about 3000 K) in the near infrared gets the J-band K I (R ≥ 1000), Na I (R ≥ 1500), Al I (R ≥ 3000) and Fe I (R ≥ 4000) lines and the K-band CO bandheads (R ≥ 1000), so at R 2000 only the K I and Na I lines and the CO bandheads survive; a T5 dwarf (about 1100 K) at J, H and K gets only the four J-band K I lines; and an L or T dwarf at 2.9–4.1 µm gets no catalogue feature, so line centring cannot run and the template methods use the full spans.
 
 <a id="choosing-a-model-grid"></a>
 ## Choosing a model grid
