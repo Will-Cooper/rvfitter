@@ -19,6 +19,7 @@ def test_toml_single_values_normalise_and_round_trip():
     assert cfg.to_dict()['templates']['logg_range'] == [5.0, 5.0]
 
 
+@pytest.mark.gui
 def test_code_and_gui_single_values(qtbot):
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     pytest.importorskip('PySide6')
