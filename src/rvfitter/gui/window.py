@@ -229,7 +229,8 @@ class MainWindow(QMainWindow):
 
         # tabs
         self.tabs = QTabWidget()
-        self.setup = SetupPanel(cfg, self.backend.template_status)
+        self.setup = SetupPanel(cfg, self.backend.template_status, self.backend.frame_status,
+                                self.backend.wavelength_status)
         self.setup.advancedRequested.connect(self.advanced_settings)
         self.setup.cubeRequested.connect(self.choose_cube)
         self.tabs.addTab(_scrolled(self.setup), 'Setup')
@@ -742,10 +743,15 @@ class MainWindow(QMainWindow):
             return None
         try:
             cfg = self.current_config()
+            # the first spectrum of each object stands for its object (the Setup tab reads only those)
+            unknown = {n: st for n, spec in self.first_spectra.items()
+                       if (st := self.backend.frame_status(spec, cfg)).state == 'unknown'}
             needs = self.backend.template_methods(cfg)
             missing = [g for g, t in self.backend.template_status(cfg).items() if t is None] if needs else []
         except Exception as exc:
             self._error('Invalid settings', str(exc))
+            return None
+        if unknown and not self._settle_frame(cfg, unknown):
             return None
         if not missing:
             return self._start(cfg)
@@ -763,6 +769,48 @@ class MainWindow(QMainWindow):
                         ', '.join(missing), ', '.join(needs), ', '.join(cfg.methods.enabled))
             return self._start(cfg)
         return None
+
+    def _settle_frame(self, cfg: Any, unknown: dict[str, Any]) -> bool:
+        """
+        Never run on a guessed frame: ask whether the spectra whose frame is `unknown` (name -> FrameStatus) are
+        already corrected, and record the answer in ``cfg`` and the Setup tab (velocity_frame.correction 'skip' with
+        the frame, or 'apply'). False: cancelled, or 'apply' cannot compute the correction.
+        """
+        choice = self._ask_frame(unknown)
+        if choice == 'cancel':
+            return False
+        vf = cfg.velocity_frame
+        if choice == 'apply':
+            vf.correction = 'apply'
+            still = {n: st for n, st in ((n, self.backend.frame_status(self.first_spectra[n], cfg)) for n in unknown)
+                     if st.state == 'unknown'}
+            if still:
+                self._error('Cannot compute the barycentric correction', '\n'.join(
+                    f'{n}: {st.detail}' for n, st in still.items()) + '\n\nGive ra, dec, mjd and site in Advanced '
+                    'settings… > velocity_frame.overrides, then press Measure RVs again.')
+                return False
+        else:
+            vf.correction, vf.frame = 'skip', choice
+        log.warning('Velocity frame of %s stated by you: velocity_frame.correction = %s, frame = %s',
+                    ', '.join(unknown), vf.correction, vf.frame)
+        self.set_config(cfg)  # the Setup tab shows it as 'set by you', and the saved settings keep it
+        return True
+
+    def _ask_frame(self, unknown: dict[str, Any]) -> str:
+        """'barycentric' or 'heliocentric' (already corrected to it), 'apply' (not corrected) or 'cancel'"""
+        bound = max(st.bound_kms for st in unknown.values())
+        box = QMessageBox(QMessageBox.Icon.Warning, 'Is the spectrum already barycentric-corrected?',
+                          'rvfitter cannot tell whether these spectra are already corrected to the barycentre:\n\n'
+                          + '\n'.join(f'{n}: {st.detail}' for n, st in unknown.items())
+                          + f'\n\nA wrong answer shifts the RVs by up to ±{bound:.1f} km/s (the Earth\'s orbital '
+                          'speed projected on the target). Your answer applies to every spectrum of this run and is '
+                          'saved with the settings.', parent=self)
+        buttons = {box.addButton('Already barycentric', QMessageBox.ButtonRole.AcceptRole): 'barycentric',
+                   box.addButton('Already heliocentric', QMessageBox.ButtonRole.AcceptRole): 'heliocentric',
+                   box.addButton('Not corrected: compute it', QMessageBox.ButtonRole.ActionRole): 'apply',
+                   box.addButton(QMessageBox.StandardButton.Cancel): 'cancel'}
+        box.exec()
+        return buttons.get(box.clickedButton(), 'cancel')
 
     def _ask_missing_templates(self, missing: list[str], needs: list[str]) -> str:
         """'download', 'without' or 'cancel', from a dialog about the grids `missing` that methods `needs` read"""

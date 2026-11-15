@@ -39,7 +39,7 @@ class VelocityFrameCfg:
 
 @dataclass
 class CalibrationCfg:
-    wavelength_correction: Literal['sky-if-needed', 'sky', 'auto', 'telluric', 'none'] = 'sky-if-needed'
+    wavelength_correction: Literal['sky-if-needed', 'sky', 'auto', 'telluric', 'none'] = 'none'
 
 
 @dataclass
@@ -127,6 +127,8 @@ class FakeBackend:
         self.multi: dict[str, list[SpectrumEntry]] = {}
         self.cubes: dict[str, np.ndarray] = {}
         self.reads: list[tuple[str, tuple | None, float | None]] = []  # (path, cube position, radius) per read
+        self.frame_state = 'computed'  # frame_status under auto; frame_apply_state under apply
+        self.frame_apply_state = 'computed'
 
     def version(self):
         return '0.0-test'
@@ -188,6 +190,17 @@ class FakeBackend:
 
     def setting_advice(self, spectrum, cfg, result=None):
         return {'input.medium': ('air', 'the test advice'), 'input.resolution': (None, 'a reason only')}
+
+    def frame_status(self, spectrum, cfg):
+        from rvfitter.barycentric import FrameStatus
+        vf = cfg.velocity_frame
+        if vf.correction == 'skip':
+            return FrameStatus('skip', 0., 'velocity_frame.correction = skip', 25., vf.frame)
+        state = self.frame_state if vf.correction == 'auto' else self.frame_apply_state
+        return FrameStatus(state, -20.9 * (state == 'computed'), 'test inputs', 25., vf.frame)
+
+    def wavelength_status(self, spectrum, cfg):
+        return f'test wavelength status ({cfg.calibration.wavelength_correction})'
 
     def regime(self, spectrum):
         return 'low-resolution optical'

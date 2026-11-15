@@ -88,7 +88,7 @@ def test_pipeline_wavelength_correction_modes(caplog):
     caplog.set_level(logging.INFO, logger='rvfitter')
     raw = _sky_spectrum()
     cfg = config.Config()
-    assert cfg.calibration.wavelength_correction == 'sky-if-needed'  # the default
+    assert cfg.calibration.wavelength_correction == config.WAVELENGTH_CORRECTION_DEFAULT == 'none'  # the default
     cfg.calibration.wavelength_correction = 'none'
     spec0, info0 = wcorr.correct(raw, raw, cfg, 'X')
     assert info0['applied'] == 'none' and np.isfinite(info0['zp_sky_kms'])  # measured and reported anyway
@@ -113,11 +113,17 @@ ALKALI = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 79
           Region('Cs I', 'line', 8515., 8530.)]
 
 
+def _sky_if_needed() -> config.Config:
+    cfg = config.Config()
+    cfg.calibration.wavelength_correction = 'sky-if-needed'  # opt-in; the default is none
+    return cfg
+
+
 def test_sky_if_needed_applies_a_significant_offset(caplog):
     import logging
     caplog.set_level(logging.INFO, logger='rvfitter')
     raw = _sky_spectrum()
-    cfg = config.Config()
+    cfg = _sky_if_needed()
     spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=ALKALI)
     t = info['sky_tests']
     assert info['applied'] == 'sky' and info['zp_flags'] & wcorr.ZP_FLAGS['sky_applied']
@@ -128,7 +134,7 @@ def test_sky_if_needed_applies_a_significant_offset(caplog):
 
 def test_sky_if_needed_skips_a_negligible_offset(caplog):
     raw = _sky_spectrum(dv_func=lambda w: np.zeros_like(w))
-    cfg = config.Config()
+    cfg = _sky_if_needed()
     with caplog.at_level(logging.INFO, logger='rvfitter'):
         spec, info = wcorr.correct(raw, raw, cfg, 'X', regions=ALKALI)
     assert info['applied'] == 'none' and info['zp_flags'] & wcorr.ZP_FLAGS['sky_not_needed']
@@ -144,7 +150,7 @@ def test_sky_if_needed_unmeasured_regions(caplog):
     """A minority of regions on unmeasured parts of the curve (here the O2 A gap) are dropped (WARNING); a majority
     blocks the correction (WARNING, sky_unsafe)"""
     raw = _sky_spectrum()
-    cfg = config.Config()
+    cfg = _sky_if_needed()
     k1 = Region('K I', 'line', 7660., 7675.)
     with caplog.at_level(logging.INFO, logger='rvfitter'):
         _, info = wcorr.correct(raw, raw, cfg, 'X', regions=[*ALKALI, k1])

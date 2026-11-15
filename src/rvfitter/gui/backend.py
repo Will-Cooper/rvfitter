@@ -37,6 +37,10 @@ class Backend(Protocol):
 
     def regime(self, spectrum: Any) -> str: ...
 
+    def frame_status(self, spectrum: Any, cfg: Any) -> Any: ...
+
+    def wavelength_status(self, spectrum: Any, cfg: Any) -> str: ...
+
     def setting_advice(self, spectrum: Any, cfg: Any, result: Any = None) -> dict[str, tuple[Any, str]]: ...
 
     def select_regions(self, spectrum: Any, cfg: Any, with_overrides: bool = False) -> dict[str, list[Any]]: ...
@@ -113,6 +117,17 @@ class LazyBackend:
         from rvfitter import config, results
         teff = results._template_row(result)['template_teff'] if result is not None else math.nan
         return config.setting_advice(spectrum, cfg, None if math.isnan(teff) else teff)
+
+    def frame_status(self, spectrum: Any, cfg: Any) -> Any:
+        """What the velocity correction does for ``spectrum`` under ``cfg`` (``barycentric.status``)"""
+        from rvfitter import barycentric
+        vf = cfg.velocity_frame
+        return barycentric.status(spectrum, vf.correction, vf.frame, vf.overrides)
+
+    def wavelength_status(self, spectrum: Any, cfg: Any) -> str:
+        """What the wavelength correction does for ``spectrum`` (``config.wavelength_status``)"""
+        from rvfitter import config
+        return config.wavelength_status(spectrum, cfg)
 
     def regime(self, spectrum: Any) -> str:
         """E.g. 'low-resolution optical' (``config.regime_for``)."""

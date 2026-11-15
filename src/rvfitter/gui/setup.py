@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from ..config import METHOD_LABELS, method_advice, regime_for, resolution_too_low
 from ..io import CUBE_RADIUS_DEFAULT
 from . import theme
-from .forms import METHOD_TIPS, TIPS, Editor, make_editor
+from .forms import METHOD_TIPS, TIPS, Editor, guide_url, make_editor
 
 # (config path, label); the editors are the Advanced form's (`forms.make_editor`), bound to the same fields
 FIELDS = (
@@ -36,6 +36,9 @@ FIELDS = (
 )
 SOURCE_TEXT = {'header': 'from header', 'estimated': 'estimated: check', 'implausible': 'estimate out of range: type R',
                'default': 'default', 'user': 'set by you'}
+FRAME_PATH, WAVE_PATH = 'velocity_frame.correction', 'calibration.wavelength_correction'
+# the README / settings-guide box on the two settings that move RVs by tens of km/s
+BIG_SETTINGS_LINK = f' <a href="{guide_url("two-settings")}">Why this matters</a>'
 SOURCE_ROLE = {'estimated': 'flagged', 'implausible': 'failed'}  # theme colour roles of the tags that need a look
 R_PATH = 'input.resolution'
 GRID_PATH = 'templates.grid'
@@ -71,9 +74,16 @@ class SetupPanel(QWidget):
     advancedRequested = Signal()
     cubeRequested = Signal()
 
-    def __init__(self, cfg: Any, template_status: Callable[[Any], dict], parent: QWidget | None = None):
+    def __init__(self, cfg: Any, template_status: Callable[[Any], dict], frame_status: Callable[[Any, Any], Any],
+                 wavelength_status: Callable[[Any, Any], str], parent: QWidget | None = None):
         super().__init__(parent)
         self._template_status = template_status  # Backend.template_status
+        self._frame_status, self._wavelength_status = frame_status, wavelength_status  # the Backend's
+        # what the velocity and wavelength corrections will do for the detected spectrum, and how big they are
+        self.status = {FRAME_PATH: QLabel(), WAVE_PATH: QLabel()}
+        for lab in self.status.values():
+            lab.setWordWrap(True)
+            lab.setOpenExternalLinks(True)
         self.grid_status = QLabel()
         self.cfg = copy.deepcopy(cfg)
         self.editors: dict[str, Editor] = {}
@@ -106,6 +116,8 @@ class SetupPanel(QWidget):
             row.addWidget(tag)
             if path == GRID_PATH:
                 row.addWidget(self.grid_status)
+            if path in self.status:
+                row.addWidget(self.status[path], 1)
             if path == METHODS_PATH:
                 row.addWidget(self.method_note, 1)
                 for box in ed.boxes.values():
@@ -150,6 +162,8 @@ class SetupPanel(QWidget):
         self._show_tag(path)
         if path == GRID_PATH:
             self.show_grid_status()
+        if path in self.status:
+            self._show_status()
         if path == R_PATH and self._detected:
             try:
                 self._show_advice(*self._detected)
@@ -259,6 +273,19 @@ class SetupPanel(QWidget):
         for m, box in self.editors[METHODS_PATH].boxes.items():
             box.setToolTip(f'{METHOD_TIPS[m]}\n{self.advice[m].reason}')
         self._show_method_note()
+        self._show_status()
+
+    def _show_status(self) -> None:
+        """The velocity-frame and wavelength rows: what happens to the detected spectrum and its size (gold when the
+        frame is unknown: Measure RVs then asks)"""
+        if not self._detected:
+            return
+        spectrum, cfg = self._detected[0], self.get_config()
+        st = self._frame_status(spectrum, cfg)
+        lab = self.status[FRAME_PATH]
+        lab.setText(st.text + '.' + BIG_SETTINGS_LINK)
+        lab.setStyleSheet(f'color: {theme.colour("flagged", lab.palette()).name()}' if st.state == 'unknown' else '')
+        self.status[WAVE_PATH].setText(self._wavelength_status(spectrum, cfg) + BIG_SETTINGS_LINK)
 
     def _show_method_note(self) -> None:
         """A gold note on each ticked method that is not recommended for the detected spectrum (never blocks it)"""

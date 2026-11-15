@@ -25,7 +25,7 @@ def _values(advice):
 
 
 @pytest.mark.parametrize('name, expected', [
-    ('gtc_osiris', {'input.telluric_corrected': True, 'calibration.wavelength_correction': 'sky-if-needed',
+    ('gtc_osiris', {'input.telluric_corrected': True, 'calibration.wavelength_correction': 'none',
                     'velocity_frame.correction': None, 'templates.grid': 'bt-settl-cifist',
                     'templates.teff_range': (1800., 2400.), 'templates.logg_range': (4.5, 5.5),
                     'regions.template_windows': 'features', 'calibration.zero_point_known': None,
@@ -120,3 +120,12 @@ def test_location_fields_name_real_fields():
     for (section, name), kind in config.LOCATION_FIELDS.items():
         assert name in {f.name for f in dataclasses.fields(getattr(config.Config(), section))}
         assert kind in ('files', 'file', 'folder', 'save')
+
+
+def test_wavelength_status_says_what_the_mode_does():
+    be, cfg, spec = _example('gtc_osiris')  # its sky comes from the spec1d (calibration.sky_source)
+    text = config.wavelength_status(spec, cfg)
+    assert text.startswith('Sky from spec1d_') and f'{config.WAVELENGTH_CORRECTION_DEFAULT} (the default)' in text
+    assert config.WAVELENGTH_SIZE_TEXT in text
+    be, cfg, spec = _example('near_infrared')
+    assert config.wavelength_status(spec, cfg).startswith('No sky spectrum')

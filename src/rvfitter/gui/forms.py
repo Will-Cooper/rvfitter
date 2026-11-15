@@ -34,7 +34,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import LOCATION_FIELDS, METHOD_LABELS, METHOD_NAMES, OUTPUT_FORMATS
+from ..config import (
+    LOCATION_FIELDS,
+    METHOD_LABELS,
+    METHOD_NAMES,
+    OUTPUT_FORMATS,
+    WAVELENGTH_CORRECTION_DEFAULT,
+    WAVELENGTH_MODE_TEXT,
+    WAVELENGTH_SIZE_TEXT,
+)
 from ..templates import KNOWN_GRIDS
 from . import theme
 
@@ -65,9 +73,11 @@ TIPS = {
     'grouping.override': 'Which object each spectrum belongs to, when the header or file names group them wrongly '
                          '(JSON): file path, name or stem, or header object name, to object, e.g. '
                          '{"spec_0012.fits": "J1745-1640"}. Empty = automatic.',
-    'velocity_frame.correction': 'Barycentric correction: auto (skip a spectrum already corrected, else compute it '
-                                 'from the header, else use an ESO BERV keyword, else warn and skip), apply (always '
-                                 'compute) or skip.',
+    'velocity_frame.correction': 'Barycentric correction: auto (default: none if a header keyword says the spectrum '
+                                 'is corrected, else computed from RA/Dec, time and site, else an ESO BERV keyword, '
+                                 'else unknown and you are asked), apply (always compute) or skip (already '
+                                 'corrected). A wrong choice shifts the RVs by up to ±30 km/s (Earth\'s orbital speed '
+                                 '× cos ecliptic latitude).',
     'velocity_frame.frame': 'Velocity frame of the reported RVs: barycentric (default) or heliocentric.',
     'velocity_frame.overrides': 'Values used instead of the header (JSON): ra, dec [deg], mjd (mid-exposure), site '
                                 '(an astropy site name) or site_lat and site_lon [deg], e.g. {"site": "lapalma"}.',
@@ -115,9 +125,9 @@ TIPS = {
                          'when combining. Empty = automatic (the median error).',
     'combine.systematic_floor': 'Added in quadrature to the adopted error [km/s], e.g. a known instrument floor. '
                                 'Default 0.',
-    'calibration.wavelength_correction': 'Wavelength zero-point correction: sky-if-needed (default: the OH sky curve, '
-                                         'only when safe and significant), auto (also the star - sky constant), sky, '
-                                         'telluric or none (report only).',
+    'calibration.wavelength_correction': 'Wavelength zero-point correction. ' + '; '.join(
+        f'{m}{" (default)" * (m == WAVELENGTH_CORRECTION_DEFAULT)}: {t}' for m, t in WAVELENGTH_MODE_TEXT.items())
+        + '. ' + WAVELENGTH_SIZE_TEXT,
     'calibration.slit_prior': 'Slit-centring error when the star - sky constant is not applied: auto ((W - F)/√12 '
                               'from the slit width and trace FWHM; without a slit width the total error is '
                               'undefined), a velocity [km/s], or none (no slit-centring term: 0, with a warning).',

@@ -45,8 +45,9 @@ class DiagnosticsPanel(QWidget):
         self.readout.setToolTip('The adopted radial velocity and its error.')
         self.note = QLabel()
         self.note.setWordWrap(True)
-        box = QGroupBox('Barycentric correction')
-        box.setToolTip('The velocity correction applied to this object, where it came from and its frame.')
+        box = QGroupBox('Velocity zero point')
+        box.setToolTip('The barycentric correction applied to this object (where it came from, its frame) and how '
+                       'much the wavelength correction moved its RV: both can be tens of km/s.')
         self.bary = QLabel()
         self.bary.setWordWrap(True)
         QVBoxLayout(box).addWidget(self.bary)
@@ -81,7 +82,18 @@ class DiagnosticsPanel(QWidget):
             return 'No barycentric information recorded.'
         kms = b.get('applied_kms')
         value = 'n/a' if kms is None else f'{kms:+.3f} km/s'
-        return f'Value applied: {value}    Source: {b.get("source", "?")}    Frame: {b.get("frame", "?")}'
+        lines = [f'Barycentric value applied: {value}    Source: {b.get("source", "?")}    '
+                 f'Frame: {b.get("frame", "?")}']
+        if b.get('source') == 'unknown':
+            lines.append('Frame unknown (flag frame_unknown): nothing applied, so the RV is off by up to ±30 km/s '
+                         'if the spectrum was not corrected.')
+        applied, shift = b.get('wavelength_correction', 'none'), b.get('wavelength_shift_kms')
+        if applied != 'none' and shift is not None:
+            moved = f'{shift:+.1f}'.replace('-', '−')
+            lines.append(f'The {applied} correction moved this RV by {moved} km/s (mean over the measured regions).')
+        elif applied == 'none':
+            lines.append(f'No wavelength correction applied ({b.get("wavelength_correction_mode", "?")}).')
+        return '\n'.join(lines)
 
     def show_result(self, result: Any, rv: float | None = None, err: float | None = None,
                     note: str = '') -> None:

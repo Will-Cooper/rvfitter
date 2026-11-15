@@ -217,7 +217,7 @@ def test_pipeline_telluric_and_auto_modes():
     regs = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
             Region('Cs I', 'line', 8515., 8530.)]
     from rvfitter import systematics
-    # the default sky-if-needed applies the sky curve only; the constant is measured and reported, not applied
+    # sky-if-needed applies the sky curve only; the constant is measured and reported, not applied
     cfg.calibration.wavelength_correction = 'sky-if-needed'
     spec_d, info_d = wcorr.correct(raw, raw, cfg, 'X', regions=regs)
     assert info_d['applied'] == 'sky' and not info_d.get('star_sky_applied')

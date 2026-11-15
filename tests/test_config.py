@@ -262,3 +262,15 @@ def test_only_implemented_methods():
     assert set(config.METHOD_NAMES) == set(REGISTRY) and set(Config().methods.enabled) <= set(REGISTRY)
     with pytest.raises(ValueError, match='bisector'):
         config.loads('[methods]\nenabled = ["ccf", "bisector"]\n')
+
+
+def test_docs_box_states_the_defaults():
+    """The 'Two settings that move RVs' box follows the one default constant"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    for doc in ('README.md', 'docs/settings.md'):
+        text = (root / doc).read_text()
+        assert 'Two settings that move RVs by tens of km/s' in text
+        assert f'default `{config.WAVELENGTH_CORRECTION_DEFAULT}`' in text
+        assert f'default `{config.Config().velocity_frame.correction}`' in text
+    assert config.Config().calibration.wavelength_correction == config.WAVELENGTH_CORRECTION_DEFAULT
