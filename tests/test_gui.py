@@ -618,3 +618,121 @@ def test_log_is_collapsed_and_counts_warnings(qtbot, win):
     assert win.log_pane.warn_label.text() == '2 warnings'
     win.log_pane.clear()
     assert win.log_pane.warn_label.text() == ''
+
+
+@pytest.fixture
+def mos_dir(tmp_path, backend):
+    """A multi-object file 'mos' (two usable sources, one without valid pixels, a background slit) and 'single'"""
+    from rvfitter.io import SpectrumEntry
+    d = tmp_path / 'mos'
+    d.mkdir()
+    for n in ('mos', 'single_1'):
+        (d / f'{n}.txt').write_text('x')
+    backend.multi['mos'] = [SpectrumEntry(1, 'src_a', 'object', 20., True, named=True),
+                            SpectrumEntry(2, 'src_b', 'object', 8., True, named=True),
+                            SpectrumEntry(3, 'src_c', 'object', float('nan'), False, 'fewer than two valid pixels',
+                                          named=True),
+                            SpectrumEntry(4, 'background', 'background', 3., False,
+                                          'JWST background slit (SRCNAME background)')]
+    return d
+
+
+def _mos_item(win):
+    return next(win.input_tree.topLevelItem(i) for i in range(win.input_tree.topLevelItemCount())
+                if win.input_tree.topLevelItem(i).text(0) == 'mos.txt')
+
+
+def test_multi_object_file_shows_its_spectra_with_reasons(qtbot, win, mos_dir):
+    from PySide6.QtCore import Qt
+    _load(qtbot, win, mos_dir)
+    assert set(win.groups) == {'single', 'src_a', 'src_b'}
+    top = _mos_item(win)
+    rows = [top.child(i) for i in range(top.childCount())]
+    assert [r.text(0) for r in rows] == ['src_a · S/N 20', 'src_b · S/N 8', 'src_c · S/N ?',
+                                         'background (background) · S/N 3']
+    assert [r.checkState(0) for r in rows] == [Qt.CheckState.Checked] * 2 + [Qt.CheckState.Unchecked] * 2
+    assert not rows[2].flags() & Qt.ItemFlag.ItemIsEnabled  # greyed, with the reason
+    assert rows[2].toolTip(0) == 'HDU 3, object, S/N ?: not usable: fewer than two valid pixels'
+    assert rows[0].text(1) == 'R 3000'
+    rows[0].setSelected(True)
+    assert win.current_object == 'src_a'
+    assert win.input_tree.topLevelItemCount() == 2  # 'single', then the file: its sources are shown only there
+
+
+def test_ticks_set_input_objects_and_the_run_measures_only_them(qtbot, win, backend, mos_dir):
+    from PySide6.QtCore import Qt
+    _load(qtbot, win, mos_dir)
+    _mos_item(win).child(1).setCheckState(0, Qt.CheckState.Unchecked)
+    assert win.current_config().input.objects == ['src_a']
+    qtbot.waitUntil(lambda: 'src_b' not in win.groups, timeout=5000)
+    assert _mos_item(win).child(1).checkState(0) == Qt.CheckState.Unchecked
+    assert win.measure_btn.isEnabled()
+    win.run()
+    qtbot.waitUntil(lambda: win.worker is None, timeout=10000)
+    assert backend.runs[-1]['groups'] == {'single': [str(mos_dir / 'single_1.txt')],
+                                          'src_a': [f'{mos_dir / "mos.txt"}[1]']}
+    actions = {a.text(): a for a in win.input_tree.actions()}
+    actions['Target only'].trigger()
+    qtbot.waitUntil(lambda: win.current_config().input.objects == 'target' and 'src_a' in win.groups, timeout=5000)
+    actions['Tick all usable'].trigger()
+    qtbot.waitUntil(lambda: 'src_b' in win.groups, timeout=5000)
+    assert win.current_config().input.objects == 'all'
+
+
+def test_cube_row_and_dialog_write_input_cube(qtbot, win, backend, tmp_path):
+    import numpy as np
+    img = np.zeros((9, 11))
+    img[6, 4] = 10.  # brightest spaxel (x, y) = (4, 6)
+    backend.cubes['cube'] = img
+    (tmp_path / 'cube.txt').write_text('x')
+    setup = win.setup
+    assert not setup.form.isRowVisible(setup._cube_row)
+    _load(qtbot, win, tmp_path / 'cube.txt')
+    assert setup.form.isRowVisible(setup._cube_row)
+    assert setup.cube_text.text() == 'brightest spaxel (4, 6), radius 3 spaxels'
+    dlg = win.choose_cube()
+    assert backend.reads[-1][1:] == (None, 3.)  # the preview
+    dlg.radius_box.setValue(2.)
+    dlg.set_position((2., 3.))
+    assert backend.reads[-1][1:] == ((2., 3.), 2.) and dlg.info.text() == 'Centre: spaxel (2, 3)'
+    n = len(backend.reads)
+    dlg.accept()
+    cube = win.current_config().input.cube
+    assert (cube.position, cube.radius) == ((2., 3.), 2.)
+    assert setup.cube_text.text() == 'spaxel (2, 3), radius 2 spaxels'
+    qtbot.waitUntil(lambda: len(backend.reads) > n, timeout=5000)  # the cube is read again with the aperture
+    assert backend.reads[-1] == (str(tmp_path / 'cube.txt'), (2., 3.), 2.)
+    dlg = win.choose_cube()
+    dlg.reset()
+    dlg.accept()
+    assert win.current_config().input.cube.position is None
+    assert setup.cube_text.text() == 'brightest spaxel (4, 6), radius 2 spaxels'
+
+
+def test_setup_says_when_r_is_too_low_for_an_rv(qtbot, win, backend, spectra_dir):
+    from PySide6.QtTest import QTest
+    _load(qtbot, win, spectra_dir)
+    assert win.setup.recommended.styleSheet() == ''
+    QTest.keyClicks(win.setup.editors['input.resolution'].edit, '100')
+    text = win.setup.recommended.text()
+    assert text.startswith('R 100 is below') and 'cannot constrain an RV' in text
+    assert win.setup.recommended.styleSheet() == 'color: #ddaa33'
+
+
+def test_real_jwst_examples_list_spectra_and_cube():
+    """The committed JWST examples through the real backend: MOS sources with reasons, the cube's brightest spaxel"""
+    from pathlib import Path
+
+    import numpy as np
+
+    from rvfitter.gui.backend import LazyBackend
+    ex = Path(__file__).parent.parent / 'examples'
+    b = LazyBackend()
+    cfg = b.default_config()
+    entries = b.list_spectra(ex / 'jwst_mos' / 'jw01229004001_05101_00001_nrs1_x1d.fits', cfg)
+    assert [(e.name, e.usable) for e in entries] == [('1229_13', False), ('1229_6', True), ('1229_7', True)]
+    assert entries[0].reason == 'fewer than two valid pixels'
+    cube = ex / 'jwst_ifu' / 'jw01386013001_03104_00001_nrs1_s3d_cutout.fits.gz'
+    assert [e.kind for e in b.list_spectra(cube, cfg)] == ['cube', 'error', 'dq']
+    img, (x, y) = b.cube_image(cube)
+    assert img.shape == (17, 17) and img[y, x] == np.nanmax(img)

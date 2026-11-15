@@ -11,8 +11,15 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from rvfitter.io import SpectrumEntry
 from rvfitter.types import Region
 from synth import make_spectrum
+
+
+@dataclass
+class CubeCfg:
+    position: tuple[float, float] | None = None
+    radius: float | None = None
 
 
 @dataclass
@@ -20,6 +27,8 @@ class InputCfg:  # the paths of rvfitter.config that the Setup tab binds to
     medium: Literal['auto', 'air', 'vacuum'] = 'auto'
     medium_method: Literal['ciddor', 'edlen', 'morton'] = 'ciddor'
     resolution: float | None = None
+    objects: str | list[int | str] = 'auto'
+    cube: CubeCfg = field(default_factory=CubeCfg)
 
 
 @dataclass
@@ -83,6 +92,8 @@ def _from_dict(d: dict) -> FakeConfig:
         for k, v in vals.items():
             if k == 'teff_prior' and v is not None:
                 v = tuple(v)
+            if k == 'cube':
+                v = CubeCfg(**v)
             setattr(obj, k, v)
     return cfg
 
@@ -95,7 +106,9 @@ def make_result(name: str, rv: float = 10.0):
 class FakeBackend:
     """
     Satisfies ``gui.backend.Backend``; the run blocks on ``gate`` (if set) before the second object. Spectra have
-    R ``resolution`` from ``resolution_source``; the run reports a step per (file, method).
+    R ``resolution`` from ``resolution_source``; the run reports a step per (file, method). A file whose stem is in
+    ``multi`` holds those entries (one object per entry, picked by ``input.objects``); one whose stem is in ``cubes``
+    is an IFU cube with that collapsed image.
     """
 
     def __init__(self, tmp: Path | None = None, objects=('alpha', 'beta')):
@@ -111,6 +124,9 @@ class FakeBackend:
         self.refits: list[tuple] = []
         self.missing_grids: set[str] = set()  # template_status reports these not downloaded
         self.download_error: str | None = None  # download_templates raises this
+        self.multi: dict[str, list[SpectrumEntry]] = {}
+        self.cubes: dict[str, np.ndarray] = {}
+        self.reads: list[tuple[str, tuple | None, float | None]] = []  # (path, cube position, radius) per read
 
     def version(self):
         return '0.0-test'
@@ -132,14 +148,33 @@ class FakeBackend:
 
     def group_objects(self, files, cfg):
         out: dict[str, list[str]] = {}
+        objects = cfg.input.objects
         for f in files:
-            out.setdefault(Path(f).stem.split('_')[0], []).append(str(f))
+            entries = self.multi.get(Path(f).stem)
+            if entries is None:
+                out.setdefault(Path(f).stem.split('_')[0], []).append(str(f))
+                continue
+            usable = [e for e in entries if e.usable]
+            picks = (usable if objects in ('auto', 'all') else usable[:1] if objects == 'target' else
+                     [e for e in entries if e.name in objects or str(e.hdu) in map(str, objects)])
+            for e in picks:
+                out.setdefault(e.name, []).append(f'{f}[{e.hdu}]')
         return out
 
     def list_spectra(self, path, cfg):
-        return []
+        stem = Path(path).stem
+        if stem in self.cubes:
+            return [SpectrumEntry(1, 'SCI', 'cube', 50., True),
+                    SpectrumEntry(2, 'ERR', 'error', float('nan'), False, 'EXTNAME ERR: error plane, not a spectrum')]
+        return self.multi.get(stem, [SpectrumEntry(None, Path(path).name, 'object', float('nan'), True)])
+
+    def cube_image(self, path):
+        img = self.cubes[Path(path).stem]
+        y, x = np.unravel_index(np.nanargmax(img), img.shape)
+        return img, (int(x), int(y))
 
     def read_spectrum(self, path, cfg):
+        self.reads.append((str(path), cfg.input.cube.position, cfg.input.cube.radius))
         spec, _ = make_spectrum(rv=0., resolution=self.resolution, snr=50., wave_range=(7500., 8000.),
                                 rng=np.random.default_rng(1))
         spec.meta.update(resolution_source=self.resolution_source, medium_in='vacuum', medium_source='header:TEST',

@@ -31,6 +31,8 @@ class Backend(Protocol):
 
     def list_spectra(self, path: str | Path, cfg: Any) -> list[Any]: ...
 
+    def cube_image(self, path: str | Path) -> tuple[Any, tuple[int, int]]: ...
+
     def default_for(self, spectrum: Any) -> Any: ...
 
     def regime(self, spectrum: Any) -> str: ...
@@ -90,6 +92,12 @@ class LazyBackend:
         """The candidate spectra of a file (``io.list_spectra``: hdu, name, kind, snr, usable, reason, named)."""
         from rvfitter import io
         return io.list_spectra(path, cube=cfg.input.cube)
+
+    def cube_image(self, path: str | Path) -> tuple[Any, tuple[int, int]]:
+        """The median-collapsed image of an IFU cube and its brightest spaxel (x, y)"""
+        from rvfitter import io
+        img = io.cube_image(path)
+        return img, io.brightest_spaxel(img)
 
     def default_for(self, spectrum: Any) -> Any:
         """The regime defaults of ``spectrum`` (``config.default_for``)."""
