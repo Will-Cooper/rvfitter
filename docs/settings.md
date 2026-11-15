@@ -421,6 +421,7 @@ We recommend it because arc-lamp solutions can be distorted by tens of km/s with
 We keep `auto` opt-in because the star − sky constant has been tested on one object only, where it moved the RV further from the literature value ([methods.md](methods.md#why-the-star--sky-constant-is-opt-in)).
 `telluric` is refused when the regions lie too far from the telluric nodes, as for the optical alkali lines.
 A spectrum without a sky (most Spextool and JWST files) is left uncorrected in every mode.
+[Wavelength-correction mode](#recipe-correction-mode) gives our recommendation and what the validation rests on.
 
 <a id="calibration-slit_prior"></a>
 ### `calibration.slit_prior`
@@ -543,9 +544,40 @@ Choose `air` to compare with line lists or figures in air.
 <a id="which-settings-for-my-data"></a>
 ## Which settings for my data?
 
-In this Section, we give a starting point for common kinds of data.
-In every case, set [`input.resolution`](#input-resolution) if the header lacks it and a [Teff prior](#templates-teff_prior) from the spectral type, and look at the diagnostics before trusting an RV.
+In this Section, we give a starting point for common kinds of data:
 
+| Data | Recipe |
+|---|---|
+| Optical, R < 4500, late-M and L dwarfs (GTC/OSIRIS) | [Optical at low R](#recipe-optical-low-r) |
+| Near-infrared, R < 4500 (SpeX SXD, ARCoIRIS) | [Near-infrared at low R](#recipe-nir-low-r) |
+| R ≳ 4500, echelle, fibre-fed | [Mid and high R](#recipe-high-r) |
+| JWST NIRSpec IFU cube | [IFU cubes](#recipe-ifu) |
+| JWST NIRSpec MOS, several sources per file | [Multi-object spectra](#recipe-mos) |
+| M dwarfs and FGK stars | [Stars](#stars-fgk-and-m-dwarfs) |
+| Galaxies | [Galaxies](#recipe-galaxies) (not supported) |
+| Which features a band offers at a given Teff | [Features by band](#features-by-band) |
+| Which wavelength correction to use | [Wavelength-correction mode](#recipe-correction-mode) |
+
+In every case, set [`input.resolution`](#input-resolution) if the header lacks it and a [Teff prior](#templates-teff_prior) from the spectral type, and look at the diagnostics before trusting an RV.
+The input must be one merged 1D spectrum per object (or an IFU cube, or a multi-object x1d file): rvfitter has no reader for per-order or 2D echelle files, except Spextool's order stack, which it merges (where orders overlap, the bluer order's pixels are kept).
+
+To see what precision to expect before observing or measuring, run `rvfitter forecast --snr <S/N per pixel> --resolution <R> --wave-range <min> <max>` (or `--spectrum <file>` for its pixels and R), with `--teff` and `--logg` or the config's priors and a downloaded grid.
+It writes the photon-noise RV error (Bouchy et al. 2001) per feature window, per band and in total, and the windows that hold 90 per cent of the information, to `forecast.csv`.
+This is a lower limit: it has no zero-point term, and at low R the zero point dominates (on J1745−1640 the statistical errors were 3–5 km/s, against a total of about 20 km/s; [methods.md](methods.md#results-by-method)), whilst the validation scatter against the literature is in [methods.md](methods.md#validation-on-published-spectra).
+
+<a id="recipe-correction-mode"></a>
+### Wavelength-correction mode
+
+We recommend the default, `sky-if-needed` ([`calibration.wavelength_correction`](#calibration-wavelength_correction)).
+Without a sky spectrum (every Spextool and JWST file, and coadds without a `sky_source`) it applies nothing, so it is then the same as `none`.
+With a sky, it applies the measured OH curve only when the calibration-data tests pass, because a distorted arc solution otherwise enters every RV.
+We note candidly what this rests on.
+Both validations ran with no correction applied: the optical set with `none` (only J1745−1640 among them has a sky spectrum), and the near-infrared set without any sky.
+The sky correction itself has been tested on J1745−1640 alone, where it reduced the line-to-line scatter from 11.3 to 3.2 km/s but moved line centring from 35.0 to 13.6 km/s, against 26.2 ± 2.3 km/s in the literature (z = 3.0 with the statistical error, against 1.5 for `none`).
+No mode agrees with the literature within the statistical errors for every method, whilst every mode lies within 1.3 of its total errors ([methods.md](methods.md#results-by-method)), so the zero point of that spectrum, not the mode, limits it.
+When you have a sky, we therefore suggest comparing the default with `none`, and treating a difference larger than the statistical errors as a zero-point problem of that spectrum.
+
+<a id="recipe-optical-low-r"></a>
 ### Brown dwarfs in the optical at low R (e.g. GTC/OSIRIS R2500I)
 
 This is the case rvfitter was built and validated on (56 late-M and L dwarfs, R ≈ 2600; [methods.md](methods.md#validation-on-published-spectra)).
@@ -558,8 +590,8 @@ resolution = 2602.0
 raw_header_dir = "raw"             # slit angle for the DAR, slit width and binning
 
 [velocity_frame]
-correction = "skip"               # PypeIt already corrected it
-frame = "heliocentric"            # as PypeIt did
+correction = "skip"               # PypeIt corrected it, but the coadd does not record it
+frame = "heliocentric"            # the label of the reported RVs: PypeIt's frame
 
 [templates]
 grid = "bt-settl-cifist"
@@ -574,37 +606,47 @@ sky_source = "spec1d_....fits"    # the spec1d of the same exposure
 ```
 
 The low-R defaults apply: vsini fixed at 0, feature windows, and `sky-if-needed`.
+`PypeIt` corrected this coadd to the heliocentre, but its headers carry no `VEL_TYPE`, so `auto` would correct them a second time.
+`skip` applies no correction, and `frame` then only labels the output: here the RVs are heliocentric, as `PypeIt` made them.
+Leaving `frame = "barycentric"` would mislabel them by at most about 0.013 km/s ([`velocity_frame.frame`](#velocity_frame-frame)); for a file with `VEL_TYPE` (e.g. a `PypeIt` spec1d), `auto` recognises the correction and only warns if the frames differ.
 We expect the zero point, not the method, to limit the absolute RV here: on J1745−1640 the slit prior alone is 18.0 km/s, against statistical errors of 3–5 km/s.
 `regions.template_windows = "features"` matters most in this regime, because of the poorly modelled TiO, VO, CrH and FeH bands.
 
+<a id="recipe-nir-low-r"></a>
 ### Near-infrared at low R (IRTF/SpeX SXD, Blanco/ARCoIRIS)
 
-SpeX SXD (R ≈ 2000) and ARCoIRIS (R ≈ 3500) spectra in Spextool format have their barycentric correction computed from the header.
+This recipe is for SpeX SXD (R ≈ 2000 with the 0.3 arcsec slit) and ARCoIRIS (R ≈ 3500, fixed slit) spectra in Spextool format (R from the instrument pages cited in `data/instruments.csv`; other SpeX slits give other R, which we have not sourced, so set [`input.resolution`](#input-resolution)).
 
 ```toml
 [input]
 paths = ["sxd_J0808+3157.fits", "xtc_J1536+0646.fits"]
 
 [methods]
-enabled = ["linecentre"]          # J-band K I lines; add the template methods with a near-infrared grid
+enabled = ["linecentre"]          # J-band K I lines; add "ccf", "template_fit" once a grid is downloaded
 
 [calibration]
 wave_rms_kms = 5.0                # your estimate; otherwise rv_total_err is undefined
 ```
 
-Line centring on the J-band K I lines needs no templates.
-For the template methods, use a grid whose files cover the J band (the validation ran line centring only, because its local optical grid did not; see [Choosing a model grid](#choosing-a-model-grid)).
+Line centring on the J-band K I lines needs no templates; [Features by band](#features-by-band) lists what else each band offers at a given Teff.
+Every grid whose files we have checked covers 0.6–15 µm or more, the J, H and K bands included ([Choosing a model grid](#choosing-a-model-grid)); the validation ran line centring only because our local BT-Settl-CIFIST grid had been cut to 4000–11 000 Å before rvfitter read it.
 Spextool files record no arc RMS and no sky, so no sky correction is possible and the calibration term needs [`calibration.wave_rms_kms`](#calibration-wave_rms_kms).
 SpeX prism spectra (R ≈ 80–220) are refused, as intended, because they are below R 500.
-If your Spextool files were already corrected to the barycentre, set `velocity_frame.correction = "skip"`.
+rvfitter treats every Spextool file as not velocity-corrected, because no Spextool velocity keyword could be verified, and computes the barycentric correction from the header (`bary_source = "computed"` in the results); if yours were already corrected, set `velocity_frame.correction = "skip"`.
 
-### Mid and high R (R ≳ 4500)
+<a id="recipe-high-r"></a>
+### Mid and high R (R ≳ 4500), echelle and fibre data
 
 Above R 4500 vsini is resolved, so `template_fit` fits it (`fit_vsini = true`, set by the regime defaults), and from R 4500 up the full non-telluric spans are used, because many resolved lines average down the mismatch of individual bands.
 Above R 20 000 we recommend `telluric_ref` for spectra that are not telluric-corrected, since the telluric lines tie the RV to the atmosphere rather than to the arc solution and the slit position; build the telluric model first (`rvfitter templates telluric --build`).
 At high R, `forward_mcmc` (several epochs fitted together) and `lsd` (RV and vsini from the mean line profile) become worthwhile.
-For echelle data with a fibre feed, set [`calibration.zero_point_known`](#calibration-zero_point_known) to true, because there is no slit.
+Echelle orders must be merged into one 1D spectrum first (see above).
+For a fibre feed, set [`calibration.zero_point_known`](#calibration-zero_point_known) to true, because there is no slit; for a slit echelle, leave it false, so that the slit-centring prior enters the error.
+The telluric model covers 6000–25 000 Å (vacuum), and the catalogue's telluric bands start at O2 B (6862 Å), so `telluric_ref` and the telluric zero point have no reference in bluer orders.
+`telluric_ref` uses the catalogue's telluric bands that the spectrum covers and whose R limit it reaches (O2 from R 5000, H2O and CO2 from R 10 000, CH4 2.3 µm from R 20 000), whatever the star's Teff, so it serves FGK stars as well; it needs a spectrum that is not telluric-corrected.
+We have not validated rvfitter above R 4500: the benchmark and both validation sets are at R ≈ 2000–3500.
 
+<a id="recipe-ifu"></a>
 ### IFU cubes (e.g. JWST NIRSpec IFU)
 
 A spectrum is extracted in a circular aperture of radius 3 spaxels on the brightest spaxel ([`input.cube`](#input-cube)).
@@ -626,27 +668,48 @@ enabled = ["ccf", "template_fit"]
 
 JWST wavelengths are vacuum and already barycentric (the pipeline's `assign_wcs` step), so `auto` applies no further correction.
 A cube has no slit, so the slit-centring term, the DAR and the star − sky constant are not computed.
-The template files must cover the band (2.9–4.1 µm for G395H); VHS 1256 b is an L/T object at about 1100–1400 K, where the grid advice ranks `sonora-elfowl`, `sonora-bobcat` and `sonora-diamondback` first below 1300 K and `bt-settl-cifist` first above it, and the near-infrared band needs a grid with files that reach 4.1 µm.
-Our run used `sonora-bobcat` at 1000–1400 K, e.g. `rvfitter templates download --grid sonora-bobcat --teff 1000 1400`, and its best template sat at the 1400 K edge, so we would extend the range upwards before trusting the result.
-We note that the NIRSpec IFU G395H (R ≈ 2000–3000) is in the low-R regime, so the vsini cannot be measured and the absolute zero point rests on the JWST wavelength calibration, which rvfitter cannot check without sky lines.
+JWST files record no arc RMS and no instrument in `data/instruments.csv` has a typical calibration accuracy, so without [`calibration.wave_rms_kms`](#calibration-wave_rms_kms) `sys_wavezp`, and so `rv_total_err`, is NaN (flag `total_err_undefined`); we recommend setting it to your own estimate of the NIRSpec wavelength-calibration accuracy (e.g. from the JWST documentation), which we have not sourced.
+The catalogue has no feature at 2.9–5 µm ([Features by band](#features-by-band)), so the template methods fall back to the full spans (WARNING) and line centring has no lines.
+VHS 1256 b is an L/T object at about 1100–1400 K, where the grid advice ranks `sonora-elfowl` first below 1300 K and `bt-settl-cifist` first above it; all the Sonora grids reach 4.1 µm.
+We recommend `sonora-elfowl` for such an object; our example run used `sonora-bobcat` at 1000–1400 K only because that download was already in our cache, and its best template sat at the 1400 K edge, so we would extend the range upwards before trusting the result.
+The resolving power is not in the headers, so rvfitter estimates it from the pixel spacing (R ≈ 2090 for this cube, assuming 2.5 pixels per resolution element; flag `resolution_estimated`) and checks it against the documented range of the grating in `data/instruments.csv` (Jakobsen et al. 2022: PRISM 30–330, the M gratings 500–1340, the H gratings 1320–3600), widened by a factor 1.5.
+R varies along each grating, so set [`input.resolution`](#input-resolution) to the value at your wavelengths when you know it.
+G395H is therefore in the low-R regime (below R 4500), so the vsini cannot be measured, and the absolute zero point rests on the JWST wavelength calibration, which rvfitter cannot check without sky lines.
 
+<a id="recipe-mos"></a>
 ### Multi-object spectra (e.g. JWST NIRSpec MOS PRISM)
 
 Each source of an x1d file becomes its own object, named by its `SRCNAME`, with [`input.objects = "auto"`](#input-objects); sources with S/N below 3 per pixel are skipped.
 The PRISM, however, has R ≈ 30–330, so one resolution element is about 2500 km/s at R 120, and no RV can be constrained: the run warns, and any value is flagged `resolution_too_low`.
 This is a property of the data, not a setting to work around.
-The NIRSpec gratings (R ≈ 1000 or 2700) may give RVs, with the same caveats as the IFU about the zero point; we note that a MOS shutter is a slit, so a slit-centring term probably applies, but rvfitter has no plate scale for it yet, so the term and the total error may be undefined.
+The NIRSpec gratings (R 500–1340 and 1320–3600) may give RVs, with the same caveats as the IFU about R and `wave_rms_kms`.
+A MOS shutter is a slit, but rvfitter has no plate scale for it, so it cannot compute the slit-centring prior: `sys_star_sky`, and so `rv_total_err`, is NaN (WARNING, flag `zp_unconstrained`) unless you set [`calibration.slit_prior`](#calibration-slit_prior) to a velocity in km/s, e.g. your estimate of the source's offset within the shutter converted through the dispersion.
+We do not recommend `zero_point_known = true` here, because it would drop the term rather than estimate it.
+
+All sources of one file share one configuration.
+To give a source its own settings, e.g. a Teff prior, add a `[[refits]]` entry for it by its object name, which `rvfitter run` applies to that object only:
+
+```toml
+[[refits]]
+object = "1229_9"
+patch = {templates = {teff_prior = 1500.0}}
+```
+
+Alternatively, run groups of sources separately with different configs, unticking the others in the GUI.
 
 <a id="stars-fgk-and-m-dwarfs"></a>
 ### Stars (FGK and M dwarfs)
 
-rvfitter can measure stars, but its feature catalogue was built for ultracool dwarfs: its features cover Teff 400–3650 K and 6565–23 535 Å.
+rvfitter can measure stars, but its feature catalogue was built for ultracool dwarfs: its features cover Teff 400–3650 K and 6565–23 835 Å ([Features by band](#features-by-band)).
 For M dwarfs (2400–3650 K), use the defaults with `bt-settl-cifist` at solar metallicity (`bt-settl-agss2009` is ranked second there), or `sand` for metal-poor M subdwarfs (it varies [M/H] from −2.4 to +0.3 dex, with alpha enhancement), and free [`templates.met_range`](#templates-met_range) for those.
 For FGK stars, no catalogue feature applies at their Teff, so line centring has no lines and the feature windows are empty.
 We therefore recommend `template_fit` and `ccf` with `regions.template_windows = "full"` (the setting advice gives `full` above 3650 K, the upper Teff limit of the well-modelled features), and `bt-settl-agss2009` (400–70 000 K, [M/H] −4 to +0.5 dex, [α/M] 0 to 0.4 dex) with a metallicity range, or `bt-settl-cifist` up to 7000 K for solar-metallicity stars.
 For a field dwarf of known gravity, `logg_range = 5.0` fits only that gravity and needs fewer templates.
+A single value must be a grid point: for a log g between grid points (e.g. 4.4 dex) the run stops with an error naming the nearest grid values, so give one of them or a range that brackets it (e.g. `logg_range = [4.0, 4.5]`).
+For spectra that are not telluric-corrected at R ≥ 5000, `telluric_ref` also works for FGK stars ([Mid and high R](#recipe-high-r)).
 We note that we have not validated rvfitter on FGK stars, and that dedicated stellar pipelines with line masks tuned for them (e.g. the instrument's own cross-correlation pipeline at high R) are probably more precise there.
 
+<a id="recipe-galaxies"></a>
 ### Galaxies
 
 rvfitter is not designed for galaxies, and we do not recommend it for them.
@@ -654,6 +717,22 @@ It has no galaxy or stellar-population templates, and it does not treat velocity
 It also has no redshift treatment: it applies the non-relativistic Doppler shift of a nearby source, searches only ±500 km/s by default, and its feature catalogue and resolution regimes assume stellar and substellar spectra.
 A galaxy spectrum would therefore give a biased velocity with an error that does not describe it.
 For galaxy kinematics we suggest `pPXF` (Cappellari & Emsellem 2004; Cappellari 2017), which fits the velocity and dispersion with stellar-population templates; for redshifts, template-based redshift fitters such as `Redrock` (from DESI) are designed for the task.
+
+<a id="features-by-band"></a>
+### Features by band
+
+The table lists the non-telluric features of the catalogue (`src/rvfitter/data/features.ecsv`), with the Teff range [K] and the minimum R at which each is used.
+Line centring uses the atomic lines; the template methods use windows around the well-modelled features (atomic lines and CO bandheads) below R 4500, and fall back to the full non-telluric spans, with a WARNING, when none applies; the poorly modelled bands enter only through the full spans.
+
+| Band | Atomic lines (line centring and feature windows) | Well-modelled bandheads | Poorly modelled bands |
+|---|---|---|---|
+| Optical (6500–10 000 Å) | Hα 6565 (1500–3500, R 1000); Li I 6710 (1500–3000, R 2000); K I 7667, 7701 (1200–3000, R 1000); Rb I 7802, 7949 (1300–2400, R 1500); Na I 8185, 8197 (1300–3200, R 1000); Cs I 8523, 8946 (1200–2300, R 1500) | – | TiO 7054, 7591, 8434 (1900–3500); VO 7334, 7851 (1700–3000); CrH 8613 (1300–2600); FeH 8694, 9899 (1300–3200) |
+| J (1.1–1.35 µm) | Na I 11385, 11407 (1500–3200, R 1500); K I 11693, 11776, 12436, 12526 (1000–3650, R 1000); Fe I 11886, 11887, 11976 (1800–3500, R 4000); Al I 13127, 13154 (1800–3200, R 3000) | – | – |
+| H (1.4–1.8 µm) | – | – | H2O 1.4 µm (500–3000); CH4 1.6 µm (400–1500) |
+| K (1.9–2.4 µm) | – | CO 22935, 23227, 23535 (1200–3500, R 1000) | H2O 1.9 µm (500–3000); CH4 2.2 µm (400–1500) |
+| L and M (2.9–5 µm) | – | – | – |
+
+For example, an M5 dwarf (about 3000 K) in the near infrared gets the J-band K I, Na I, Fe I (R ≥ 4000) and Al I (R ≥ 3000) lines and the K-band CO bandheads; a T5 dwarf (about 1100 K) at J, H and K gets only the four J-band K I lines; and an L or T dwarf at 2.9–4.1 µm gets no catalogue feature, so line centring cannot run and the template methods use the full spans.
 
 <a id="choosing-a-model-grid"></a>
 ## Choosing a model grid
@@ -671,6 +750,22 @@ All grids are converted to vacuum on reading, and their medium is verified again
 | `sonora-diamondback` | 900–2400 | 3.5–5.5 | −0.5–+0.5 | f_sed 0–8 (0 cloud-free) | Silicate clouds of variable sedimentation efficiency | Cloudy L and L/T transition dwarfs | Morley et al. 2024 |
 | `sonora-elfowl` | 275–2400 | 3.25–5.5 | −1.0–+1.0 | C/O 0.22–1.14, log K_zz 2–9 | Cloud-free, disequilibrium chemistry from vertical mixing | T and Y dwarfs, where CH4, CO and NH3 are out of equilibrium | Mukherjee et al. 2024; Wogan et al. 2025 |
 | `lowz` | 500–1600 | 3.5–5.25 | −2.5–+1.0 | C/O 0.1–0.85, log K_zz −1–10 | Cloud-free, low-metallicity, with mixing | Metal-poor T dwarfs; download manually and use [`templates.local_dir`](#templates-local_dir) | Meisner et al. 2021 |
+
+rvfitter keeps the full wavelength range of every file it downloads (neither the SVO nor the Zenodo route cuts it).
+The wavelength coverage below was read from a file of each grid where we could, and from the Zenodo record otherwise; the bands are optical (0.4–1 µm), J, H, K and L/M (2.9–5 µm).
+
+| Grid | Wavelength [µm] | Bands | Native resolving power | Checked on |
+|---|---|---|---|---|
+| `bt-settl-cifist` | 0–1000 | all | – | an SVO spectrum (2000 K, log g 5.0) |
+| `bt-settl-agss2009` | not checked (the SVO query timed out) | – | – | – |
+| `sand` | 0.0001–1000 | all | – | a Zenodo file (1600 K, log g 5.0) |
+| `sonora-bobcat` | 0.4–50 | all | 6000–200 000 | the 27 cached files (Zenodo) |
+| `sonora-diamondback` | 0.3–250 | all | ≈50 000 at 0.3–0.8 µm, ≈200 000 at 0.8–2 µm, ≈30 000 at 2–20 µm | a Zenodo file (1300 K) |
+| `sonora-elfowl` | 0.6–15 | all (optical from 0.6 µm) | – | the Zenodo record's description |
+| `lowz` | not checked (manual download) | – | – | – |
+
+A local grid can cover less: our local BT-Settl-CIFIST grid (the one the benchmark tests read) had been cut to 4000–11 000 Å before rvfitter read it, so it covers neither the J, H and K bands nor 2.9–5 µm; check the range of any grid you prepared yourself.
+At high R, we note that the Sonora resolving powers above (from their Zenodo records) set a limit: at 2–20 µm their spectra resolve no better than R ≈ 30 000.
 
 We recommend choosing the grid by the physics that dominates the RV windows, rather than by the widest coverage.
 This is because a template RV is set by the positions and shapes of the lines it matches, so a grid that mismodels the dominant opacity (clouds in L dwarfs, CH4 in T dwarfs, metallicity in subdwarfs) shifts the RV even when its Teff is right.
@@ -697,10 +792,12 @@ When in doubt, list two grids in [`templates.grid`](#templates-grid): their spre
 - Allard F., Homeier D., Freytag B., 2012, Phil. Trans. R. Soc. A, 370, 2765 (BT-Settl)
 - Alvarado E. et al., 2024, RNAAS, 8, 134 (SAND)
 - Asplund M. et al., 2009, ARA&A, 47, 481
+- Bouchy F., Pepe F., Queloz D., 2001, A&A, 374, 733
 - Caffau E. et al., 2011, Sol. Phys., 268, 255
 - Cappellari M., Emsellem E., 2004, PASP, 116, 138; Cappellari M., 2017, MNRAS, 466, 798 (pPXF)
 - Ciddor P. E., 1996, Appl. Opt., 35, 1566
 - Edlén B., 1953, J. Opt. Soc. Am., 43, 339
+- Jakobsen P. et al., 2022, A&A, 661, A80 (NIRSpec)
 - Kass R. E., Raftery A. E., 1995, J. Am. Stat. Assoc., 90, 773
 - Marley M. S. et al., 2021, ApJ, 920, 85 (Sonora Bobcat)
 - Meisner A. M. et al., 2021, ApJ, 915, 120 (LOWZ)

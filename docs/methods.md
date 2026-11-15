@@ -225,8 +225,8 @@ Consequently, an offset is either applied, with its error carried as a systemati
 
 We compared rvfitter with independent literature values and with the previous, script-based release (kept in the git history and the Zenodo archive of earlier versions) for two sets of published spectra.
 The analysis plan and the rule for the default wavelength-correction mode were fixed before any comparison, and nothing was tuned to it.
-The optical set is 56 late-M and L dwarfs observed with GTC/OSIRIS R2500I (Cooper et al. 2024), as telluric-corrected `PypeIt` coadds, run with `template_fit`, `ccf` and `linecentre` and the BT-Settl-CIFIST grid (wavelength correction `none`).
-The near-infrared set is 44 ultracool dwarfs from IRTF/SpeX SXD and Blanco/ARCoIRIS (Cheng et al. 2025), run with `linecentre` only because the optical grid does not cover them; their 8 SpeX prism spectra (R ≈ 80–220) are refused, as intended.
+The optical set is 56 late-M and L dwarfs observed with GTC/OSIRIS R2500I (Cooper et al. 2024), as telluric-corrected `PypeIt` coadds, run with `template_fit`, `ccf` and `linecentre` and the BT-Settl-CIFIST grid (wavelength correction `none`; only J1745−1640 among them has a sky spectrum).
+The near-infrared set is 44 ultracool dwarfs from IRTF/SpeX SXD and Blanco/ARCoIRIS (Cheng et al. 2025), run with `linecentre` only, because our local BT-Settl-CIFIST grid had been cut to 4000–11 000 Å (a downloaded grid covers the near infrared; [settings.md](settings.md#choosing-a-model-grid)); Spextool files have no sky, so no wavelength correction was applied in any mode; their 8 SpeX prism spectra (R ≈ 80–220) are refused, as intended.
 The pull is ΔRV/√(σ₁² + σ₂²), and a robust pull width of 0.8–1.2 (1.4826 × MAD) counts as honest errors.
 
 | Comparison | N | Weighted mean Δ [km/s] | Robust scatter [km/s] | Robust pull width | \|pull\| < 2 |
