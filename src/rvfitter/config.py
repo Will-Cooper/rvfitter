@@ -148,8 +148,8 @@ class RegionsConfig:
     overrides: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     min_snr: float = 5.  # drop features whose local S/N is below this
     telluric_strictness: float = 1.  # scales the airmass-dependent telluric threshold (larger masks more)
-    max_regions: int = 12  # keep at most this many, ranked by forecast information content
-    continuum_fwhm: float = 5.  # continuum windows extend this many resolution elements around a feature
+    max_regions: int | None = None  # keep at most this many, ranked by forecast information content; None: all
+    continuum_fwhm: float = 3.  # continuum windows extend this many resolution elements around a feature
     # windows for ccf/template_fit at R <= 5000: 'features' (around well-modelled atomic/CO features; the
     # default, because synthetic grids reproduce molecular bands poorly) or 'full' (every non-telluric span)
     template_windows: str = field(default='features', metadata={'choices': TEMPLATE_WINDOWS})
@@ -467,7 +467,7 @@ def _validate(cfg: Config) -> list[str]:
         p.append(f'regions.min_snr = {r.min_snr} must be >= 0')
     if not r.telluric_strictness > 0:
         p.append(f'regions.telluric_strictness = {r.telluric_strictness} must be > 0')
-    if r.max_regions < 1:
+    if r.max_regions is not None and r.max_regions < 1:
         p.append(f'regions.max_regions = {r.max_regions} must be >= 1')
     if not r.continuum_fwhm > 0:
         p.append(f'regions.continuum_fwhm = {r.continuum_fwhm} must be > 0')

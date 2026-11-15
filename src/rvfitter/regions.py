@@ -162,6 +162,13 @@ class SelectOptions:
         return cls(**kwargs)
 
 
+def options_for(cfg: Any) -> SelectOptions:
+    """The selection options of a Config: its ``regions`` section and ``input.telluric_corrected`` (the one place
+    every caller builds them)"""
+    return dataclasses.replace(SelectOptions.from_config(cfg.regions),
+                               telluric_corrected=bool(cfg.input.telluric_corrected))
+
+
 # ---------------------------------------------------------------------------------------------------- statistics
 def der_snr(flux: np.ndarray) -> float:
     """

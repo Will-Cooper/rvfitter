@@ -105,8 +105,8 @@ TIPS = {
     'regions.telluric_strictness': 'Scales the airmass-dependent threshold for masking telluric bands; larger masks '
                                    'more. Default 1.',
     'regions.max_regions': 'Keep at most this many regions per method, ranked by their forecast RV information. '
-                           'Default 12.',
-    'regions.continuum_fwhm': 'Continuum windows extend this many resolution elements around a feature. Default 5.',
+                           'Default auto: no limit.',
+    'regions.continuum_fwhm': 'Continuum windows extend this many resolution elements around a feature. Default 3.',
     'regions.template_windows': 'Windows for CCF and template fit at R ≤ 5000: features (around well-modelled atomic '
                                 'and CO features; default, since model grids reproduce molecular bands poorly) or '
                                 'full (every non-telluric span). Above R 5000 the full spans are always used.',
@@ -184,8 +184,8 @@ DEFAULT_WHY = {
     'regions.overrides': 'the regions are chosen from the spectrum.',
     'regions.min_snr': 'features below S/N 5 add noise rather than information.',
     'regions.telluric_strictness': 'the airmass-dependent threshold suits most sites.',
-    'regions.max_regions': '12 regions hold most of the RV information.',
-    'regions.continuum_fwhm': '5 resolution elements give a stable local continuum.',
+    'regions.max_regions': 'every region that passes the S/N and telluric thresholds adds information.',
+    'regions.continuum_fwhm': '3 resolution elements give a local continuum clear of neighbouring features.',
     'combine.tau_scale': 'the median error sets the scale of the scatter prior.',
     'combine.systematic_floor': 'add only a known instrument floor.',
     'calibration.slit_prior': 'auto uses the slit width and the trace FWHM.',

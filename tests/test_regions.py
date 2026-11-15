@@ -248,9 +248,23 @@ def test_real_config_regions():
     spec = _synth((7400., 13500.))
     res = select(spec, teff=1800., methods=['linecentre', 'ccf', 'template_fit'], overrides=cfg.overrides, options=cfg)
     assert res['linecentre'] and res['ccf']
-    assert all(len(v) <= cfg.max_regions for v in res.values())
     o = SelectOptions.from_config(cfg)
     assert (o.snr_min, o.telluric, o.cont_fwhm) == (cfg.min_snr, cfg.telluric_strictness, cfg.continuum_fwhm)
+
+
+def test_config_region_options_take_effect():
+    """options_for (the pipeline's and the systematics' one source) passes every regions setting; the defaults
+    are the options the pipeline used before max_regions and continuum_fwhm were passed, so results do not change"""
+    from rvfitter import config, pipeline
+    from rvfitter.regions import options_for
+    cfg = config.Config()
+    assert options_for(cfg) == SelectOptions(snr_min=5.)
+    cfg.regions.max_regions, cfg.regions.continuum_fwhm, cfg.input.telluric_corrected = 1, 4., True
+    o = options_for(cfg)
+    assert (o.max_regions, o.cont_fwhm, o.telluric_corrected) == (1, 4., True)
+    res = pipeline.region_selector(cfg, ['linecentre', 'ccf'])(_synth((7400., 13500.)))
+    assert res['linecentre'] and all(len(v) == 1 for v in res.values())
+
 
 
 def test_telluric_corrected_relaxes_only_o2_for_lines():
