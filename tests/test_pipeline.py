@@ -277,3 +277,25 @@ def test_resolution_too_low_is_warned_and_flagged(fakes, monkeypatch, caplog):
     table = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
     assert list(table['rv_ccf_flag'] & results.FLAGS['resolution_too_low'] > 0) == [False, False, True]
     assert 'C: R 100 is below 500' in caplog.text
+
+
+REAL_CORRECTION = barycentric.correction  # before the fakes fixture replaces it
+
+
+def test_unknown_frame_is_warned_and_flagged(fakes, monkeypatch, caplog):
+    """What the command line does when auto cannot tell the frame: nothing applied, a loud WARNING, a flag"""
+    monkeypatch.setattr(barycentric, 'correction', REAL_CORRECTION)
+    caplog.set_level(logging.WARNING, logger='rvfitter')
+    table = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
+    assert (table['bary_source'] == 'unknown').all() and (table['bary_kms'] == 0.).all()
+    assert (table['zp_flags'] & wcorr.ZP_FLAGS['frame_unknown']).all()
+    assert 'VELOCITY FRAME UNKNOWN for B_0.fits' in caplog.text and '±30.0 km/s' in caplog.text
+
+
+def test_wavelength_shift_is_minus_the_applied_dv_at_the_regions():
+    from rvfitter.calibration import sky_zeropoint
+    from rvfitter.types import Region
+    s = sky_zeropoint.apply(spec('A'), None, constant_kms=5.)
+    sel = {'ccf': [Region('a', 'line', 7400., 7410., 7405.), Region('t', 'telluric', 7600., 7700., None)]}
+    assert pipeline.wavelength_shift(s, sel) == pytest.approx(-5.)
+    assert pipeline.wavelength_shift(spec('A'), sel) == 0.
