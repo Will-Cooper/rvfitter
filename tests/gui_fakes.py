@@ -82,11 +82,13 @@ class FakeConfig:
     regions: RegionsCfg = field(default_factory=RegionsCfg)
     parallel: ParallelCfg = field(default_factory=ParallelCfg)
     output: OutputCfg = field(default_factory=OutputCfg)
+    refits: list = field(default_factory=list)  # as rvfitter.config: [{'object': name, 'patch': {...}}]
 
 
 def _from_dict(d: dict) -> FakeConfig:
     cfg = FakeConfig()
     cfg.seed = d.pop('seed')
+    cfg.refits = d.pop('refits', [])
     for sect, vals in d.items():
         obj = getattr(cfg, sect)
         for k, v in vals.items():

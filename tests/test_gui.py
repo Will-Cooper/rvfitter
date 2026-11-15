@@ -875,10 +875,26 @@ def test_measure_asks_for_an_unknown_frame_and_records_it(qtbot, win, backend, s
     win.run()
     qtbot.waitUntil(lambda: bool(backend.runs) and win.worker is None, timeout=10000)
     assert asked == [['alpha', 'beta']]
-    vf = backend.runs[0]['cfg'].velocity_frame
-    assert (vf.correction, vf.frame) == (correction, frame)
-    assert win.current_config().velocity_frame.correction == correction  # saved with the settings
-    assert win.setup.sources['velocity_frame.correction'] == 'user'
+    run_cfg = backend.runs[0]['cfg']
+    want = {'correction': 'apply'} if correction == 'apply' else {'correction': correction, 'frame': frame}
+    assert run_cfg.refits == [{'object': n, 'patch': {'velocity_frame': want}} for n in ('alpha', 'beta')]
+    assert run_cfg.velocity_frame.correction == 'auto'  # the answer is per object, never global
+    assert win.current_config().refits == run_cfg.refits  # saved with the settings
+
+
+def test_frame_answer_leaves_computable_objects_alone(qtbot, win, backend, spectra_dir, monkeypatch):
+    """Only the unknown objects get the answer: a computable object keeps 'auto' (its correction is still applied)"""
+    backend.frame_state = 'unknown'
+    _load(qtbot, win, spectra_dir)
+    backend.frame_state = 'computed'
+    unknown_only = {'alpha': win.backend.frame_status(win.first_spectra['alpha'], win.current_config())}
+    unknown_only['alpha'] = unknown_only['alpha'].__class__('unknown', 0., 'test inputs', 25., 'barycentric')
+    monkeypatch.setattr(win, '_ask_frame', lambda unknown: 'barycentric')
+    cfg = win.current_config()
+    assert win._settle_frame(cfg, unknown_only)
+    assert cfg.refits == [{'object': 'alpha', 'patch': {'velocity_frame': {'correction': 'skip',
+                                                                          'frame': 'barycentric'}}}]
+    assert cfg.velocity_frame.correction == 'auto'  # beta (computable) is untouched
 
 
 def test_measure_does_not_run_on_an_unknown_frame_without_an_answer(qtbot, win, backend, spectra_dir, monkeypatch):

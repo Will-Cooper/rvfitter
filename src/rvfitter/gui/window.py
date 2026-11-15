@@ -773,27 +773,28 @@ class MainWindow(QMainWindow):
     def _settle_frame(self, cfg: Any, unknown: dict[str, Any]) -> bool:
         """
         Never run on a guessed frame: ask whether the spectra whose frame is `unknown` (name -> FrameStatus) are
-        already corrected, and record the answer in ``cfg`` and the Setup tab (velocity_frame.correction 'skip' with
-        the frame, or 'apply'). False: cancelled, or 'apply' cannot compute the correction.
+        already corrected, and record the answer for those objects only, as one ``[[refits]]`` patch each
+        (velocity_frame.correction 'skip' with the frame, or 'apply'), so objects whose frame is known or computable
+        keep their own handling. False: cancelled, or 'apply' cannot compute the correction.
         """
         choice = self._ask_frame(unknown)
         if choice == 'cancel':
             return False
-        vf = cfg.velocity_frame
+        frame = {'correction': 'apply'} if choice == 'apply' else {'correction': 'skip', 'frame': choice}
+        patches = [{'object': n, 'patch': {'velocity_frame': frame}} for n in unknown]
         if choice == 'apply':
-            vf.correction = 'apply'
-            still = {n: st for n, st in ((n, self.backend.frame_status(self.first_spectra[n], cfg)) for n in unknown)
-                     if st.state == 'unknown'}
+            trial = copy.deepcopy(cfg)  # what each patched object gets: correction 'apply'
+            trial.velocity_frame.correction = 'apply'
+            still = {n: st for n, st in ((n, self.backend.frame_status(self.first_spectra[n], trial))
+                                         for n in unknown) if st.state == 'unknown'}
             if still:
                 self._error('Cannot compute the barycentric correction', '\n'.join(
                     f'{n}: {st.detail}' for n, st in still.items()) + '\n\nGive ra, dec, mjd and site in Advanced '
                     'settings… > velocity_frame.overrides, then press Measure RVs again.')
                 return False
-        else:
-            vf.correction, vf.frame = 'skip', choice
-        log.warning('Velocity frame of %s stated by you: velocity_frame.correction = %s, frame = %s',
-                    ', '.join(unknown), vf.correction, vf.frame)
-        self.set_config(cfg)  # the Setup tab shows it as 'set by you', and the saved settings keep it
+        cfg.refits = [*cfg.refits, *patches]
+        log.warning('Velocity frame stated by you for %s only: velocity_frame %s', ', '.join(unknown), frame)
+        self.set_config(cfg)  # the saved settings keep the per-object answers
         return True
 
     def _ask_frame(self, unknown: dict[str, Any]) -> str:
@@ -803,8 +804,8 @@ class MainWindow(QMainWindow):
                           'rvfitter cannot tell whether these spectra are already corrected to the barycentre:\n\n'
                           + '\n'.join(f'{n}: {st.detail}' for n, st in unknown.items())
                           + f'\n\nA wrong answer shifts the RVs by up to ±{bound:.1f} km/s (the Earth\'s orbital '
-                          'speed projected on the target). Your answer applies to every spectrum of this run and is '
-                          'saved with the settings.', parent=self)
+                          'speed projected on the target). Your answer applies to the objects listed only (the others '
+                          'keep their own handling) and is saved with the settings.', parent=self)
         buttons = {box.addButton('Already barycentric', QMessageBox.ButtonRole.AcceptRole): 'barycentric',
                    box.addButton('Already heliocentric', QMessageBox.ButtonRole.AcceptRole): 'heliocentric',
                    box.addButton('Not corrected: compute it', QMessageBox.ButtonRole.ActionRole): 'apply',
