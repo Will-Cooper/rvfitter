@@ -525,6 +525,22 @@ def test_diagnostic_figures_render(qtbot, win):
     assert tabs.count() == 0
 
 
+def test_text_or_number_fields_are_plain_boxes(qtbot):
+    """slit_prior ('auto' or km/s) and hdu (index or name) are shown without JSON quotes and parse to their type"""
+    from rvfitter import config
+    from rvfitter.gui.forms import ConfigForm
+    form = ConfigForm(config.Config())
+    slit = form.editor('calibration.slit_prior')
+    assert slit.edit.text() == 'auto'
+    slit.edit.setText('2.5')
+    assert form.get_config().calibration.slit_prior == 2.5
+    hdu = form.editor('input.hdu')
+    hdu.edit.setText('3')
+    assert form.get_config().input.hdu == 3
+    hdu.edit.setText('SCI')
+    assert form.get_config().input.hdu == 'SCI'
+
+
 def test_choice_fields_are_combo_boxes_from_config(qtbot):
     from PySide6.QtWidgets import QCheckBox, QComboBox
 

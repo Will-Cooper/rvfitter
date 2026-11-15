@@ -338,7 +338,8 @@ def _with_browse(edit: QWidget, kind: str | None, slot) -> tuple[QWidget, QPushB
 
 
 class TextEditor(Editor):
-    """Line edit parsing to ``kind`` (str, float, int or json); an empty box is ``None`` if optional."""
+    """Line edit parsing to ``kind`` (str, float, int, json, or a tuple of them for a union such as int | str);
+    an empty box is ``None`` if optional."""
 
     def __init__(self, kind: type | str = str, optional: bool = False, browse: str | None = None):
         self.kind, self.optional = kind, optional
@@ -378,6 +379,13 @@ class TextEditor(Editor):
             return int(text)
         if self.kind == 'json':
             return json.loads(text)
+        if isinstance(self.kind, tuple):  # a union such as int | str: the first type that parses (str last)
+            for t in self.kind:
+                try:
+                    return t(text)
+                except ValueError:
+                    continue
+            raise ValueError(f'{text!r} is not one of {", ".join(t.__name__ for t in self.kind)}')
         return text
 
     def set(self, value):
@@ -633,7 +641,11 @@ def make_editor(tp: Any, f: dataclasses.Field, path: str, tooltips: dict[str, st
         if name in _CHOICE_LISTS and elem is str:
             return CheckListEditor(_CHOICE_LISTS[name], container)
         return SeqEditor(container, elem, optional, browse=browse)
-    return TextEditor('json', optional=optional or type(None) in get_args(tp), browse=browse)  # e.g. local_dir, hdu
+    scalars = set(get_args(tp)) - {type(None)}
+    if str in scalars and scalars <= {str, int, float}:  # e.g. slit_prior ('auto' or km/s), hdu (index or name)
+        return TextEditor(tuple(t for t in (int, float, str) if t in scalars),
+                          optional=optional or type(None) in get_args(tp))
+    return TextEditor('json', optional=optional or type(None) in get_args(tp), browse=browse)  # e.g. local_dir
 
 
 class ConfigForm(QWidget):
