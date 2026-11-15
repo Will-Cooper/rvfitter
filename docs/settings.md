@@ -216,6 +216,7 @@ Set it only for a local grid without metadata, for the same 82 km/s reason as [`
 
 The Teff range searched, [min, max] in K; default unset, which means the [Teff prior](#templates-teff_prior) ± 300 K, or the whole grid without a prior.
 Narrow it when the spectral type is well known, to save time and avoid a poor template being chosen by noise; widen it when the type is uncertain.
+Give one value (e.g. `teff_range = 3000`) to fit only that Teff; it is saved as [3000, 3000].
 The ±300 K window is a compromise: it spans several grid steps (100 K) to allow for the scatter of the Teff–spectral-type relation, without letting the search reach templates whose molecular bands differ grossly from the target's.
 
 <a id="templates-logg_range"></a>
@@ -223,6 +224,8 @@ The ±300 K window is a compromise: it spans several grid steps (100 K) to allow
 
 The log g range searched, [min, max] in dex (cgs); default unset, the whole grid.
 Restrict it to 4.5–5.5 dex for field brown dwarfs, or lower for young, low-gravity objects.
+Give one value when the gravity is known (e.g. `logg_range = 5.0` for a field dwarf): only that log g is downloaded and fitted, which gives fewer templates and a faster run, and it is saved as [5.0, 5.0].
+If no grid point equals the value, the run stops with an error naming the nearest values (for local grids and SVO; a Zenodo download does not list them), so that a typing error does not silently select another gravity.
 At low R, log g and the template's RV are only weakly correlated, so this mainly saves time and keeps the chosen template physical.
 
 <a id="templates-met_range"></a>
@@ -231,18 +234,20 @@ At low R, log g and the template's RV are only weakly correlated, so this mainly
 The metallicity range searched, [min, max] in dex; default unset, which holds [M/H] at the grid point nearest the [metallicity prior](#templates-met_prior), or the grid default.
 We hold it fixed by default because each free axis multiplies the number of candidates, and at low R metallicity is poorly constrained by the RV windows.
 Free it for subdwarfs, together with a grid that varies it (SAND, BT-Settl-AGSS2009, LOWZ).
+A single value (e.g. `met_range = -1.0`) selects only that grid value, with the same error as for [`templates.logg_range`](#templates-logg_range) if it is absent.
 
 <a id="templates-alpha_range"></a>
 ### `templates.alpha_range`
 
 The alpha-enhancement range searched, [min, max] in dex; default unset, held at the grid point nearest the [alpha prior](#templates-alpha_prior), or the grid default.
-The reasoning is as for [`templates.met_range`](#templates-met_range).
+The reasoning, and the single-value form, are as for [`templates.met_range`](#templates-met_range).
 
 <a id="templates-ranges"></a>
 ### `templates.ranges`
 
 Ranges of any other grid axes, e.g. `{co = [0.5, 1.0]}` for C/O, `kzz` for vertical mixing or `fsed` for the cloud sedimentation efficiency; default empty.
 An axis without a range is held at its default.
+A single value (e.g. `{co = 0.5}`) selects only that value, as for the other ranges.
 Free these only when the spectrum's band shapes clearly depend on them (e.g. T dwarfs with LOWZ or Elf Owl), since every free axis multiplies the run time.
 
 <a id="templates-teff_prior"></a>
@@ -335,6 +340,7 @@ Remove a region when its diagnostics show a blend, a bad pixel or a distorted wa
 
 Features whose local S/N per pixel is below this are dropped.
 Default 5.
+It applies to the selection of regions and to the window-mode check of the systematics, which share one set of options.
 Lower it for faint spectra, at the cost of noisier regions; the combination down-weights noisy regions, but a region at very low S/N can still pull a profile fit onto noise.
 The S/N is a robust estimate from second differences of the flux, so smooth spectral structure does not count as noise.
 
@@ -344,27 +350,28 @@ The S/N is a robust estimate from second differences of the flux, so smooth spec
 A scale for the airmass-dependent threshold at which telluric bands are masked: a band is masked when its airmass-scaled depth exceeds 0.15 divided by this value.
 Default 1; larger masks more.
 Raise it for high-airmass or humid nights, lower it for good conditions or partially corrected spectra.
+It reaches the systematics' window-mode check as well as the region selection.
 Telluric absorption is the main reason a region's RV can be pulled towards the observatory frame, which is why we mask by default rather than model it.
 
 <a id="regions-max_regions"></a>
 ### `regions.max_regions`
 
 The maximum number of regions kept per method, ranked by their forecast RV information content.
-Default 12.
-The ranking keeps the regions that carry most of the RV information; the rest add little precision and more opportunities for mismatch.
+Default unset, which means no limit; set a number (at least 1) to keep only the best.
+When set, the ranking keeps the regions that carry most of the RV information; the rest add little precision and more opportunities for mismatch.
 
 <a id="regions-continuum_fwhm"></a>
 ### `regions.continuum_fwhm`
 
 How far the continuum windows extend around a feature, in resolution elements.
-Default 5.
+Default 3.
 A wider window gives a better-determined continuum but is more likely to include neighbouring features, which matters most in the crowded spectra of late-M and L dwarfs.
 
 <a id="regions-template_windows"></a>
 ### `regions.template_windows`
 
-The windows for `ccf`, `template_fit` and `forward_mcmc` at R ≤ 5000: `features` (±10 resolution elements around well-modelled atomic lines and CO bandheads) or `full` (every non-telluric span); default `features`.
-Above R 5000 the full spans are always used.
+The windows for `ccf`, `template_fit` and `forward_mcmc` below R 4500 (the edge where vsini is freed): `features` (±10 resolution elements around well-modelled atomic lines and CO bandheads) or `full` (every non-telluric span); default `features`.
+From R 4500 up the full spans are always used.
 We recommend `features` because the synthetic grids reproduce the molecular bands (TiO, VO, CrH, FeH, H2O) of late-M and L dwarfs poorly, which shifts the template RVs band by band; the atomic lines and bandheads are modelled well.
 Use `full` for warmer stars (above ~3650 K), which have no catalogue features at their Teff (see [Stars](#stars-fgk-and-m-dwarfs)).
 The other mode is always run as a check, and its difference enters the template spread, `sys_template`.
@@ -593,7 +600,7 @@ If your Spextool files were already corrected to the barycentre, set `velocity_f
 
 ### Mid and high R (R ≳ 4500)
 
-Above R 4500 vsini is resolved, so `template_fit` fits it (`fit_vsini = true`, set by the regime defaults), and above R 5000 the full non-telluric spans are used, because many resolved lines average down the mismatch of individual bands.
+Above R 4500 vsini is resolved, so `template_fit` fits it (`fit_vsini = true`, set by the regime defaults), and from R 4500 up the full non-telluric spans are used, because many resolved lines average down the mismatch of individual bands.
 Above R 20 000 we recommend `telluric_ref` for spectra that are not telluric-corrected, since the telluric lines tie the RV to the atmosphere rather than to the arc solution and the slit position; build the telluric model first (`rvfitter templates telluric --build`).
 At high R, `forward_mcmc` (several epochs fitted together) and `lsd` (RV and vsini from the mean line profile) become worthwhile.
 For echelle data with a fibre feed, set [`calibration.zero_point_known`](#calibration-zero_point_known) to true, because there is no slit.
@@ -619,7 +626,8 @@ enabled = ["ccf", "template_fit"]
 
 JWST wavelengths are vacuum and already barycentric (the pipeline's `assign_wcs` step), so `auto` applies no further correction.
 A cube has no slit, so the slit-centring term, the DAR and the star − sky constant are not computed.
-The template files must cover the band (2.9–4.1 µm for G395H); the example suggests `rvfitter templates download --grid bt-settl-cifist --teff 1100 1300 --logg 4 5`.
+The template files must cover the band (2.9–4.1 µm for G395H); VHS 1256 b is an L/T object at about 1100–1400 K, where the grid advice ranks `sonora-elfowl`, `sonora-bobcat` and `sonora-diamondback` first below 1300 K and `bt-settl-cifist` first above it, and the near-infrared band needs a grid with files that reach 4.1 µm.
+Our run used `sonora-bobcat` at 1000–1400 K, e.g. `rvfitter templates download --grid sonora-bobcat --teff 1000 1400`, and its best template sat at the 1400 K edge, so we would extend the range upwards before trusting the result.
 We note that the NIRSpec IFU G395H (R ≈ 2000–3000) is in the low-R regime, so the vsini cannot be measured and the absolute zero point rests on the JWST wavelength calibration, which rvfitter cannot check without sky lines.
 
 ### Multi-object spectra (e.g. JWST NIRSpec MOS PRISM)
@@ -633,9 +641,10 @@ The NIRSpec gratings (R ≈ 1000 or 2700) may give RVs, with the same caveats as
 ### Stars (FGK and M dwarfs)
 
 rvfitter can measure stars, but its feature catalogue was built for ultracool dwarfs: its features cover Teff 400–3650 K and 6565–23 535 Å.
-For M dwarfs (2400–3650 K), use the defaults with `bt-settl-cifist` at solar metallicity, or `sand` for metal-poor M subdwarfs (it varies [M/H] from −2.4 to +0.3 dex, with alpha enhancement), and free [`templates.met_range`](#templates-met_range) for those.
+For M dwarfs (2400–3650 K), use the defaults with `bt-settl-cifist` at solar metallicity (`bt-settl-agss2009` is ranked second there), or `sand` for metal-poor M subdwarfs (it varies [M/H] from −2.4 to +0.3 dex, with alpha enhancement), and free [`templates.met_range`](#templates-met_range) for those.
 For FGK stars, no catalogue feature applies at their Teff, so line centring has no lines and the feature windows are empty.
-We therefore recommend `template_fit` and `ccf` with `regions.template_windows = "full"`, and `bt-settl-agss2009` (400–70 000 K, [M/H] −4 to +0.5 dex, [α/M] 0 to 0.4 dex) with a metallicity range, or `bt-settl-cifist` up to 7000 K for solar-metallicity stars.
+We therefore recommend `template_fit` and `ccf` with `regions.template_windows = "full"` (the setting advice gives `full` above 3650 K, the upper Teff limit of the well-modelled features), and `bt-settl-agss2009` (400–70 000 K, [M/H] −4 to +0.5 dex, [α/M] 0 to 0.4 dex) with a metallicity range, or `bt-settl-cifist` up to 7000 K for solar-metallicity stars.
+For a field dwarf of known gravity, `logg_range = 5.0` fits only that gravity and needs fewer templates.
 We note that we have not validated rvfitter on FGK stars, and that dedicated stellar pipelines with line masks tuned for them (e.g. the instrument's own cross-correlation pipeline at high R) are probably more precise there.
 
 ### Galaxies
@@ -665,6 +674,22 @@ All grids are converted to vacuum on reading, and their medium is verified again
 
 We recommend choosing the grid by the physics that dominates the RV windows, rather than by the widest coverage.
 This is because a template RV is set by the positions and shapes of the lines it matches, so a grid that mismodels the dominant opacity (clouds in L dwarfs, CH4 in T dwarfs, metallicity in subdwarfs) shifts the RV even when its Teff is right.
+The setting advice ranks the grids by Teff, using the Teff prior (or the best-fit Teff of the last run), and keeps those whose coverage contains it:
+
+| Teff [K] | Grids, best first |
+|---|---|
+| ≥ 4000 | `bt-settl-agss2009`, `bt-settl-cifist` |
+| 2000–4000 | `bt-settl-cifist`, `bt-settl-agss2009`, `sonora-diamondback`, `sand` |
+| 1300–2000 | `bt-settl-cifist`, `sonora-diamondback`, `sonora-elfowl` |
+| < 1300 | `sonora-elfowl`, `sonora-bobcat`, `sonora-diamondback` |
+
+A [metallicity prior](#templates-met_prior) of −0.5 dex or lower puts `sand`, `lowz` and `bt-settl-agss2009` first.
+The reasons are those above.
+Above 4000 K the clouds and molecular bands that distinguish the other grids are absent, and only `bt-settl-agss2009` varies [M/H] and [α/M] there.
+Between 2000 and 4000 K the CIFIST grid is validated here on M and L dwarfs, and the others serve non-solar metallicity (`bt-settl-agss2009`, `sand`) or cloud comparison (`sonora-diamondback`).
+Between 1300 and 2000 K, in the L dwarfs, clouds shape the spectrum, so the cloudy grids come first.
+Below 1300 K, in the T dwarfs, CH4, CO and NH3 are out of equilibrium and clouds matter less, so the cloud-free disequilibrium grid `sonora-elfowl` comes first.
+
 When in doubt, list two grids in [`templates.grid`](#templates-grid): their spread enters the error as a systematic.
 
 ## References
