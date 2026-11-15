@@ -32,9 +32,9 @@ def test_pypeit_entries_and_selection(tmp_path, caplog):
     assert spec.source == f'{path}[2]' and spec.meta['object'] == 'My Star' and spec.meta['entry'] == 'SPAT0240'
     assert "'auto': the spectra are not named after their sources" in caplog.text
     both = io.read_spectra(path, objects='all')
-    assert [s.meta['object'] for s in both] == ['My Star SPAT0168', 'My Star']  # the target keeps the plain name
+    assert [s.meta['object'] for s in both] == ['My Star SPAT0168 (m)', 'My Star']  # the target keeps the plain name
     assert 'skipping HDU 3 (SPAT0300): median S/N 2.0' in caplog.text
-    assert sorted(archives.group_by_object(both)) == ['My Star', 'My Star SPAT0168']
+    assert sorted(archives.group_by_object(both)) == ['My Star', 'My Star SPAT0168 (m)']
     picked = io.read_spectra(path, objects=['SPAT0300', 1])
     assert [s.meta['hdu'] for s in picked] == [1, 3] and 'is read because input.objects names it' in caplog.text
     with pytest.raises(ValueError, match='selects none'):
@@ -50,10 +50,39 @@ def test_object_names_survive_source_round_trips(tmp_path):
     cfg = config.Config()
     cfg.input.objects = 'all'
     groups = LazyBackend().group_objects([path], cfg)
-    assert groups == {'My Star SPAT0168': [f'{path}[1]'], 'My Star': [f'{path}[2]'],
-                      'My Star SPAT0300': [f'{path}[3]']}
+    assert groups == {'My Star SPAT0168 (m)': [f'{path}[1]'], 'My Star': [f'{path}[2]'],
+                      'My Star SPAT0300 (m)': [f'{path}[3]']}
     for name, sources in groups.items():
         assert list(archives.group_by_object(archives.load_spectra([Path(s) for s in sources]))) == [name]
+
+def test_detector_positions_never_merge_across_files(tmp_path):
+    """Two nights with the same SPAT/SLIT/DET trace names: separate objects, and a source selects its own file only"""
+    from rvfitter.gui.backend import LazyBackend
+    names = ['SPAT0123-SLIT0456-DET01', 'SPAT0300-SLIT0456-DET01']
+    a = _multi_spec1d(tmp_path / 'night1.fits', [17., 86.], names, ['science'] * 2)
+    b = _multi_spec1d(tmp_path / 'night2.fits', [17., 86.], names, ['science'] * 2)
+    spectra = io.read_spectra(a, objects='all') + io.read_spectra(b, objects='all')
+    groups = archives.group_by_object(spectra)
+    assert {k: [s.source for s in v] for k, v in groups.items() if k != 'My Star'} == {
+        'My Star SPAT0123-SLIT0456-DET01 (night1)': [f'{a}[1]'],
+        'My Star SPAT0123-SLIT0456-DET01 (night2)': [f'{b}[1]']}
+    cfg = config.Config()
+    cfg.input.objects = [f'{a}[1]']  # a GUI tick of the night1 trace
+    assert LazyBackend().group_objects([a, b], cfg) == {'My Star SPAT0123-SLIT0456-DET01 (night1)': [f'{a}[1]']}
+    with pytest.raises(ValueError, match='selects none'):
+        io.read_spectra(b, objects=[f'{a}[1]'])
+
+
+def test_named_sources_combine_across_files(tmp_path, caplog):
+    """The same SRCNAME in two exposures is one object, and the files combined are logged"""
+    from rvfitter.gui.backend import LazyBackend
+    a, b = _x1d(tmp_path / 'e1_x1d.fits', ['1229_9', '1229_1']), _x1d(tmp_path / 'e2_x1d.fits', ['1229_3', '1229_9'])
+    caplog.set_level(logging.INFO, logger='rvfitter')
+    groups = LazyBackend().group_objects([a, b], config.Config())
+    assert groups == {'1229_9': [f'{a}[1]', f'{b}[2]'], '1229_1': [f'{a}[2]'], '1229_3': [f'{b}[1]']}
+    assert 'Object 1229_9 combines 2 files: e1_x1d.fits, e2_x1d.fits' in caplog.text
+    assert 'Object 1229_1 combines' not in caplog.text
+
 
 def test_pypeit_mask_objects_are_named_and_all_read(tmp_path):
     path = _multi_spec1d(tmp_path / 'm.fits', [50., 40.], ['SPAT0100', 'SPAT0200'], ['science'] * 2,

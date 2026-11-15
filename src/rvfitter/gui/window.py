@@ -76,7 +76,8 @@ LOG_HEIGHT = 90  # default log pane height [px]
 PROGRESS_WIDTH = 320  # [px], room for 'J1745-1640 · Template fit (2/3) · object 1/3'
 R_PREFIX = {'header': 'R ', 'config': 'R ', 'estimated': 'R≈'}
 ROW_ROLE = Qt.ItemDataRole.UserRole + 1  # True on the rows that show an object's R, then its RV
-ENTRY_ROLE = Qt.ItemDataRole.UserRole + 2  # the entry name of a spectrum of a multi-object file
+ENTRY_ROLE = Qt.ItemDataRole.UserRole + 2  # a multi-object file's spectrum in input.objects: its source name, else
+# its 'file.fits[hdu]' (a detector position, which another file may share)
 
 
 def _file_of(source: str) -> str:
@@ -512,8 +513,8 @@ class MainWindow(QMainWindow):
         return self._regroup(list(self.entries))
 
     def _entry_toggled(self, item: QTreeWidgetItem, column: int) -> None:
-        """A ticked or unticked spectrum: input.objects becomes the names of every ticked one (a name ticked in
-        one file selects it in every file, as the same source observed again)"""
+        """A ticked or unticked spectrum: input.objects becomes every ticked one (a source name ticked in one file
+        selects it in every file, as the same source observed again; an entry without one, only itself)"""
         if column != 0 or item.data(0, ENTRY_ROLE) is None or \
                 (item.checkState(0) == Qt.CheckState.Checked) == bool(item.data(0, ROW_ROLE)):
             return  # not a spectrum, or not a change of its tick (measured rows are the ticked ones)
@@ -605,7 +606,7 @@ class MainWindow(QMainWindow):
                 name = source_object.get(f'{path}[{e.hdu}]')
                 tip = f'HDU {e.hdu}, {e.kind}, {snr}: '
                 if e.usable:
-                    child.setData(0, ENTRY_ROLE, e.name)
+                    child.setData(0, ENTRY_ROLE, e.name if e.named else f'{path}[{e.hdu}]')
                     child.setFlags(child.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     child.setToolTip(0, tip + (f'object {name}' if name else 'not measured'))
                 else:  # visible, greyed and unticked, saying why

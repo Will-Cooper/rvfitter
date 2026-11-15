@@ -264,7 +264,8 @@ def group_by_object(spectra: Sequence[Spectrum], override: Mapping[str, str] | N
 
     ``override`` maps a source ('file.fits[3]' for one entry of a multi-object file), its file path, name or stem, or
     the object name (first hit wins) to a group name.
-    Returns object name → spectra, in order of first appearance.
+    Returns object name → spectra, in order of first appearance. An object combining entries of several multi-object
+    files (one source observed in several exposures) is logged at INFO with those files.
     """
     override = {str(k): normalise_name(v) for k, v in (override or {}).items()}
     groups: dict[str, list[Spectrum]] = {}
@@ -276,6 +277,10 @@ def group_by_object(spectra: Sequence[Spectrum], override: Mapping[str, str] | N
         name = next((override[k] for k in keys if k and k in override), None)
         name = name or obj or stem or 'unnamed'
         groups.setdefault(name, []).append(spec)
+    for name, specs in groups.items():
+        files = list(dict.fromkeys(str(split_source(s.source)[0]) for s in specs if s.source))
+        if len(files) > 1 and any(split_source(s.source)[1] is not None for s in specs):
+            log.info('Object %s combines %d files: %s', name, len(files), ', '.join(Path(f).name for f in files))
     return groups
 
 
