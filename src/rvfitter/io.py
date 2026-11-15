@@ -1224,7 +1224,7 @@ def _read_cube(path: Path, hdu: int | str | None = None, cube: Any = None) -> Ra
     """
     sci, err, header, idx = _load_cube(path, hdu)
     nw, ny, nx = sci.shape
-    position, radius = getattr(cube, 'position', None), getattr(cube, 'radius', None)
+    position, radius = (None, None) if cube is None else (cube.position, cube.radius)  # cube: config.CubeConfig
     if position is None:
         (x, y), centre_source = brightest_spaxel(_collapse(sci)), 'brightest spaxel of the median-collapsed cube'
     else:
