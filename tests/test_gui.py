@@ -716,7 +716,9 @@ def test_setup_says_when_r_is_too_low_for_an_rv(qtbot, win, backend, spectra_dir
     QTest.keyClicks(win.setup.editors['input.resolution'].edit, '100')
     text = win.setup.recommended.text()
     assert text.startswith('R 100 is below') and 'cannot constrain an RV' in text
+    assert 'Recommended' not in text and 'left at the low-R defaults for R 100' in text  # no contradiction
     assert win.setup.recommended.styleSheet() == 'color: #ddaa33'
+    assert win.statusBar().currentMessage() == '3 files, 2 objects loaded.'
 
 
 def test_real_jwst_examples_list_spectra_and_cube():

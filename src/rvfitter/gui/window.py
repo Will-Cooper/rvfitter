@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -459,7 +460,8 @@ class MainWindow(QMainWindow):
         self._merge(loaded)
         if first:
             self._autofill(first)
-        n = sum(len(v) for v in self.groups.values())
+        # sources of multi-object files and cubes are 'file.fits[hdu]': count the files, not the entries
+        n = len({re.sub(r'\[[^\]]*\]$', '', str(s)) for v in self.groups.values() for s in v})
         log.info('Loaded %d file%s in %d object%s.', n, '' if n == 1 else 's', len(self.groups),
                  '' if len(self.groups) == 1 else 's')
         self.statusBar().showMessage(f'{n} files, {len(self.groups)} objects loaded.')

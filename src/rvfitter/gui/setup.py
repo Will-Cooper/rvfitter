@@ -250,8 +250,9 @@ class SetupPanel(QWidget):
         names = [METHOD_LABELS[m] for m, a in self.advice.items() if a.recommended]
         r_text = 'unknown R' if R is None else f'R {R:.0f}' + (' (estimated)' if estimated else '')
         too_low = resolution_too_low(R)
+        lead = 'The methods are left at the low-R defaults' if too_low else 'Recommended'
         self.recommended.setText(f'{too_low}. ' * bool(too_low) +
-                                 f'Recommended for {r_text}, {BAND_TEXT[band]}: {", ".join(names)}. '
+                                 f'{lead} for {r_text}, {BAND_TEXT[band]}: {", ".join(names)}. '
                                  'Hover over a method for why.')
         self.recommended.setStyleSheet(f'color: {theme.colour("flagged", self.recommended.palette()).name()}'
                                        if too_low else '')
