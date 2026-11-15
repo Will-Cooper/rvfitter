@@ -11,6 +11,9 @@ from rvfitter import archives, barycentric, config, io
 from rvfitter.calibration import wavelength_correction as wcorr
 from test_io import WAVE, _multi_spec1d
 
+EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
+
+
 # ----------------------------------------------------------------------------------------------------------------------
 # PypeIt multi-object spec1d
 # ----------------------------------------------------------------------------------------------------------------------
@@ -215,6 +218,19 @@ def test_objects_and_cube_config():
             config.loads(f'[input]\n{bad}\n')
     with pytest.raises(config.ConfigError, match='radius'):
         config.loads('[input.cube]\nradius = 0.0\n')
+
+
+def test_advice_when_r_is_too_low():
+    assert config.resolution_too_low(None) is None and config.resolution_too_low(config.R_MIN_RV) is None
+    why = config.resolution_too_low(100.)
+    assert 'below 500' in why and '2998 km/s' in why
+    low = config.method_advice('low', 100.)
+    assert all(a.reason.startswith(why) for a in low.values())
+    for regime in ('low', 'mid', 'high'):  # the recommendations, and so default_for, do not change
+        plain = config.method_advice(regime)
+        assert {m: (a.recommended, a.options) for m, a in config.method_advice(regime, 100.).items()} == \
+            {m: (a.recommended, a.options) for m, a in plain.items()}
+        assert config.method_advice(regime, 3000.) == plain
 
 
 def test_jwst_resolution_rows():

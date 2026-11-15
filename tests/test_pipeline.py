@@ -269,3 +269,12 @@ def test_results_record_an_estimated_resolution(fakes, monkeypatch):
     assert list(table['rv_ccf_flag'] & results.FLAGS['resolution_implausible'] > 0) == [False, False, True]
     assert (table['resolution'] == 5000.).all()
 
+
+def test_resolution_too_low_is_warned_and_flagged(fakes, monkeypatch, caplog):
+    from dataclasses import replace
+    spectra = [replace(s, resolution=100. if s.meta['object'] == 'C' else s.resolution) for s in fresh_spectra()]
+    monkeypatch.setattr(archives, 'read_spectra', lambda p, **kw: [spectra.pop(0)])
+    caplog.set_level(logging.WARNING, logger='rvfitter')
+    table = results.to_table(pipeline.run(CFG, INPUTS, n_procs=1))
+    assert list(table['rv_ccf_flag'] & results.FLAGS['resolution_too_low'] > 0) == [False, False, True]
+    assert 'C: R 100 is below 500' in caplog.text

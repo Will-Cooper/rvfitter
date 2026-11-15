@@ -20,6 +20,7 @@ import numpy as np
 from . import __version__, archives, barycentric, combine, regions, systematics
 from .calibration import sky_zeropoint
 from .calibration import wavelength_correction as wcorr
+from .config import resolution_too_low
 from .methods import REGISTRY, binary, forward
 from .refit import apply_patch, config_for_object, object_seed, plain
 from .results import EXCLUDE_FLAGS, FLAGS
@@ -226,8 +227,12 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
         for res, fit in zip(per_epoch, fits, strict=True):
             res[forward.METHOD] = fit
     for res_by_method, spec in zip(per_epoch, corrected, strict=True):  # an estimated R flags every measurement
+        too_low = resolution_too_low(spec.resolution)
+        if too_low:
+            log.warning('%s: %s', name, too_low)
         bits = (FLAGS['resolution_estimated'] * (spec.meta.get('resolution_source') == 'estimated')
-                | FLAGS['resolution_implausible'] * bool(spec.meta.get('resolution_implausible')))
+                | FLAGS['resolution_implausible'] * bool(spec.meta.get('resolution_implausible'))
+                | FLAGS['resolution_too_low'] * bool(too_low))
         for meas in (m for r in res_by_method.values() for m in r.measurements):
             meas.flag |= bits
     zp_epochs = _zero_point_terms(corrected, cal_infos, _uncorrect(per_epoch, corrected), cfg, name)

@@ -24,10 +24,11 @@ from typing import Any, NamedTuple, Union, get_args, get_origin, get_type_hints
 
 import tomli_w
 
+from .constants import C_KMS
 from .medium import METHODS as AIR_METHODS
 from .types import Spectrum
 
-__all__ = ['Config', 'ConfigError', 'InputConfig', 'CubeConfig', 'OBJECT_MODES',
+__all__ = ['Config', 'ConfigError', 'InputConfig', 'CubeConfig', 'OBJECT_MODES', 'R_MIN_RV', 'resolution_too_low',
            'VelocityFrameConfig', 'TemplatesConfig', 'MethodsConfig',
            'GroupingConfig', 'RegionsConfig', 'CombineConfig', 'ParallelConfig', 'OutputConfig', 'METHOD_NAMES',
            'load', 'loads', 'dump', 'dumps', 'default_for', 'regime_for', 'method_advice', 'MethodAdvice',
@@ -54,6 +55,9 @@ REGIME_EDGES = (4500., 20000.)
 # the spectral regions themselves always come from the feature catalogue via `rvfitter.regions.select`.
 BAND_OPTICAL_MAX = 11000.  # coverage ending below this is 'optical'
 BAND_NIR_MIN = 9000.  # coverage starting above this (and ending above BAND_OPTICAL_MAX) is 'nir'; else 'mixed'
+# Below this resolving power no RV is constrained: one resolution element, c/R, exceeds 600 km/s, so even a centroid
+# good to a twentieth of it (30 km/s at high S/N) is as large as the RVs of nearby stars and brown dwarfs (tens of km/s)
+R_MIN_RV = 500.
 OBJECT_MODES = ('auto', 'target', 'all')  # input.objects, else a list of entry names / HDU indices
 
 
@@ -629,10 +633,19 @@ class MethodAdvice(NamedTuple):
     options: dict[str, Any]
 
 
-def method_advice(regime: str) -> dict[str, MethodAdvice]:
+def resolution_too_low(resolution: float | None) -> str | None:
+    """Why a spectrum of this R cannot constrain an RV (R below `R_MIN_RV`), else None (also for an unknown R)"""
+    if resolution is None or resolution >= R_MIN_RV:
+        return None
+    return (f'R {resolution:.0f} is below {R_MIN_RV:.0f}: one resolution element is {C_KMS / resolution:.0f} km/s, so '
+            'the spectrum cannot constrain an RV (any value measured is flagged resolution_too_low)')
+
+
+def method_advice(regime: str, resolution: float | None = None) -> dict[str, MethodAdvice]:
     """
     Every method's `MethodAdvice` in ``regime`` ('low', 'mid' or 'high', from `regime_for`); the recommended methods,
-    in this order, are the defaults of `default_for`. The advice does not depend on the band.
+    in this order, are the defaults of `default_for`. The advice does not depend on the band. With a ``resolution``
+    below `R_MIN_RV`, every reason starts with `resolution_too_low`'s statement (the recommendations are unchanged).
     """
     if regime not in ('low', 'mid', 'high'):
         raise ValueError(f"regime must be 'low', 'mid' or 'high', not {regime!r}")
@@ -663,7 +676,9 @@ def method_advice(regime: str) -> dict[str, MethodAdvice]:
                        'RV and vsini from the mean line profile.' if high else
                 'Not recommended below R 20000: the mean line profile needs many resolved lines.'),
     }
-    return {m: MethodAdvice(ok, why, {'fit_vsini': True} if m == 'template_fit' and not low else {})
+    too_low = resolution_too_low(resolution)
+    return {m: MethodAdvice(ok, f'{too_low}. {why}' if too_low else why,
+                            {'fit_vsini': True} if m == 'template_fit' and not low else {})
             for m, (ok, why) in advice.items()}
 
 

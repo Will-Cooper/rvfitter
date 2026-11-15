@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 #: requested template lies in a hole of the grid, i.e. a missing corner file: the nearest point was used),
 #: resolution_estimated (no R in the header or config: R was estimated from the pixel spacing) and
 #: resolution_implausible (that estimate is outside the instrument's documented range; the spectrum may be rebinned)
+#: and resolution_too_low (R below `config.R_MIN_RV`: one resolution element is too wide to constrain an RV)
 FLAGS: dict[str, int] = {
     'fit_failed': 1,
     'few_regions': 2,
@@ -42,6 +43,7 @@ FLAGS: dict[str, int] = {
     'template_grid_hole': 512,
     'resolution_estimated': 1024,
     'resolution_implausible': 2048,
+    'resolution_too_low': 4096,
 }
 
 #: Flags that exclude a measurement from a method's combination and from the adopted RV
