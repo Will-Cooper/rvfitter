@@ -532,8 +532,9 @@ LOCATION_FIELDS = (('input', 'raw_header'), ('input', 'raw_header_dir'), ('templ
 
 def resolve_locations(cfg: Config, base: str | Path) -> Config:
     """A copy of ``cfg`` with its relative file locations (``input.paths``, ``output.path``, `LOCATION_FIELDS`, also
-    inside ``[[refits]]`` patches, and ``grouping.override`` keys that contain a folder) made absolute against
-    ``base``; absolute ones, and override keys that are a file name, stem or object name, are kept."""
+    inside ``[[refits]]`` patches, ``grouping.override`` keys that contain a folder, and ``input.objects`` items
+    ``file.fits[hdu]``) made absolute against ``base``; absolute ones, and override keys and objects that are a file
+    name, stem, object name or HDU number, are kept."""
     cfg, base = copy.deepcopy(cfg), Path(base).resolve()
 
     def fix(p):
@@ -551,6 +552,10 @@ def resolve_locations(cfg: Config, base: str | Path) -> Config:
     if cfg.grouping.override:
         cfg.grouping.override = {fix(k) if Path(k).parent != Path('.') else k: v
                                  for k, v in cfg.grouping.override.items()}
+    if isinstance(cfg.input.objects, list):  # 'file.fits[hdu]' selectors follow input.paths; names and HDUs are kept
+        from .io import split_source  # io imports config
+        cfg.input.objects = [x if not isinstance(x, str) or (sp := split_source(x))[1] is None
+                             else f'{fix(str(sp[0]))}[{sp[1]}]' for x in cfg.input.objects]
     return cfg
 
 
