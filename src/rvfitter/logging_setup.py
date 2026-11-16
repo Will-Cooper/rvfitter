@@ -1,9 +1,63 @@
-"""Logging configuration: console handler on stdout and a full DEBUG log file."""
+"""
+Logging configuration: console handler on stdout and a full DEBUG log file.
+
+The console (and the GUI's log pane) shows an identical INFO-or-higher message once per session (`OnceFilter`): a
+file read at load and again for the run, or by several steps, repeats its warnings word for word. A message that
+differs in any character, e.g. another file's name, is always shown, and the log file keeps every record.
+"""
+import contextlib
 import logging
 import sys
 from pathlib import Path
 
-__all__ = ['configure']
+__all__ = ['configure', 'OnceFilter', 'demoted']
+
+
+class OnceFilter(logging.Filter):
+    """Handler filter: passes DEBUG records, and each distinct (level, message) of INFO or higher once"""
+
+    def __init__(self):
+        super().__init__()
+        self._seen: set[tuple[int, str]] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno < logging.INFO:
+            return True
+        key = (record.levelno, record.getMessage())
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+
+class _Demote(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno not in (logging.INFO, logging.WARNING):
+            return True
+        if not logging.getLogger(record.name).isEnabledFor(logging.DEBUG):
+            return False
+        record.levelno, record.levelname = logging.DEBUG, 'DEBUG'
+        return True
+
+
+@contextlib.contextmanager
+def demoted():
+    """
+    Within the block, INFO and WARNING records of the rvfitter loggers are logged at DEBUG (ERROR is unchanged): for
+    reruns (e.g. the systematics' variants) that would repeat the main run's summaries and warnings, or warn about a
+    variant the main result does not use. The caller reports a variant that fails.
+    """
+    # chisle: process-wide while active; a per-thread switch (contextvar) if runs ever overlap in threads
+    loggers = [lg for name, lg in logging.root.manager.loggerDict.items()
+               if name.startswith('rvfitter') and isinstance(lg, logging.Logger)]
+    demote = _Demote()
+    for lg in loggers:
+        lg.addFilter(demote)
+    try:
+        yield
+    finally:
+        for lg in loggers:
+            lg.removeFilter(demote)
 
 _NOISY = ('astropy', 'matplotlib', 'PIL', 'urllib3', 'numba', 'asyncio')
 
@@ -23,6 +77,7 @@ def configure(verbosity: int = 0, logfile: str | Path | None = None) -> None:
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(level)
     console.setFormatter(logging.Formatter('%(levelname)s %(message)s' if level <= logging.DEBUG else '%(message)s'))
+    console.addFilter(OnceFilter())
     root.addHandler(console)
     if logfile is not None:
         logfile = Path(logfile)

@@ -653,6 +653,17 @@ def test_log_is_collapsed_and_counts_warnings(qtbot, win):
     assert win.log_pane.warn_label.text() == ''
 
 
+def test_log_shows_a_repeated_warning_once(qtbot, win):
+    log = logging.getLogger('rvfitter.test')
+    for msg in ('a.fits: no medium keyword', 'a.fits: no medium keyword', 'b.fits: no medium keyword'):
+        log.warning(msg)
+    log.error('end')
+    qtbot.waitUntil(lambda: 'end' in win.log_pane.plain_text(), timeout=2000)
+    text = win.log_pane.plain_text()
+    assert text.count('a.fits: no medium keyword') == 1 and text.count('b.fits: no medium keyword') == 1
+    assert win.log_pane.warnings == 3
+
+
 @pytest.fixture
 def mos_dir(tmp_path, backend):
     """A multi-object file 'mos' (two usable sources, one without valid pixels, a background slit) and 'single'"""
