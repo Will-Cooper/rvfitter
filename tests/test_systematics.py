@@ -59,6 +59,17 @@ def test_grid_opened_once_and_reruns_at_debug(tmp_path, monkeypatch, caplog):
     assert len(summaries) > 2 and summaries == [logging.INFO] + [logging.DEBUG] * (len(summaries) - 1)
 
 
+def test_grid_reopened_when_a_template_file_is_overwritten(tmp_path):
+    """An in-place overwrite leaves the directory mtime alone; the cached grid and its medium check must not survive"""
+    _, cfg = _toy(tmp_path)
+    cfg.templates.grid = 'toy'
+    first = C.open_grid(cfg.templates)
+    assert C.open_grid(cfg.templates) is first  # cached
+    path = sorted(p for p in (tmp_path / 'g').iterdir() if p.name.startswith('lte'))[0]
+    path.write_text(path.read_text() + '\n')  # same file, new contents
+    assert C.open_grid(cfg.templates) is not first
+
+
 def test_wavelength_zero_point():
     spec = Spectrum(np.linspace(8000., 9000., 10), np.ones(10), np.ones(10), 2000., {'wave_rms': 0.085}, '')
     assert abs(systematics.wavelength_zero_point(spec) - 299792.458 * 0.085 / 8500.) < 1e-6

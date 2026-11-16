@@ -5,6 +5,7 @@ selection, deterministic parallel maps, and the per-window and per-method result
 import copy
 import functools
 import logging
+import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field, replace
@@ -347,7 +348,8 @@ def open_grid(tcfg: Any, name: str | None = None):
     grid → directory; a `medium` given in the config overrides the first grid's declared medium.
 
     Each grid is opened (and its medium verified) once per process: the grid is shared, so callers must not modify
-    it. Editing the directory, its metadata or its manifest opens it afresh.
+    it. Changing the directory, its metadata, its manifest or any template file in it (even overwritten in place)
+    opens it afresh, so the medium is re-verified.
     """
     names = grid_names(tcfg)
     name = name or names[0]
@@ -356,8 +358,9 @@ def open_grid(tcfg: Any, name: str | None = None):
         raise ValueError(f'no templates for grid {name}: set templates.local_dir, or run "rvfitter templates '
                          f'download --grid {name}", or give the method option "template"')
     directory = directory.expanduser().resolve()
-    stamps = tuple(p.stat().st_mtime_ns if p.exists() else None
-                   for p in (directory, directory / T.METADATA_FILE, directory / 'manifest.json'))
+    # every file's (name, mtime, size): an in-place overwrite changes no directory mtime but does change these
+    with os.scandir(directory) as entries:
+        stamps = tuple(sorted((e.name, e.stat().st_mtime_ns, e.stat().st_size) for e in entries if e.is_file()))
     return _open_grid(directory, name, tcfg.medium if name == names[0] else None, stamps)
 
 

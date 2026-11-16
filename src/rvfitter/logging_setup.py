@@ -14,14 +14,18 @@ __all__ = ['configure', 'OnceFilter', 'demoted']
 
 
 class OnceFilter(logging.Filter):
-    """Handler filter: passes DEBUG records, and each distinct (level, message) of INFO or higher once"""
+    """Handler filter: each distinct (level, message) of INFO or WARNING once; DEBUG and ERROR or worse always (a
+    repeated failure must stay visible). `reset` forgets what was seen (e.g. when the log pane is cleared)."""
 
     def __init__(self):
         super().__init__()
         self._seen: set[tuple[int, str]] = set()
 
+    def reset(self) -> None:
+        self._seen.clear()
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno < logging.INFO:
+        if not logging.INFO <= record.levelno < logging.ERROR:
             return True
         key = (record.levelno, record.getMessage())
         if key in self._seen:
