@@ -760,6 +760,13 @@ class MainWindow(QMainWindow):
         if choice == 'download':
             self._download_then_start(cfg, missing)
             return None
+        if choice == 'folder':
+            folder = QFileDialog.getExistingDirectory(
+                self, f'Folder with the original {", ".join(missing)} files', self._last_dir('templates'))
+            if folder:
+                self._remember('templates', folder)
+                self._download_then_start(cfg, missing, folder)
+            return None
         if choice == 'without':
             cfg.methods.enabled = [m for m in cfg.methods.enabled if m not in needs]
             if not cfg.methods.enabled:
@@ -815,24 +822,31 @@ class MainWindow(QMainWindow):
         return buttons.get(box.clickedButton(), 'cancel')
 
     def _ask_missing_templates(self, missing: list[str], needs: list[str]) -> str:
-        """'download', 'without' or 'cancel', from a dialog about the grids `missing` that methods `needs` read"""
+        """
+        'download', 'folder', 'without' or 'cancel', from a dialog about the grids `missing` that methods `needs`
+        read
+        """
         box = QMessageBox(QMessageBox.Icon.Question, 'Templates not downloaded',
                           f'The template grid {", ".join(missing)} is not downloaded, and {", ".join(needs)} '
-                          'need it. Download it now (once; it is kept in the cache), or measure with the '
-                          'model-free methods only?', parent=self)
+                          'need it. Download it now (once; it is kept in the cache), convert it from the original '
+                          'files you already have (the archives or files as distributed on Zenodo), or measure '
+                          'with the model-free methods only?', parent=self)
         buttons = {box.addButton('Download and measure', QMessageBox.ButtonRole.AcceptRole): 'download',
+                   box.addButton('Use files I already have…', QMessageBox.ButtonRole.AcceptRole): 'folder',
                    box.addButton('Measure without template methods', QMessageBox.ButtonRole.ActionRole): 'without',
                    box.addButton(QMessageBox.StandardButton.Cancel): 'cancel'}
         box.exec()
         return buttons.get(box.clickedButton(), 'cancel')
 
-    def _download_then_start(self, cfg: Any, grids: list[str]) -> JobWorker:
-        """Download `grids` in the background (busy bar), then measure with `cfg`"""
+    def _download_then_start(self, cfg: Any, grids: list[str], source_dir: str | None = None) -> JobWorker:
+        """Download `grids` (or convert them from the original files in `source_dir`) in the background (busy
+        bar), then measure with `cfg`"""
+        verb = f'Converting templates from {source_dir}' if source_dir else 'Downloading templates'
         self.measure_btn.setEnabled(False)
         self.progress.setRange(0, 0)
-        self.progress.setFormat('Downloading templates…')
+        self.progress.setFormat(f'{verb}…')
         self.progress.setVisible(True)
-        self.statusBar().showMessage(f'Downloading template grid {", ".join(grids)}…')
+        self.statusBar().showMessage(f'{verb}: {", ".join(grids)}…')
 
         def ok(_none: None) -> None:
             self.setup.show_grid_status()
@@ -841,13 +855,15 @@ class MainWindow(QMainWindow):
         def fail(msg: str) -> None:
             self.progress.setVisible(False)
             self.measure_btn.setEnabled(True)
-            self.statusBar().showMessage('Template download failed.')
-            self._error('Template download failed',
-                        f'{msg}\n\nCheck the internet connection and press Measure RVs again; or choose "Measure '
-                        'without template methods"; or point templates.local_dir (Advanced settings) at a grid '
-                        'you already have.')
+            title = 'Template conversion failed' if source_dir else 'Template download failed'
+            self.statusBar().showMessage(f'{title}.')
+            self._error(title, f'{msg}\n\n' + (
+                'Choose a folder with the original files, or "Download and measure"' if source_dir else
+                'Check the internet connection and press Measure RVs again; or choose "Use files I already '
+                'have…"') + '; or choose "Measure without template methods"; or point templates.local_dir '
+                '(Advanced settings) at a grid you have already converted.')
 
-        return self._job(lambda: self.backend.download_templates(cfg, grids), ok, fail)
+        return self._job(lambda: self.backend.download_templates(cfg, grids, source_dir), ok, fail)
 
     def _start(self, cfg: Any) -> RunWorker:
         n_procs = cfg.parallel.n_procs

@@ -283,6 +283,21 @@ def test_measure_with_missing_grid_downloads_then_measures(qtbot, win, backend, 
     assert win.setup.grid_status.text().startswith('downloaded')
 
 
+@pytest.mark.parametrize('picked', ['/data/raw/sonora_elfowl', ''])
+def test_measure_with_missing_grid_from_own_files(qtbot, win, backend, spectra_dir, monkeypatch, picked):
+    from PySide6.QtWidgets import QFileDialog
+    _load(qtbot, win, spectra_dir)
+    _missing_and_answer(win, backend, monkeypatch, 'folder')
+    monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *a: picked)
+    win.run()
+    if not picked:  # the folder dialog cancelled: nothing happens
+        assert not backend.downloads and win.worker is None and win.measure_btn.isEnabled()
+        return
+    qtbot.waitUntil(lambda: bool(backend.runs) and win.worker is None, timeout=10000)
+    assert backend.downloads == [{'grids': ['bt-settl-cifist'], 'source_dir': picked}]
+    assert win.setup.grid_status.text().startswith('downloaded')
+
+
 def test_measure_with_missing_grid_download_failure_says_what_to_do(qtbot, win, backend, spectra_dir, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     _load(qtbot, win, spectra_dir)

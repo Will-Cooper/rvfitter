@@ -82,9 +82,11 @@ TIPS = {
     'velocity_frame.overrides': 'Values used instead of the header (JSON): ra, dec [deg], mjd (mid-exposure), site '
                                 '(an astropy site name) or site_lat and site_lon [deg], e.g. {"site": "lapalma"}.',
     'templates.grid': 'Model-atmosphere grid(s). Several are searched together and their spread is a systematic. '
-                      'Templates are downloaded and cached on first use.',
-    'templates.local_dir': 'Folder with your own template grid (or JSON {grid: folder}). Leave empty to use the '
-                           'download cache.',
+                      'Templates are downloaded and cached on first use; if you already have the original files, '
+                      'choose "Use files I already have…" at Measure RVs to convert them instead.',
+    'templates.local_dir': 'Folder with an already-converted or your own template grid (or JSON {grid: folder}), '
+                           'used as it is. Leave empty to use the cache. For the original files as distributed '
+                           '(e.g. spectra.zip), use "Use files I already have…" at Measure RVs instead.',
     'templates.medium': 'Medium of the template wavelengths; leave at (none) to take it from the grid\'s metadata.',
     'templates.teff_range': 'Teff range searched [K], e.g. 1500, 2500, or one grid value, e.g. 2000 (fewer templates '
                             'to download and fit). Empty = the Teff prior ± 300 K, or the whole grid without a prior.',

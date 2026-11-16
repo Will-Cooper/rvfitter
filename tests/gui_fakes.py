@@ -274,8 +274,8 @@ class FakeBackend:
     def template_methods(self, cfg):
         return [m for m in cfg.methods.enabled if m != 'linecentre']
 
-    def download_templates(self, cfg, grids):
+    def download_templates(self, cfg, grids, source_dir=None):
         if self.download_error:
             raise ValueError(self.download_error)
-        self.downloads.append({'grids': list(grids)})
+        self.downloads.append({'grids': list(grids), **({'source_dir': source_dir} if source_dir else {})})
         self.missing_grids -= set(grids)

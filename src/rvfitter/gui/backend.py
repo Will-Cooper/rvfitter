@@ -61,7 +61,7 @@ class Backend(Protocol):
 
     def template_methods(self, cfg: Any) -> list[str]: ...
 
-    def download_templates(self, cfg: Any, grids: Sequence[str]) -> None: ...
+    def download_templates(self, cfg: Any, grids: Sequence[str], source_dir: str | None = None) -> None: ...
 
 
 class LazyBackend:
@@ -211,8 +211,11 @@ class LazyBackend:
                 out.append(m)
         return out
 
-    def download_templates(self, cfg: Any, grids: Sequence[str]) -> None:
-        """Download ``grids`` into the cache over the configured parameter ranges (unset: ``templates.download``'s)"""
+    def download_templates(self, cfg: Any, grids: Sequence[str], source_dir: str | None = None) -> None:
+        """
+        Download ``grids`` into the cache over the configured parameter ranges (unset: ``templates.download``'s), or
+        convert them from the original files in the folder ``source_dir`` (no download)
+        """
         from rvfitter import templates
         t = cfg.templates
         ranges: dict[str, Any] = {k: tuple(v) for k, v in (('teff_range', t.teff_range), ('logg_range', t.logg_range),
@@ -221,6 +224,7 @@ class LazyBackend:
         if t.ranges:
             ranges['ranges'] = {k: tuple(v) for k, v in t.ranges.items()}
         for grid in grids:
-            log.info('Downloading template grid %s (%s).', grid, ranges or 'default ranges')
-            templates.download(grid, **ranges)
-            log.info('Download of %s finished.', grid)
+            log.info('%s template grid %s (%s).', f'Converting from {source_dir}:' if source_dir else 'Downloading',
+                     grid, ranges or 'default ranges')
+            templates.download(grid, **ranges, source_dir=source_dir)
+            log.info('Template grid %s ready.', grid)
