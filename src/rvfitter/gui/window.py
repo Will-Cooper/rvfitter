@@ -395,7 +395,8 @@ class MainWindow(QMainWindow):
             next(iter(self.first_spectra), None)
         if name is not None:
             res = next((r for r in self.results if getattr(r, 'object', None) == name), None)
-            form.show_advice(name, self.backend.setting_advice(self.first_spectra[name], form.get_config(), res))
+            dlg.setWindowTitle(f'Advanced settings (recommendations for {name})')
+            form.show_advice(self.backend.setting_advice(self.first_spectra[name], form.get_config(), res))
         dlg.form = form
         dlg.resize(760, 680)
         dlg.open()

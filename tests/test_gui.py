@@ -817,13 +817,14 @@ def test_advanced_groups_start_collapsed(qtbot, win):
 
 def test_advanced_rows_show_comments_advice_and_apply(qtbot, win, spectra_dir):
     from rvfitter.gui import theme
-    from rvfitter.gui.forms import DEFAULT_WHY, guide_url
+    from rvfitter.gui.forms import guide_url
     _load(qtbot, win, spectra_dir)
     dlg = win.advanced_settings()
     rows = dlg.form.rows()
     medium = rows['input.medium']
     assert guide_url('input.medium') in medium.comment.text() and 'More…' in medium.comment.text()
-    assert medium.advice.text() == 'Recommended for alpha: air. the test advice' and not medium.apply.isHidden()
+    assert medium.advice.text() == 'Recommended: air. the test advice' and not medium.apply.isHidden()
+    assert dlg.windowTitle() == 'Advanced settings (recommendations for alpha)'
 
     def colour(row):
         return row.advice.styleSheet().split(': ')[1]
@@ -831,9 +832,10 @@ def test_advanced_rows_show_comments_advice_and_apply(qtbot, win, spectra_dir):
     medium.apply.click()
     assert dlg.form.get_value('input.medium') == 'air'
     assert colour(medium) == theme.colour('primary', medium.palette()).name()
-    assert rows['input.resolution'].advice.text() == 'For alpha: a reason only'
+    assert rows['input.resolution'].advice.text() == 'a reason only'
     assert rows['input.resolution'].apply.isHidden()
-    assert rows['seed'].advice.text() == f'The default suits this spectrum: {DEFAULT_WHY["seed"]}'
+    assert rows['seed'].advice.isHidden() and rows['seed'].apply.isHidden()  # no data-dependent advice: no line
+    assert rows['templates.local_dir'].advice.isHidden()  # nor for a reason-less entry
     dlg.reject()
 
 

@@ -167,53 +167,6 @@ METHOD_TIPS = {  # what each method does; the Setup tab adds why it is or is not
     'forward_mcmc': 'Pixel-level forward model (grid template, vsini, LSF, continuum) sampled by MCMC.',
     'lsd': 'Least-squares deconvolution: the mean line profile against a template line mask; RV and vsini.',
 }
-# why the default of each setting that `config.setting_advice` does not cover suits any spectrum (the Advanced
-# dialog shows it as that setting's recommendation)
-DEFAULT_WHY = {
-    'seed': 'only the Monte Carlo draws depend on it.',
-    'input.paths': 'the GUI uses the spectra you open.',
-    'input.medium_method': 'Ciddor (1996) is the standard air-to-vacuum formula; the others differ by under 1 m/s.',
-    'input.hdu': 'the extension is chosen from the file\'s structure.',
-    'input.raw_header': 'needed only for the slit position angle, if the reduced file lacks it.',
-    'input.raw_header_dir': 'needed only for PypeIt files whose raw frames are elsewhere.',
-    'input.objects': 'auto measures the target, else every spectrum with its own source name.',
-    'input.cube.position': 'the brightest spaxel is the target in most cubes.',
-    'input.cube.radius': '3 spaxels holds most of the light of a point source.',
-    'grouping.override': 'spectra are grouped by the object name in their headers.',
-    'velocity_frame.overrides': 'the header values are used; set them only where the header is wrong or empty.',
-    'templates.local_dir': 'the grids are downloaded to the cache when first needed.',
-    'templates.medium': 'the grid\'s own metadata gives its medium.',
-    'templates.met_range': '[M/H] is held at the prior (or the grid default); free it for subdwarfs.',
-    'templates.alpha_range': '[α/M] is held at the prior (or the grid default).',
-    'templates.ranges': 'the extra axes are held at their defaults.',
-    'templates.teff_prior': 'set it from the spectral type to choose the features and the grid.',
-    'templates.logg_prior': 'the grid\'s default is used.',
-    'templates.met_prior': 'solar; set it for metal-poor objects (the grid advice then ranks the metal-poor grids '
-                           'first).',
-    'templates.alpha_prior': 'the grid\'s default is used.',
-    'methods.binary': 'the single- versus two-template test is needed only for suspected binaries.',
-    'regions.overrides': 'the regions are chosen from the spectrum.',
-    'regions.min_snr': 'features below S/N 5 add noise rather than information.',
-    'regions.telluric_strictness': 'the airmass-dependent threshold suits most sites.',
-    'regions.max_regions': 'every region that passes the S/N and telluric thresholds adds information.',
-    'regions.continuum_fwhm': '3 resolution elements give a local continuum clear of neighbouring features.',
-    'combine.tau_scale': 'the median error sets the scale of the scatter prior.',
-    'combine.systematic_floor': 'add only a known instrument floor.',
-    'calibration.slit_prior': 'auto uses the slit width and the trace FWHM.',
-    'calibration.seeing_fwhm': 'used only when the trace FWHM is unknown.',
-    'calibration.wave_rms_kms': 'the file\'s arc RMS, else the instrument\'s typical value, is used.',
-    'calibration.sky_source': 'needed only for spectra without their own sky.',
-    'calibration.sky_segment_width': '250 Å holds enough sky lines per segment.',
-    'calibration.telluric_source': 'needed only when the input is telluric-corrected.',
-    'calibration.telluric_segment_width': '250 Å holds enough telluric lines per segment.',
-    'calibration.telluric_template': 'modelling the star separates its lines from the telluric ones.',
-    'calibration.wave_valid_range': 'the arc-line range next to a PypeIt file is used.',
-    'output.path': 'results are saved with Export.',
-    'output.formats': 'CSV opens everywhere.',
-    'output.plots': 'the GUI shows the plots in the Diagnostics tab.',
-    'output.plot_style': 'quick needs no LaTeX.',
-    'output.medium': 'vacuum wavelengths are the standard.',
-}
 
 
 def guide_url(path: str = '') -> str:
@@ -603,11 +556,11 @@ class _FieldRow(QWidget):
         self.value: Any = None
 
     def show_advice(self, text: str, value: Any = None) -> None:
-        """Show ``text``; a ``value`` (None: nothing to apply) gets Apply"""
+        """Show ``text`` (none: hide the line); a ``value`` (None: nothing to apply) gets Apply"""
         self.value = value
         self.advice.setText(text)
-        self.advice.show()
-        self.apply.setVisible(value is not None)
+        self.advice.setVisible(bool(text))
+        self.apply.setVisible(bool(text) and value is not None)
         self._colour()
 
     def _colour(self) -> None:
@@ -700,16 +653,13 @@ class ConfigForm(QWidget):
             todo += [(f'{prefix}{n}.', e) for n, e in g.children.items() if isinstance(e, GroupEditor)]
         return out
 
-    def show_advice(self, name: str, advice: dict[str, Any]) -> None:
-        """Under every box, the recommendation for object ``name``: its `config.setting_advice` entry, else why the
-        default suits it (`DEFAULT_WHY`)"""
+    def show_advice(self, advice: dict[str, Any]) -> None:
+        """Under each box with a `config.setting_advice` reason, that recommendation; no line elsewhere (the comment
+        and tooltip explain the setting)"""
         for path, row in self.rows().items():
-            if path in advice:
-                value, reason = advice[path]
-                row.show_advice(f'Recommended for {name}: {_shown(value)}. {reason}' if value is not None else
-                                f'For {name}: {reason}', value)
-            elif path in DEFAULT_WHY:
-                row.show_advice(f'The default suits this spectrum: {DEFAULT_WHY[path]}')
+            value, reason = advice.get(path, (None, ''))
+            row.show_advice(reason and (f'Recommended: {_shown(value)}. {reason}' if value is not None else reason),
+                            value)
 
     def get_value(self, path: str) -> Any:
         ed = self.editor(path)
