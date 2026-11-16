@@ -122,6 +122,9 @@ class LogPane(QWidget):
                 self._append(lvl, msg)
 
     def clear(self) -> None:
+        for f in self.handler.filters:  # a cleared pane shows repeated messages again
+            if hasattr(f, 'reset'):
+                f.reset()
         self._records.clear()
         self.text.clear()
         self.warnings = 0

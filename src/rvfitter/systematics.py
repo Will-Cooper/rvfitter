@@ -21,6 +21,7 @@ from . import regions as _regions
 from .calibration.sky_zeropoint import curve_at
 from .calibration.telluric_zeropoint import frame_factor
 from .calibration.wavelength_correction import arc_kms
+from .logging_setup import demoted
 from .methods import REGISTRY
 from .methods import _common as C
 from .methods.guidance import TEMPLATE_COLUMNS, grid_names
@@ -64,9 +65,10 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
         return out
     seeds = rng.spawn(3)
 
-    def run(c, rgs, seed) -> float:
+    def run(c, rgs, seed) -> float:  # the variants' logs repeat the main run's: DEBUG
         try:
-            return float(measure(spectrum, rgs, c, executor=executor, rng=np.random.default_rng(seed)).rv)
+            with demoted():
+                return float(measure(spectrum, rgs, c, executor=executor, rng=np.random.default_rng(seed)).rv)
         except ValueError as exc:
             log.warning('template spread: a variant could not be measured (%s); it is left out', exc)
             return np.nan
@@ -95,8 +97,9 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
     mode = cfg.regions.template_windows
     other = 'full' if mode == 'features' else 'features'
     out['window_modes'][mode] = run(cfg, regs, seeds[2])
-    sel = _regions.select(spectrum, teff=cfg.templates.teff_prior, methods=[method],
-                          options=dataclasses.replace(_regions.options_for(cfg), template_windows=other))
+    with demoted():
+        sel = _regions.select(spectrum, teff=cfg.templates.teff_prior, methods=[method],
+                              options=dataclasses.replace(_regions.options_for(cfg), template_windows=other))
     out['window_modes'][other] = run(cfg, sel.get(method, []), seeds[2])
     out['sd_templates'] = _sd(out['templates'].values())
     out['sd_grids'] = _sd(out['grids'].values())

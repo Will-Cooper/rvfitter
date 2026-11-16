@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from ..config import METHOD_LABELS
 from ..io import _SPECTRUM_KINDS
+from ..logging_setup import OnceFilter
 from . import theme
 from .backend import Backend, LazyBackend
 from .cube import CubeDialog
@@ -159,6 +160,7 @@ class MainWindow(QMainWindow):
     # ---- construction --------------------------------------------------------------------------------------
     def _build_log(self) -> None:
         self.log_handler = QtLogHandler()
+        self.log_handler.addFilter(OnceFilter())  # a file read at load and again for the run warns once
         self.log_pane = LogPane(self.log_handler)
         root = logging.getLogger('rvfitter')
         root.addHandler(self.log_handler)
