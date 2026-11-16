@@ -345,6 +345,9 @@ def open_grid(tcfg: Any, name: str | None = None):
     The TemplateGrid for one configured grid (``tcfg`` is the TemplatesConfig): its local directory, else the
     downloaded grid in the cache. `local_dir` may be a directory (used for the first grid) or a mapping
     grid → directory; a `medium` given in the config overrides the first grid's declared medium.
+
+    Each grid is opened (and its medium verified) once per process: the grid is shared, so callers must not modify
+    it. Editing the directory, its metadata or its manifest opens it afresh.
     """
     names = grid_names(tcfg)
     name = name or names[0]
@@ -352,12 +355,21 @@ def open_grid(tcfg: Any, name: str | None = None):
     if directory is None:
         raise ValueError(f'no templates for grid {name}: set templates.local_dir, or run "rvfitter templates '
                          f'download --grid {name}", or give the method option "template"')
+    directory = directory.expanduser().resolve()
+    stamps = tuple(p.stat().st_mtime_ns if p.exists() else None
+                   for p in (directory, directory / T.METADATA_FILE, directory / 'manifest.json'))
+    return _open_grid(directory, name, tcfg.medium if name == names[0] else None, stamps)
+
+
+@functools.lru_cache(maxsize=16)
+def _open_grid(directory: Path, name: str, medium: str | None, stamps: tuple) -> T.TemplateGrid:
+    """open_grid's cached factory: `stamps` (the mtimes) only key the cache"""
     meta = None
-    if tcfg.medium and name == names[0]:
-        base = T._read_metadata(Path(directory)) or T.KNOWN_GRIDS.get(name)
+    if medium:
+        base = T._read_metadata(directory) or T.KNOWN_GRIDS.get(name)
         if base is None:
             raise ValueError(f'unknown grid {name!r} and no metadata in {directory}')
-        meta = replace(base, medium=tcfg.medium)
+        meta = replace(base, medium=medium)
     return T.TemplateGrid(directory, grid=name, meta=meta)
 
 
