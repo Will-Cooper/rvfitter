@@ -25,7 +25,9 @@ import hashlib
 import http.client
 import json
 import logging
+import os
 import re
+import tempfile
 import tomllib
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -630,8 +632,6 @@ def verify_medium(grid: TemplateGrid, teff: float | None = None, logg: float | N
 # ---------------------------------------------------------------------------------------------------------------
 def cache_dir() -> Path:
     """The user cache directory for downloaded templates (platformdirs; overridable with $RVFITTER_CACHE)"""
-    import os
-
     import platformdirs
     env = os.environ.get('RVFITTER_CACHE')
     return Path(env) if env else Path(platformdirs.user_cache_dir('rvfitter')) / 'templates'
@@ -705,14 +705,16 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
              logg_range: tuple[float, float] = (4.5, 5.5), met_range: tuple[float, float] | None = None,
              alpha_range: tuple[float, float] | None = None, *, ranges: Mapping[str, tuple[float, float]] | None = None,
              directory: str | Path | None = None, fetch: Callable[[str], bytes] | None = None, verify: bool = True,
-             source: str = 'auto') -> TemplateGrid:
+             source: str = 'auto', source_dir: str | Path | None = None) -> TemplateGrid:
     """
     Download a template grid into the cache (`directory`, default `cache_dir() / grid`) and open it.
 
     The ranges are inclusive; an unranged met/alpha (or extra axis, e.g. ``ranges={'co': (0.5, 1.)}``) is held at
     the grid default. `source` is 'svo', 'zenodo' or 'auto' (the grid's one source: SVO if it serves the
-    grid, else Zenodo; the manifest records the source). `fetch` (URL → bytes) replaces the SVO GET (tests,
-    proxies); `verify` verifies, or for 'auto' measures, the medium.
+    grid, else Zenodo; the manifest records the source). `source_dir` instead converts the grid's original
+    distributed files (the Zenodo archives, or the files extracted from them) from that folder, with no download
+    (`grid_sources.convert_folder`). `fetch` (URL → bytes) replaces the SVO GET (tests, proxies); `verify`
+    verifies, or for 'auto' measures, the medium.
     """
     from . import grid_sources
     if source not in ('auto', 'svo', 'zenodo'):
@@ -727,6 +729,18 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
             'alpha': tuple(alpha_range) if alpha_range is not None else (defaults['alpha'],) * 2,
             **{a: tuple(r) for a, r in (ranges or {}).items()}}
     directory = Path(directory) if directory is not None else cache_dir() / grid
+    if source_dir is not None:
+        if source != 'auto':
+            raise ValueError(f'source_dir converts files from a folder; source={source!r} does not apply')
+        if grid not in grid_sources.ZENODO_GRIDS:
+            raise ValueError(
+                f'grid {grid} cannot be converted from its original files: rvfitter converts only the grids '
+                f'distributed on Zenodo ({", ".join(sorted(grid_sources.ZENODO_GRIDS))}). Download {grid} instead '
+                f'(no source_dir), or put its spectra as two-column text files (wavelength [Å], flux) in a folder '
+                f'and set templates.local_dir to it')
+        for axis in meta.extra_axes:
+            want.setdefault(axis, (defaults[axis],) * 2)
+        return _convert_folder(meta, want, Path(source_dir), directory, verify)
     directory.mkdir(parents=True, exist_ok=True)
     # each known grid has one automatic source: SVO if it serves the grid, else its Zenodo record
     if meta.svo_model is not None and source in ('auto', 'svo'):
@@ -757,12 +771,10 @@ def _finish(directory: Path, meta: GridMeta, manifest_path: Path, manifest: dict
     return tg
 
 
-def _download_zenodo(meta: GridMeta, want: dict, directory: Path, verify: bool) -> TemplateGrid:
-    """Download from the grid's Zenodo record (see `grid_sources`); files are written in the generic format"""
-    from . import grid_sources
+def _generic_writer(meta: GridMeta, directory: Path, manifest: dict, media: set) -> Callable:
+    """The `write` callback of `grid_sources`: a model → '<directory>/<generic name>.part', recorded in `manifest`
+    (and its declared medium in `media`); returns the final path"""
     defaults = meta.defaults()
-    manifest_path, manifest = _manifest(directory)
-    media = set()
 
     def write(params, wave, flam, medium, prov):
         p = {a: params.get(a, defaults.get(a, 0.)) for a in meta.axes}
@@ -774,14 +786,67 @@ def _download_zenodo(meta: GridMeta, want: dict, directory: Path, verify: bool) 
         if medium:
             media.add(medium)
         return path
+    return write
 
-    paths = grid_sources.download_zenodo(meta.name, want, directory, axes=meta.axes, write=write)
+
+def _finish_converted(meta: GridMeta, directory: Path, manifest_path: Path, manifest: dict, media: set,
+                      verify: bool) -> TemplateGrid:
+    """`_finish` for a grid converted from its Zenodo files: the provenance and any header-declared medium"""
+    from . import grid_sources
     pv = grid_sources.provenance(meta.name)
-    log.info('%s: %d models from Zenodo in %s', meta.name, len(paths), directory)
     log.info('%s: licence %s, Zenodo record %s, DOI %s; please cite: %s', meta.name, pv['license'], pv['record'],
              pv['doi'], pv['citation'])
     medium = media.pop() if len(media) == 1 else meta.medium  # a header-declared medium is still verified
     return _finish(directory, replace(meta, medium=medium, **pv), manifest_path, manifest, verify)
+
+
+def _download_zenodo(meta: GridMeta, want: dict, directory: Path, verify: bool) -> TemplateGrid:
+    """Download from the grid's Zenodo record (see `grid_sources`); files are written in the generic format"""
+    from . import grid_sources
+    manifest_path, manifest = _manifest(directory)
+    media = set()
+    paths = grid_sources.download_zenodo(meta.name, want, directory, axes=meta.axes,
+                                         write=_generic_writer(meta, directory, manifest, media))
+    log.info('%s: %d models from Zenodo in %s', meta.name, len(paths), directory)
+    return _finish_converted(meta, directory, manifest_path, manifest, media, verify)
+
+
+def _lattice(lo: float, hi: float, step: float) -> np.ndarray:
+    """The multiples of `step` within [lo, hi], or [lo] for a single value"""
+    if lo == hi:
+        return np.array([lo])
+    return np.arange(np.ceil(lo / step - 1e-9) * step, hi + 1e-9, step)
+
+
+def _convert_folder(meta: GridMeta, want: dict, folder: Path, directory: Path, verify: bool) -> TemplateGrid:
+    """
+    Convert the grid's original files in `folder` (`grid_sources.convert_folder`) into `directory`. The models are
+    converted into a temporary folder next to `directory` and moved into place only if every requested Teff/log g
+    point (the multiples of `AXIS_SCALE` within the ranges) is present; otherwise nothing is written and the error
+    names the missing points and the expected files.
+    """
+    from . import grid_sources
+    spec = grid_sources.ZENODO_GRIDS[meta.name]
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    manifest, media = {}, set()
+    with tempfile.TemporaryDirectory(prefix=f'.{directory.name}-', dir=directory.parent) as tmp:
+        paths = grid_sources.convert_folder(meta.name, folder, want, axes=meta.axes,
+                                            write=_generic_writer(meta, Path(tmp), manifest, media))
+        have = [(manifest[p.name]['teff'], manifest[p.name]['logg']) for p in paths]
+        missing = [(t, g) for t in _lattice(*want['teff'], AXIS_SCALE['teff'])
+                   for g in _lattice(*want['logg'], AXIS_SCALE['logg'])
+                   if not any(abs(t - a) < 1e-6 and abs(g - b) < 0.01 for a, b in have)]
+        if not paths or missing:
+            what = (f'models at Teff/log g {", ".join(f"{t:g}/{g:g}" for t, g in missing)}' if paths and missing
+                    else f'models within {want}')
+            raise FileNotFoundError(f'{folder} has no {meta.name} {what}; expected {spec.files}. Nothing was '
+                                    f'written; add the files or narrow the ranges')
+        directory.mkdir(exist_ok=True)
+        for p in paths:
+            os.replace(p, directory / p.name)
+    manifest_path, old = _manifest(directory)
+    log.info('%s: %d models converted from %s into %s', meta.name, len(paths), folder, directory)
+    return _finish_converted(meta, directory, manifest_path, {**old, **manifest}, media, verify)
 
 
 def _nearest(rows: Sequence[Mapping[str, float]], axis: str, value: float) -> list[float]:
@@ -873,7 +938,7 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog='rvfitter templates', description='Manage template grids.')
     sub = parser.add_subparsers(dest='action', required=True)
-    d = sub.add_parser('download', help='download a grid from the SVO theory server')
+    d = sub.add_parser('download', help='download a grid (SVO or Zenodo), or convert its original files (--from)')
     d.add_argument('--grid', default='bt-settl-cifist', choices=sorted(KNOWN_GRIDS))
     d.add_argument('--teff', nargs=2, type=float, default=(1200., 3000.), metavar=('MIN', 'MAX'), help='K')
     d.add_argument('--logg', nargs=2, type=float, default=(4.5, 5.5), metavar=('MIN', 'MAX'))
@@ -884,6 +949,9 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
     d.add_argument('--dir', default=None)
     d.add_argument('--source', choices=('auto', 'svo', 'zenodo'), default='auto',
                    help='where to download from (auto: SVO for the BT-Settl grids, Zenodo for the others)')
+    d.add_argument('--from', dest='source_dir', default=None, metavar='DIR',
+                   help='convert the original files (the Zenodo archives, or the files extracted from them) in DIR '
+                        'instead of downloading')
     ls = sub.add_parser('list', help='list the grids in the cache or a directory, or those available on SVO')
     ls.add_argument('--dir', default=None)
     ls.add_argument('--available', action='store_true', help='query SVO for the known grids')
@@ -904,7 +972,7 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
         extra = {a: (float(lo), float(hi)) for a, lo, hi in args.range}
         tg = download(args.grid, tuple(args.teff), tuple(args.logg), None if args.met is None else tuple(args.met),
                       None if args.alpha is None else tuple(args.alpha), ranges=extra, directory=args.dir,
-                      source=args.source)
+                      source=args.source, source_dir=args.source_dir)
         log.info('%s: %d templates in %s (medium %s)', tg.name, len(tg.files), tg.directory, tg.meta.medium)
     elif args.action == 'list':
         if args.available:
