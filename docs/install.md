@@ -89,7 +89,11 @@ The BT-Settl grids come from the Spanish Virtual Observatory theory server (SVO,
 Sonora Bobcat, Diamondback, Elf Owl and SAND come from Zenodo as whole files (CC-BY-4.0; cite the papers in `rvfitter.templates.KNOWN_GRIDS`).
 `--source` forces one.
 Each BT-Settl spectrum from SVO is about 60 MB at full resolution, so download only the Teff/log g range you need.
-If a server is down, copy a grid obtained elsewhere into `<cache>/<grid>/`, or point to any folder with `local_dir = "/path/to/grid"` under `[templates]` in your config (`rvfitter init spectrum.fits` writes one to edit).
+If a server is down, copy a grid obtained elsewhere into `<cache>/<grid>/`, or point to any folder with `local_dir = "/path/to/grid"` under `[templates]` in your config (`rvfitter init spectrum.fits` writes one to edit); `local_dir` is for a grid already converted by rvfitter, or your own models, read as it is.
+
+**Original grid files you already have.**
+If you already have a Sonora (Bobcat, Diamondback, Elf Owl) or SAND grid as distributed on Zenodo, convert it from that folder instead of downloading it: `rvfitter templates download --grid sonora-elfowl --from /path/to/sonora_elfowl --teff 1000 1400 --logg 4.5 5.5`, or "Use files I already have…" at Measure RVs in the GUI.
+The folder may hold the record's archives (e.g. `spectra.zip`, `spectra_m+0.0.tar.gz`) or the files extracted from them; it is only read, and the converted grid goes into the cache as a download would ([settings.md](settings.md#templates-from-files)).
 
 **Plots and LaTeX.** By default (`plot_style = "quick"` under `[output]`) rvfitter draws its figures with bundled Computer Modern fonts; no LaTeX installation is needed.
 For paper-ready figures typeset by LaTeX, set `plot_style = "paper"`; this needs `latex` and `dvipng` (TeX Live, MiKTeX or MacTeX), and rvfitter stops with a clear message if they are missing.

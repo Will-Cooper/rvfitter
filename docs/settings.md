@@ -211,7 +211,23 @@ Listing two physically different grids is the most direct way to see how much th
 
 A folder with your own template grid, or a table `{grid = folder}` for several grids; default unset (the download cache).
 A folder needs either an `rvfitter_grid.toml` metadata file or a known grid's file names.
-Use it for a grid that cannot be downloaded (e.g. LOWZ) or for your own models.
+Use it for a grid that is already converted (e.g. a cache folder copied from another machine), for a grid that cannot be downloaded (e.g. LOWZ) or for your own models; it is read as it is.
+For the original files as distributed (e.g. `spectra.zip`), see the next two sections.
+
+<a id="templates-download"></a>
+### Getting a grid: download
+
+A grid that is not in the cache is downloaded when you press Measure RVs ("Download and measure"), or with `rvfitter templates download --grid G --teff MIN MAX --logg MIN MAX`.
+The BT-Settl grids come from SVO, one spectrum per request, and the Sonora grids and SAND from their Zenodo records; the files are checked, converted and kept in the cache (`RVFITTER_CACHE`), with a `manifest.json` of their source and checksums.
+
+<a id="templates-from-files"></a>
+### Getting a grid: original files you already have
+
+If you already have a grid's original files, as distributed on Zenodo, rvfitter converts them instead of downloading them: choose "Use files I already have…" at Measure RVs and pick the folder, or run `rvfitter templates download --grid G --from DIR` with the same ranges.
+The folder (searched with its subfolders) holds either the record's archives (`spectra_m+0.0.tar.gz` for Sonora Bobcat, `spectra.zip` for Diamondback, `teff_<min>_<max>.tar.gz` for Elf Owl, `SAND.zip`) or the files extracted from them (e.g. `sp_t1000g316nc_m0.0.gz`, `spectra_logzz_4.0_teff_1000.0_grav_316.0_mh_0.0_co_1.0.nc`); the extracted files are used when present, because they are quicker to read.
+The conversion, the medium check and the manifest (which records the folder) are those of a download, and the result goes into the cache in the same way, so the folder itself is never changed.
+Every requested Teff/log g point (in steps of 100 K and 0.5 dex within the ranges) must be in the folder; otherwise nothing is written and the error names the missing points.
+The BT-Settl grids and LOWZ cannot be converted this way: download BT-Settl, and use [`templates.local_dir`](#templates-local_dir) for LOWZ.
 
 <a id="templates-medium"></a>
 ### `templates.medium`

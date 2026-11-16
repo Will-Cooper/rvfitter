@@ -34,7 +34,7 @@ uv tool install "rvfitter[all] @ git+https://github.com/Will-Cooper/rvfitter@mai
 
 ```bash
 rvfitter doctor                                   # check the installation
-rvfitter templates download --teff 1500 2500      # model grids (see docs/install.md)
+rvfitter templates download --teff 1500 2500      # model grids: downloaded, or --from DIR of original files (docs/install.md)
 rvfitter measure my_spectra.zip --out results.csv # file, folder, .zip or tarball
 rvfitter gui                                      # the same in a window
 ```
