@@ -42,10 +42,7 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 # the default of calibration.wavelength_correction: every text (GUI, CLI, advice) reads it from here
-WAVELENGTH_CORRECTION_DEFAULT = 'none'
-# why: the pre-registered test on the GTC sample (docs/methods.md, "Sky correction on the GTC sample")
-WAVELENGTH_DEFAULT_WHY = ('On the GTC sample of 20 objects with literature RVs, the sky correction gave no significant '
-                          'improvement, so it is opt-in (docs/methods.md).')
+WAVELENGTH_CORRECTION_DEFAULT = 'none'  # why: docs/methods.md, "Sky correction on the GTC sample"
 WAVELENGTH_MODE_TEXT = {  # what each mode applies
     'sky-if-needed': 'the OH sky zero-point curve, only where it is well measured at the regions and significant',
     'sky': 'the OH sky zero-point curve, whenever it is measured',
@@ -688,8 +685,8 @@ def resolution_too_low(resolution: float | None) -> str | None:
     """Why a spectrum of this R cannot constrain an RV (R below `R_MIN_RV`), else None (also for an unknown R)"""
     if resolution is None or resolution >= R_MIN_RV:
         return None
-    return (f'R {resolution:.0f} is below {R_MIN_RV:.0f}: one resolution element is {C_KMS / resolution:.0f} km/s, so '
-            'the spectrum cannot constrain an RV (any value measured is flagged resolution_too_low)')
+    return (f'R {resolution:.0f} is below {R_MIN_RV:.0f}: one resolution element ({C_KMS / resolution:.0f} km/s) '
+            'cannot constrain an RV, so any RV is flagged')
 
 
 def method_advice(regime: str, resolution: float | None = None) -> dict[str, MethodAdvice]:
@@ -766,17 +763,13 @@ def default_for(spectrum: Spectrum) -> Config:
 SPACE_SITES = ('JWST',)  # meta['site'] of observatories without telluric absorption or sky lines
 # what each known grid models (from its KNOWN_GRIDS reference), for the grid advice
 GRID_PHYSICS = {
-    'bt-settl-cifist': 'BT-Settl CIFIST (Allard et al. 2012): condensate settling (clouds) with the CIFIST solar '
-                       'abundances, the reference grid for M and L dwarfs, validated on the GTC/OSIRIS benchmark; '
-                       'solar metallicity only',
-    'bt-settl-agss2009': 'BT-Settl AGSS2009 (Allard et al. 2012): [M/H] and [α/M] vary, and it extends to hot stars',
-    'sonora-diamondback': 'Sonora Diamondback (Morley et al. 2024): silicate and iron clouds (fsed), which shape the '
-                          'spectra of L and L/T-transition dwarfs',
-    'sonora-elfowl': 'Sonora Elf Owl (Mukherjee et al. 2024): disequilibrium chemistry (Kzz) and C/O, cloud-free, '
-                     'as T and Y dwarfs need',
-    'sonora-bobcat': 'Sonora Bobcat (Marley et al. 2021): cloud-free, equilibrium chemistry, C/O; T and Y dwarfs',
-    'sand': 'SAND (Alvarado et al. 2024): metal-poor, α-enhanced cool dwarfs',
-    'lowz': 'LOWZ (Meisner et al. 2021): metal-poor, cloud-free cool atmospheres with disequilibrium chemistry',
+    'bt-settl-cifist': 'Cloud-condensate settling for M and L dwarfs',
+    'bt-settl-agss2009': 'Variable [M/H] and [α/M], up to hot stars',
+    'sonora-diamondback': 'Silicate and iron clouds of L and L/T dwarfs',
+    'sonora-elfowl': 'Cloud-free, disequilibrium chemistry for T and Y dwarfs',
+    'sonora-bobcat': 'Cloud-free, equilibrium chemistry for T and Y dwarfs',
+    'sand': 'Metal-poor, α-enhanced cool dwarfs',
+    'lowz': 'Metal-poor, cloud-free cool atmospheres',
 }
 # grid preference by Teff band [K] (the first lower edge the Teff reaches); `grid_advice` keeps the grids covering it
 GRID_ORDER = ((4000., ('bt-settl-agss2009', 'bt-settl-cifist')),
@@ -786,11 +779,11 @@ GRID_ORDER = ((4000., ('bt-settl-agss2009', 'bt-settl-cifist')),
 METAL_POOR = -0.5  # [dex]; a templates.met_prior at or below this ranks the metal-poor grids first
 METAL_POOR_GRIDS = ('sand', 'lowz', 'bt-settl-agss2009')
 REGIME_GRID = {'low': 'bt-settl-cifist', 'mid': 'bt-settl-cifist', 'high': 'bt-settl-agss2009'}  # no Teff known
-REGIME_TARGETS = {'low': 'M and L dwarfs', 'mid': 'M and L dwarfs', 'high': 'FGK and M stars'}
 
 
 class SettingAdvice(NamedTuple):
-    """A recommended value of one setting (None: no value to apply; the reason says what to do) and why"""
+    """A recommended value of one setting (None: no value to apply) and why ('' when there is nothing specific to the
+    spectrum to say: the GUI then shows no line)"""
     value: Any
     reason: str
 
@@ -814,49 +807,39 @@ def _template_advice(cfg: Config, regime: str, teff: float | None, source: str) 
     t = cfg.templates
     if teff is None:
         g = REGIME_GRID[regime]
-        return {'templates.grid': SettingAdvice(g, f'No Teff known (no Teff prior, no run yet): at {regime} R the '
-                                                   f'usual targets are {REGIME_TARGETS[regime]}, so {GRID_PHYSICS[g]}. '
-                                                   'Set Templates > Teff prior for a better choice.'),
-                'templates.teff_range': SettingAdvice(None, 'No Teff known: search the whole grid.'),
-                'templates.logg_range': SettingAdvice(None, 'No Teff known: search the whole grid.')}
+        return {'templates.grid': SettingAdvice(g, f'{GRID_PHYSICS[g]}; set the Teff prior for a firmer choice.'),
+                'templates.teff_range': SettingAdvice(None, ''), 'templates.logg_range': SettingAdvice(None, '')}
     ranked = grid_advice(teff, t.met_prior)
     if not ranked:
-        none = SettingAdvice(None, f'No known grid covers {teff:.0f} K ({source}): use a local grid that does '
-                                   '(Templates > Local folder).')
-        return dict.fromkeys(('templates.grid', 'templates.teff_range', 'templates.logg_range'), none)
-    best, why = ranked[0]
-    others = ', '.join(g for g, _ in ranked[1:])
+        return {'templates.grid': SettingAdvice(None, f'No known grid covers {teff:.0f} K ({source}): use a local '
+                                                      'grid (Templates > Local folder).'),
+                'templates.teff_range': SettingAdvice(None, ''), 'templates.logg_range': SettingAdvice(None, '')}
+    best = ranked[0][0]
     lo, hi = KNOWN_GRIDS[best].coverage['teff']
     glo, ghi = KNOWN_GRIDS[best].coverage['logg']
     half = TEMPLATE_DEFAULTS['teff_window']
     return {
-        'templates.grid': SettingAdvice(best, f'From {source} ({teff:.0f} K): {why}.' +
-                                        f' Also covering it: {others}.' * bool(others)),
+        'templates.grid': SettingAdvice(best, ranked[0][1] + f'; also {", ".join(g for g, _ in ranked[1:3])}'
+                                        * (len(ranked) > 1) + '.'),
         'templates.teff_range': SettingAdvice((max(lo, teff - half), min(hi, teff + half)),
-                                              f'±{half:.0f} K around {source} ({teff:.0f} K), within {best}; widen it '
-                                              'if the fit reaches an edge, or give one grid value to fit only it.'),
+                                              f'{source} {teff:.0f} K ± {half:.0f} K.'),
         'templates.logg_range': SettingAdvice((max(glo, 4.5), min(ghi, 5.5)),
-                                              f'Below 4000 K ({source}): field dwarfs and brown dwarfs; lower the '
-                                              'minimum for young, low-gravity objects, or give one value (e.g. 5.0) '
-                                              'to download and fit fewer templates.') if teff < 4000. else
-        SettingAdvice(None, f'At {teff:.0f} K ({source}) giants are possible: search the whole grid.'),
+                                              f'Field dwarfs at {teff:.0f} K; lower the minimum for young objects.')
+        if teff < 4000. else SettingAdvice(None, f'At {teff:.0f} K giants are possible: search the whole grid.'),
     }
 
-
 def wavelength_status(spectrum: Spectrum, cfg: Config) -> str:
-    """One plain line for the Setup tab: is there a sky spectrum, what the mode applies, and its typical size"""
+    """One plain line for the Setup tab: is there a sky spectrum, and what the mode applies"""
     cal = cfg.calibration
     mode = cal.wavelength_correction
     has_sky = spectrum.sky is not None or bool(cal.sky_source)
     if not has_sky and mode != 'telluric':
-        return f'No sky spectrum: no sky zero point to measure, so {mode} applies nothing.'
+        return 'No sky spectrum: nothing to apply.'
     sky = 'Sky spectrum in the file' if spectrum.sky is not None else \
         f'Sky from {Path(cal.sky_source).name}' if cal.sky_source else 'No sky spectrum'
-    is_default = mode == WAVELENGTH_CORRECTION_DEFAULT
-    why = f' {WAVELENGTH_DEFAULT_WHY}' if is_default else ''
-    opt_in = ' Opt in to sky-if-needed to apply the sky curve.' if mode == 'none' and has_sky else ''
-    return f'{sky}; {mode}{" (the default)" * is_default} applies {WAVELENGTH_MODE_TEXT[mode]}.{why}{opt_in} ' \
-           f'{WAVELENGTH_SIZE_TEXT}'
+    applies = 'zero point measured, not applied (none)' if mode == 'none' else \
+        f'{mode} applies {WAVELENGTH_MODE_TEXT[mode]}'
+    return f'{sky}: {applies}.'
 
 def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = None) -> dict[str, SettingAdvice]:
     """
@@ -876,69 +859,46 @@ def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = Non
     r_src = 'settings' if typed else meta.get('resolution_source', 'header')
     too_low = resolution_too_low(R)
     r_why = ('Unknown R: the low-R defaults are used; type the instrument\'s R.' if R is None else
-             f'R {R:.0f} as set in the settings, used for every spectrum.' if typed else
-             f'R {R:.0f} is outside the plausible range: type the instrument\'s R.'
-             if not typed and meta.get('resolution_implausible') else
-             f'R {R:.0f} was estimated from the pixel spacing (2.5 pixels per resolution element): type the '
-             'instrument\'s R if you know it.' if r_src == 'estimated' else
-             f'R {R:.0f} from the {r_src}: leave it empty, so that each spectrum keeps its own.')
-    out = {'input.resolution': SettingAdvice(None, f'{too_low}. {r_why}' if too_low else r_why)}
+             '' if typed else
+             f'R {R:.0f} is implausible: type the instrument\'s R.' if meta.get('resolution_implausible') else
+             f'R {R:.0f} estimated from the pixel spacing: type the instrument\'s R if known.'
+             if r_src == 'estimated' else '')
+    out = {'input.resolution': SettingAdvice(None, ' '.join(t for t in (too_low and f'{too_low}.', r_why) if t))}
     medium, m_src = meta.get('medium_in'), str(meta.get('medium_source', ''))
-    out['input.medium'] = SettingAdvice(None, f'The header gives {medium} ({m_src.removeprefix("header:")}): auto '
-                                              'reads it.') if m_src.startswith('header') else \
-        SettingAdvice(medium, f'No header keyword gives the medium; {medium} is the reader\'s assumption '
-                              f'({m_src or "none"}): change it if you know otherwise.')
+    out['input.medium'] = SettingAdvice(None, '') if m_src.startswith('header') else \
+        SettingAdvice(medium, 'Assumed (no header keyword): change it if you know otherwise.')
     tellcorr = 'tellcorr' in Path(spectrum.source.split('[')[0]).name.lower()
     out['input.telluric_corrected'] = (
-        SettingAdvice(True, 'Space data: there is no telluric absorption.') if space else
-        SettingAdvice(True, 'A telluric-corrected (_tellcorr) product.') if tellcorr else
-        SettingAdvice(None, 'Ground-based: tick it only if the reduction removed the telluric absorption.'))
+        SettingAdvice(True, 'Space data: no telluric absorption.') if space else
+        SettingAdvice(True, 'A telluric-corrected (_tellcorr) product.') if tellcorr else SettingAdvice(None, ''))
     st = barycentric.status(spectrum, 'auto', cfg.velocity_frame.frame, cfg.velocity_frame.overrides)
-    out['velocity_frame.correction'] = (
-        SettingAdvice('skip', f'{st.text}; auto skips it too.') if st.state == 'corrected' else
-        SettingAdvice(None, f"{st.text}: set skip (already corrected) or apply (not corrected; give "
-                            'velocity_frame.overrides).') if st.state == 'unknown' else
-        SettingAdvice('auto', f'{st.text}.'))
-    out['velocity_frame.frame'] = SettingAdvice(st.frame, f'The frame of the wavelengths ({st.detail}).') \
-        if st.state == 'corrected' else \
-        SettingAdvice(None, 'The frame the RVs are reported in: barycentric is usual.')
+    out['velocity_frame.correction'] = SettingAdvice(
+        {'corrected': 'skip', 'unknown': None}.get(st.state, 'auto'), f'{st.text}.')
+    out['velocity_frame.frame'] = SettingAdvice(st.frame, f'The wavelengths\' frame ({st.detail}).') \
+        if st.state == 'corrected' else SettingAdvice(None, '')
     if spectrum.sky is not None or cfg.calibration.sky_source:
-        where = 'the file\'s sky spectrum' if spectrum.sky is not None else 'Sky source'
+        where = 'the file' if spectrum.sky is not None else 'Sky source'
         out['calibration.wavelength_correction'] = SettingAdvice(
-            WAVELENGTH_CORRECTION_DEFAULT, f'OH sky lines are available ({where}). The default, '
-                                           f'{WAVELENGTH_CORRECTION_DEFAULT}, applies '
-                                           f'{WAVELENGTH_MODE_TEXT[WAVELENGTH_CORRECTION_DEFAULT]}. '
-                                           f'{WAVELENGTH_DEFAULT_WHY} Opt in to sky-if-needed as a check: it moves '
-                                           'the RVs by up to tens of km/s.')
+            WAVELENGTH_CORRECTION_DEFAULT, f'Sky lines in {where}: try sky-if-needed as a check (it can move RVs by '
+                                           'tens of km/s).')
     else:
         out['calibration.wavelength_correction'] = SettingAdvice(
-            'none', 'No sky spectrum, and space data have no sky lines.' if space else
-            'No sky spectrum (none in the file, no Sky source): nothing to measure the zero point against; on a '
-            'spectrum that is not telluric-corrected, "telluric" uses the star\'s own telluric lines.')
-    out['calibration.zero_point_known'] = SettingAdvice(True, f'{meta["no_slit"]}: no slit, so no slit-centring '
-                                                              'term.') if meta.get('no_slit') else \
-        SettingAdvice(None, 'Slit data (or unknown): keep the slit-centring term; tick it for fibre data.')
-    teff, source = (cfg.templates.teff_prior, 'the Teff prior') if cfg.templates.teff_prior is not None else \
-        (fit_teff, 'the best-fit Teff of the last run') if fit_teff is not None else (None, '')
+            'none', '' if space or tellcorr or cfg.input.telluric_corrected else
+            'No sky spectrum: only telluric can measure the zero point.')
+    out['calibration.zero_point_known'] = SettingAdvice(True, f'{meta["no_slit"]}: no slit-centring term.') \
+        if meta.get('no_slit') else SettingAdvice(None, '')
+    teff, source = (cfg.templates.teff_prior, 'Teff prior') if cfg.templates.teff_prior is not None else \
+        (fit_teff, 'last-fit Teff') if fit_teff is not None else (None, '')
     r_max = SelectOptions.template_windows_r_max
     feature_teff = max(f.teff_max for f in features() if f.model_fidelity == 'good')  # the catalogue's limit
     out['regions.template_windows'] = (
         SettingAdvice(None, f'Not used from R {r_max:.0f} up.') if R is not None and R >= r_max else
-        SettingAdvice('full', f'{teff:.0f} K ({source}) is above the {feature_teff:.0f} K limit of the feature '
-                              'catalogue: there are no feature windows at this Teff.')
-        if teff is not None and teff > feature_teff else
-        SettingAdvice('features', f'Below R {r_max:.0f} the synthetic grids reproduce the molecular bands of late-M '
-                                  'and L dwarfs poorly, so the CCF and template fit use windows around well-modelled '
-                                  'atomic and CO features.'))
+        SettingAdvice('full', f'No feature windows above {feature_teff:.0f} K ({source} {teff:.0f} K).')
+        if teff is not None and teff > feature_teff else SettingAdvice('features', ''))
     advice = method_advice(regime, R)
     rec = [m for m, a in advice.items() if a.recommended]
-    out['methods.enabled'] = SettingAdvice(rec, f'{too_low}. ' * bool(too_low) + f'For {regime} R ({band}): '
-                                           f'{", ".join(METHOD_LABELS[m] for m in rec)}; the Setup tab says why '
-                                           'for each method.')
-    out['methods.options'] = SettingAdvice({m: advice[m].options for m in rec if advice[m].options},
-                                           f'The default options of the recommended methods at {regime} R.')
-    out['parallel.n_procs'] = SettingAdvice(None, 'auto: all but one core, as the forward model runs.'
-                                            if 'forward_mcmc' in cfg.methods.enabled else
-                                            'auto: serial, the fastest without the forward model.')
+    out['methods.enabled'] = SettingAdvice(rec, f'For {regime} R ({band}).')
+    out['methods.options'] = SettingAdvice({m: advice[m].options for m in rec if advice[m].options}, '')
+    out['parallel.n_procs'] = SettingAdvice(None, '')
     out.update(_template_advice(cfg, regime, teff, source))
     return out

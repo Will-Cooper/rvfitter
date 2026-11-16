@@ -42,14 +42,14 @@ def test_setting_advice_for_the_examples(name, expected):
     be, cfg, spec = _example(name)
     advice = be.setting_advice(spec, cfg)
     assert {k: _values(advice)[k] for k in expected} == expected
-    assert all(a.reason for a in advice.values())
     if name == 'gtc_osiris':  # the velocity frame is unknown: the reader's note says what to do
         assert 'heliocentric' in advice['velocity_frame.correction'].reason
-        assert advice['templates.grid'].reason.startswith('From the Teff prior (2100 K)')
+        assert advice['templates.grid'].reason.startswith('Cloud-condensate settling')
+        assert advice['templates.teff_range'].reason == 'Teff prior 2100 K ± 300 K.'
     if name == 'jwst_mos':
         assert 'below 500' in advice['input.resolution'].reason
     if name == 'near_infrared':
-        assert advice['templates.grid'].reason.startswith('No Teff known')
+        assert advice['templates.teff_range'].reason == advice['templates.logg_range'].reason == ''
 
 
 def test_advice_follows_a_typed_resolution():
@@ -57,19 +57,18 @@ def test_advice_follows_a_typed_resolution():
     _, cfg, spec = _example('gtc_osiris')
     cfg.input.resolution = 50000.
     advice = config.setting_advice(spec, cfg)
-    assert advice['input.resolution'].reason == 'R 50000 as set in the settings, used for every spectrum.'
+    assert advice['input.resolution'].reason == ''  # the user's own value: nothing to add
     assert advice['methods.enabled'].value == [m for m, a in config.method_advice('high', 50000.).items()
                                                if a.recommended]
 
 
-def test_every_setting_has_advice_or_a_default_reason():
-    """The data-dependent settings (always the same paths) and DEFAULT_WHY together cover every field once"""
-    pytest.importorskip('PySide6')  # DEFAULT_WHY and TIPS live with the GUI forms
-    from rvfitter.gui.forms import DEFAULT_WHY, TIPS
+def test_advice_paths_are_fixed_settings():
+    """setting_advice always gives the same paths, each a setting the Advanced dialog shows"""
+    pytest.importorskip('PySide6')  # TIPS lives with the GUI forms
+    from rvfitter.gui.forms import TIPS
     _, cfg, spec = _example('jwst_ifu')
     advised = set(config.setting_advice(spec, cfg))
-    assert advised == set(config.setting_advice(spec, config.Config(), fit_teff=1500.))
-    assert not advised & set(DEFAULT_WHY) and advised | set(DEFAULT_WHY) == set(TIPS)
+    assert advised == set(config.setting_advice(spec, config.Config(), fit_teff=1500.)) and advised <= set(TIPS)
 
 
 @pytest.mark.parametrize('teff, met, grids', [
@@ -92,14 +91,14 @@ def test_grid_advice_by_teff(teff, met, grids):
 def test_template_advice_follows_the_teff_source():
     _, cfg, spec = _example('jwst_ifu')
     fit = config.setting_advice(spec, cfg, fit_teff=1000.)
-    assert fit['templates.grid'].value == 'sonora-elfowl' and 'last run' in fit['templates.grid'].reason
+    assert fit['templates.grid'].value == 'sonora-elfowl' and 'last-fit Teff' in fit['templates.teff_range'].reason
     cfg.templates.teff_prior = 5800.  # the prior wins over the fit; FGK: no catalogue features at this Teff
     hot = config.setting_advice(spec, cfg, fit_teff=1000.)
     assert hot['templates.grid'].value == 'bt-settl-agss2009' and hot['regions.template_windows'].value == 'full'
     assert hot['templates.logg_range'].value is None
     cfg.templates.teff_prior = 100.  # no grid covers it: said plainly, nothing to apply
     cold = config.setting_advice(spec, cfg)
-    assert cold['templates.grid'] == cold['templates.teff_range'] and cold['templates.grid'].value is None
+    assert cold['templates.grid'].value is None and cold['templates.teff_range'] == (None, '')
     assert 'No known grid covers 100 K' in cold['templates.grid'].reason
 
 
@@ -125,7 +124,6 @@ def test_location_fields_name_real_fields():
 def test_wavelength_status_says_what_the_mode_does():
     be, cfg, spec = _example('gtc_osiris')  # its sky comes from the spec1d (calibration.sky_source)
     text = config.wavelength_status(spec, cfg)
-    assert text.startswith('Sky from spec1d_') and f'{config.WAVELENGTH_CORRECTION_DEFAULT} (the default)' in text
-    assert config.WAVELENGTH_SIZE_TEXT in text
+    assert text.startswith('Sky from spec1d_') and text.endswith('measured, not applied (none).')
     be, cfg, spec = _example('near_infrared')
     assert config.wavelength_status(spec, cfg).startswith('No sky spectrum')

@@ -191,7 +191,8 @@ class FakeBackend:
         return cfg
 
     def setting_advice(self, spectrum, cfg, result=None):
-        return {'input.medium': ('air', 'the test advice'), 'input.resolution': (None, 'a reason only')}
+        return {'input.medium': ('air', 'the test advice'), 'input.resolution': (None, 'a reason only'),
+                'templates.local_dir': ('x', '')}
 
     def frame_status(self, spectrum, cfg):
         from rvfitter.barycentric import FrameStatus
