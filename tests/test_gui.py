@@ -180,7 +180,9 @@ def test_download_passes_every_configured_range(monkeypatch):
     cfg = config.Config()
     cfg.templates.teff_range, cfg.templates.logg_range, cfg.templates.ranges = (1500, 2500), (4., 5.), {'co': (0.5, 1)}
     LazyBackend().download_templates(cfg, ['sand'])
-    assert calls == [('sand', {'teff_range': (1500, 2500), 'logg_range': (4., 5.), 'ranges': {'co': (0.5, 1)}})]
+    LazyBackend().download_templates(cfg, ['sand'], '/raw/sand')
+    want = {'teff_range': (1500, 2500), 'logg_range': (4., 5.), 'ranges': {'co': (0.5, 1)}}
+    assert calls == [('sand', {**want, 'source_dir': None}), ('sand', {**want, 'source_dir': '/raw/sand'})]
 
 
 def test_advanced_dialog_round_trip_keeps_the_config_hash(qtbot, tmp_path):
