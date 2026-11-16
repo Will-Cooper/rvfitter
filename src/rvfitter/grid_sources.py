@@ -10,6 +10,9 @@ files that cover the requested parameters, a file-name parser and a reader for t
   whole stream is checked against the MD5 checksum that Zenodo publishes (a mismatch deletes the converted
   files and raises).
 
+`convert_folder` reads the same distributed files (the archives, or the model files extracted from them) from a
+local folder instead, through the same parsers, readers and checks.
+
 Every file is first written under a temporary name ('.part') in its final directory and renamed into place only
 after its checksum has passed, so the cache never holds an unverified model; on any error the files written by
 the call are removed. Transient network errors (timeouts, connection errors, HTTP 429 and 5xx) are retried
@@ -44,8 +47,8 @@ from pathlib import Path, PurePosixPath
 
 import numpy as np
 
-__all__ = ['ZENODO_API', 'ZenodoGrid', 'ZENODO_GRIDS', 'download_zenodo', 'record_files', 'provenance',
-           'MAX_MEMBER_BYTES', 'LICENCE', 'RETRIES']
+__all__ = ['ZENODO_API', 'ZenodoGrid', 'ZENODO_GRIDS', 'download_zenodo', 'convert_folder', 'record_files',
+           'provenance', 'MAX_MEMBER_BYTES', 'LICENCE', 'RETRIES']
 
 log = logging.getLogger(__name__)
 
@@ -299,6 +302,7 @@ class ZenodoGrid:
     parse: Callable[[str], dict | None]
     read: Callable[[bytes], tuple[np.ndarray, np.ndarray, str | None]]
     member_filter: Callable[[str], bool] = staticmethod(lambda path: True)
+    files: str = ''  # the distributed files, as `convert_folder` expects them in a folder (for error messages)
     doi: str = ''
     citation: str = ''  # what to cite for the models (the record is CC-BY-4.0)
 
@@ -306,19 +310,27 @@ class ZenodoGrid:
 # record ids verified against the live Zenodo API on 2026-10-27 (titles, CC-BY-4.0 licences and file lists)
 ZENODO_GRIDS: dict[str, ZenodoGrid] = {
     'sonora-bobcat': ZenodoGrid(('5063476',), files_bobcat, parse_bobcat, read_bobcat,
+                                files="the record's spectra_m<[M/H]>.tar.gz, or its extracted "
+                                      'sp_t<Teff>g<g>nc_m<[M/H]>[.gz] files',
                                 doi='10.5281/zenodo.5063476',
                                 citation='Marley et al. 2021, ApJ 920, 85 (Sonora Bobcat); Zenodo record 5063476'),
     'sonora-diamondback': ZenodoGrid(('12735103',), _single('spectra.zip'), parse_diamondback, read_diamondback,
+                                     files="the record's spectra.zip, or its extracted "
+                                           't<Teff>g<g>{f<fsed>|nc}_m<[M/H]>_co<C/O>.spec files',
                                      doi='10.5281/zenodo.12735103',
                                      citation='Morley et al. 2024, ApJ 975, 59 (Sonora Diamondback); '
                                               'Zenodo record 12735103'),
     'sonora-elfowl': ZenodoGrid(('15150865', '15150874', '15150881'), files_elfowl, parse_elfowl, read_elfowl,
+                                files="the records' teff_<min>_<max>.tar.gz, or their extracted "
+                                      'spectra_logzz_<kzz>_teff_<Teff>_grav_<g>_mh_<[M/H]>_co_<C/O>.nc files',
                                 doi='10.5281/zenodo.15150865 / 15150874 / 15150881',
                                 citation='Mukherjee et al. 2024, ApJ 963, 73 (Sonora Elf Owl); Zenodo records '
                                          '15150865, 15150874, 15150881'),
     # SAND: only the "recommended" models (continuous synthetic photometry; see the record's README)
     'sand': ZenodoGrid(('11582126',), _single('SAND.zip'), parse_sand, read_sand,
                        member_filter=staticmethod(lambda path: '/recommended/' in f'/{path}'),
+                       files="the record's SAND.zip, or a folder holding its extracted recommended/ folder of "
+                             'SAND_z<[M/H]>_a<[a/M]>_t<Teff>_g<logg>_*.fits files',
                        doi='10.5281/zenodo.11582126',
                        citation='Alvarado et al. 2024, RNAAS 8, 134 (SAND; doi:10.3847/2515-5172/ad4bd7); '
                                 'Zenodo record 11582126'),
@@ -426,6 +438,10 @@ def download_zenodo(grid: str, want: Mapping[str, tuple[float, float]], director
     spec = ZENODO_GRIDS[grid]
     stage = _Staging()
     written: list[Path] = []
+
+    def accept(params: dict) -> bool:
+        return _wanted(params, want, axes)
+
     try:
         for record in spec.records:
             for f in record_files(record):
@@ -436,11 +452,14 @@ def download_zenodo(grid: str, want: Mapping[str, tuple[float, float]], director
                             license=LICENCE, doi=f'10.5281/zenodo.{record}')
                 if f['key'].endswith('.zip'):
                     # range reads retry individually
-                    written += _from_zip(spec, f, want, axes, write, prov, stage)
+                    with _open_zip(f['url'], f['size']) as z:
+                        written += _from_zip(spec, z, f['key'], accept, write, prov, stage)
                 elif f['key'].endswith(('.tar.gz', '.tgz')):
                     # a dropped stream restarts the file
-                    written += _retry(lambda f=f, prov=prov: _from_targz(spec, f, want, axes, write, prov, stage),
-                                      f'Streaming {f["key"]}')
+                    md5 = f['checksum'].split(':', 1)[-1]
+                    written += _retry(lambda f=f, prov=prov, md5=md5: _from_targz(
+                        spec, lambda: _open_stream(f['url']), f['key'], md5, accept, write, prov, stage),
+                        f'Streaming {f["key"]}')
                 else:
                     log.warning('Zenodo %s: unsupported file type %s', record, f['key'])
         if not written:
@@ -451,46 +470,103 @@ def download_zenodo(grid: str, want: Mapping[str, tuple[float, float]], director
     return written
 
 
-def _from_zip(spec, f, want, axes, write, prov, stage) -> list[Path]:
+def convert_folder(grid: str, folder: Path, want: Mapping[str, tuple[float, float]], *, axes: tuple[str, ...],
+                   write: Callable[[dict, np.ndarray, np.ndarray, str | None, dict], Path]) -> list[Path]:
+    """
+    Convert the models of `grid` within `want` from a folder of the files its Zenodo record distributes (searched
+    recursively): the extracted model files (e.g. 'sp_t1000g316nc_m0.0.gz', 'spectra_logzz_..._co_1.0.nc') or the
+    record's archives (e.g. 'spectra_m+0.0.tar.gz', 'spectra.zip'). Extracted files are used when any lies within
+    `want`; the archives are read only otherwise. A model found twice is converted once (first path in sorted
+    order). Zip members are checked by their CRC-32; a local tar.gz has no published checksum to check against.
+    `write` and the clean-up on failure are as in `download_zenodo`.
+    """
+    spec = ZENODO_GRIDS[grid]
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise NotADirectoryError(f'{folder} is not a folder')
+    files = sorted(p for p in folder.rglob('*') if p.is_file())
+    seen: set[tuple] = set()
+
+    def accept(params: dict) -> bool:
+        key = tuple(sorted(params.items()))
+        if key in seen or not _wanted(params, want, axes):
+            return False
+        seen.add(key)
+        return True
+
+    stage = _Staging()
+    written: list[Path] = []
+    prov = dict(source='folder', folder=str(folder.resolve()), license=LICENCE)
+    try:
+        for path in files:
+            rel = path.relative_to(folder).as_posix()
+            params = _member_params(spec, rel, path.stat().st_size)
+            if params is not None and accept(params):
+                w, flam, medium = spec.read(path.read_bytes())
+                out = write(params, w, flam, medium, {**prov, 'file': rel})
+                stage.add(out)
+                stage.commit([out])
+                written.append(out)
+        if not written:
+            for path in (p for p in files if spec.select_file(p.name, want)):
+                log.info('%s: reading %s (%.0f MB)', grid, path, path.stat().st_size / 1e6)
+                fprov = {**prov, 'file': path.relative_to(folder).as_posix()}
+                if path.name.endswith('.zip'):
+                    with zipfile.ZipFile(path) as z:
+                        written += _from_zip(spec, z, path.name, accept, write, fprov, stage)
+                elif path.name.endswith(('.tar.gz', '.tgz')):
+                    written += _from_targz(spec, lambda path=path: open(path, 'rb'), path.name, None, accept,
+                                           write, fprov, stage)
+    except BaseException:
+        stage.rollback()
+        raise
+    return written
+
+
+def _member_params(spec: ZenodoGrid, path: str, size: int) -> dict | None:
+    """The parameters of the archive member or extracted file `path`, or None if it is not a model to convert"""
+    if not spec.member_filter(path):
+        return None
+    name = _safe_name(path)
+    params = spec.parse(name) if name else None
+    if params is not None and size > MAX_MEMBER_BYTES:
+        log.warning('Skipping %s: %d bytes exceeds the member limit', path, size)
+        return None
+    return params
+
+
+def _from_zip(spec, z: zipfile.ZipFile, key: str, accept, write, prov, stage) -> list[Path]:
     out = []
-    with _open_zip(f['url'], f['size']) as z:
-        for info in z.infolist():
-            if info.is_dir() or not spec.member_filter(info.filename):
-                continue
-            name = _safe_name(info.filename)
-            params = spec.parse(name) if name else None
-            if params is None or not _wanted(params, want, axes):
-                continue
-            if info.file_size > MAX_MEMBER_BYTES:
-                log.warning('Skipping %s: %d bytes exceeds the member limit', info.filename, info.file_size)
-                continue
-            data = z.read(info)  # zipfile checks the member's CRC-32; repeated here so that it is explicit
-            if zlib.crc32(data) != info.CRC:
-                raise OSError(f'CRC-32 mismatch for {info.filename} in {f["key"]}')
-            w, flam, medium = spec.read(data)
-            path = write(params, w, flam, medium, {**prov, 'member': info.filename, 'crc32': f'{info.CRC:08x}'})
-            stage.add(path)
-            stage.commit([path])  # the member has been verified
-            out.append(path)
+    for info in z.infolist():
+        if info.is_dir():
+            continue
+        params = _member_params(spec, info.filename, info.file_size)
+        if params is None or not accept(params):
+            continue
+        data = z.read(info)  # zipfile checks the member's CRC-32; repeated here so that it is explicit
+        if zlib.crc32(data) != info.CRC:
+            raise OSError(f'CRC-32 mismatch for {info.filename} in {key}')
+        w, flam, medium = spec.read(data)
+        path = write(params, w, flam, medium, {**prov, 'member': info.filename, 'crc32': f'{info.CRC:08x}'})
+        stage.add(path)
+        stage.commit([path])  # the member has been verified
+        out.append(path)
     return out
 
 
-def _from_targz(spec, f, want, axes, write, prov, stage) -> list[Path]:
+def _from_targz(spec, open_raw: Callable, key: str, md5: str | None, accept, write, prov, stage) -> list[Path]:
+    """Convert the accepted members of a tar.gz stream; given `md5` (Zenodo's), the whole stream is checked"""
     out = []
     mark = len(stage.staged)
-    raw = _open_stream(f['url'])
+    raw = open_raw()
     reader = _HashingReader(raw)
     try:
         with tarfile.open(fileobj=io.BufferedReader(reader, buffer_size=1 << 20), mode='r|gz') as tar:
             for member in tar:
-                if not member.isfile() or not spec.member_filter(member.name):
+                if not member.isfile():
                     continue
-                name = _safe_name(member.name)
-                params = spec.parse(name) if name else None
-                if params is None or not _wanted(params, want, axes):
-                    continue
-                if member.size > MAX_MEMBER_BYTES:
-                    log.warning('Skipping %s: %d bytes exceeds the member limit', member.name, member.size)
+                params = _member_params(spec, member.name, member.size)
+                if params is None or not accept(params):
                     continue
                 data = tar.extractfile(member).read()
                 w, flam, medium = spec.read(data)
@@ -503,13 +579,12 @@ def _from_targz(spec, f, want, axes, write, prov, stage) -> list[Path]:
         raise
     finally:
         raw.close()
-    expected = f['checksum'].split(':', 1)[-1]
-    if reader.md5.hexdigest() != expected:
+    if md5 is not None and reader.md5.hexdigest() != md5:
         _discard(stage, mark)
-        raise OSError(f'MD5 mismatch for {f["key"]} (Zenodo {expected}, got {reader.md5.hexdigest()}); the '
+        raise OSError(f'MD5 mismatch for {key} (Zenodo {md5}, got {reader.md5.hexdigest()}); the '
                       f'{len(out)} converted file(s) were deleted')
     stage.commit(out)  # only now do the models appear under their final names
-    log.info('%s: MD5 verified (%s), %d model(s) converted', f['key'], expected, len(out))
+    log.info('%s: %s%d model(s) converted', key, f'MD5 verified ({md5}), ' if md5 else '', len(out))
     return out
 
 

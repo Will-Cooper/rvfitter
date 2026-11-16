@@ -340,3 +340,108 @@ def test_provenance_recorded(fake_zenodo, tmp_path, caplog):
     assert tg.meta.license == 'CC-BY-4.0'
     assert 'licence CC-BY-4.0' in caplog.text and '11582126' in caplog.text and 'please cite' in caplog.text
     assert T.TemplateGrid(tmp_path / 'sand').meta.doi == '10.5281/zenodo.11582126'
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# the original files from a folder (templates.download(source_dir=...)): the same conversion, no download
+# ---------------------------------------------------------------------------------------------------------------
+def _converted(directory):
+    """{file name: bytes} of the converted models of a grid directory"""
+    return {p.name: p.read_bytes() for p in sorted(directory.glob('t*.txt'))}
+
+
+def _vacuum_lines(w):
+    f = np.ones_like(w)
+    for _, lam in T.medium_check_lines():
+        f *= 1. - 0.5 * np.exp(-0.5 * ((w - lam) / 0.8) ** 2)
+    return f
+
+
+def _raw_bobcat_archive(tmp_path):
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    (raw / 'spectra_m+0.0.tar.gz').write_bytes((tmp_path / 'spectra_m+0.0.tar.gz').read_bytes())
+    return raw
+
+
+@pytest.mark.parametrize('layout', ['archive', 'extracted'])
+def test_bobcat_folder_equals_zenodo(fake_zenodo, tmp_path, layout):
+    zen = T.download('sonora-bobcat', (1800., 1900.), (4.5, 5.0), directory=tmp_path / 'zen', source='zenodo')
+    if layout == 'archive':
+        raw = _raw_bobcat_archive(tmp_path)
+    else:  # the members as extracted from the same archive, with its non-model 'parameters' file
+        raw = tmp_path / 'raw'
+        with tarfile.open(tmp_path / 'spectra_m+0.0.tar.gz') as tar:
+            for m in tar.getmembers():
+                if not m.name.startswith('..'):
+                    (raw / m.name).parent.mkdir(parents=True, exist_ok=True)
+                    (raw / m.name).write_bytes(tar.extractfile(m).read())
+    tg = T.download('sonora-bobcat', (1800., 1900.), (4.5, 5.0), directory=tmp_path / 'loc', source_dir=raw)
+    assert len(tg.files) == 4 and _converted(tmp_path / 'loc') == _converted(tmp_path / 'zen')
+    assert tg.meta.medium == zen.meta.medium == 'vacuum' and tg.meta.doi == zen.meta.doi
+    man = json.loads((tmp_path / 'loc' / 'manifest.json').read_text())
+    assert all(v['source'] == 'folder' and v['folder'] == str(raw.resolve()) for v in man.values())
+
+
+def test_sand_folder_equals_zenodo(fake_zenodo, tmp_path):
+    T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'zen', source='zenodo')
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    (raw / 'SAND.zip').write_bytes((tmp_path / 'SAND.zip').read_bytes())
+    T.download('sand', (1900., 2000.), (5.0, 5.0), directory=tmp_path / 'loc', source_dir=raw)
+    assert len(_converted(tmp_path / 'loc')) == 2 and _converted(tmp_path / 'loc') == _converted(tmp_path / 'zen')
+
+
+def test_extracted_files_preferred_over_archives(tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'spectra').mkdir(parents=True)
+    (raw / 'spectra_m+0.0.tar.gz').write_bytes(b'not a tar.gz')  # Bobcat's folders hold both: never opened
+    for teff in (1800, 1900):
+        name, data = _bobcat_text(teff, 1000)
+        (raw / name.removesuffix('.gz')).write_bytes(gzip.decompress(data))  # the m-0.5 folder: uncompressed
+    tg = T.download('sonora-bobcat', (1800., 1900.), (5.0, 5.0), directory=tmp_path / 'loc', source_dir=raw)
+    assert len(tg.files) == 2
+
+
+def test_diamondback_and_elfowl_folders(tmp_path):
+    import h5py
+    um = np.linspace(0.6, 1.2, 20000)
+    raw = tmp_path / 'db'
+    raw.mkdir()
+    with zipfile.ZipFile(raw / 'spectra.zip', 'w') as z:  # as in record 12735103: spectra/<name>.spec
+        for teff in (1300, 1400):
+            body = '\n'.join(f'{a:.6f} {b:.6e}' for a, b in zip(um, _vacuum_lines(um * 1e4), strict=True))
+            z.writestr(f'spectra/t{teff}g1000f2_m0.0_co1.0.spec', 'h1\nh2\nh3\n' + body + '\n')
+    tg = T.download('sonora-diamondback', (1300., 1400.), (5.0, 5.0), directory=tmp_path / 'dbo', source_dir=raw)
+    assert len(tg.files) == 2 and tg.meta.medium == 'vacuum' and tg.bounds()['fsed'] == (2., 2.)
+    raw = tmp_path / 'eo'
+    raw.mkdir()
+    for teff in (1300., 1400.):  # as extracted from the records' teff_<min>_<max>.tar.gz
+        with h5py.File(raw / f'spectra_logzz_4.0_teff_{teff}_grav_1000.0_mh_0.0_co_1.0.nc', 'w') as h:
+            h['wavelength'] = um
+            h['flux'] = _vacuum_lines(um * 1e4)
+    tg = T.download('sonora-elfowl', (1300., 1400.), (5.0, 5.0), directory=tmp_path / 'eoo', source_dir=raw)
+    assert len(tg.files) == 2 and tg.meta.medium == 'vacuum' and tg.bounds()['kzz'] == (4., 4.)
+
+
+def test_folder_missing_points_writes_nothing(fake_zenodo, tmp_path):
+    raw = _raw_bobcat_archive(tmp_path)
+    out = tmp_path / 'cache' / 'sonora-bobcat'
+    with pytest.raises(FileNotFoundError, match=r'2100/5.*spectra_m<\[M/H\]>\.tar\.gz.*Nothing was written'):
+        T.download('sonora-bobcat', (1800., 2100.), (5.0, 5.0), directory=out, source_dir=raw)
+    assert not out.exists() and not list(out.parent.iterdir())  # no temporary folder left either
+    with pytest.raises(FileNotFoundError, match='no sonora-bobcat models within'):
+        T.download('sonora-bobcat', (1800., 1900.), (5.0, 5.0), directory=out, source_dir=out.parent)
+
+
+def test_folder_unsupported_grid(tmp_path):
+    with pytest.raises(ValueError, match='cannot be converted from its original files'):
+        T.download('bt-settl-cifist', directory=tmp_path / 'b', source_dir=tmp_path)
+    assert not (tmp_path / 'b').exists()
+
+
+def test_cli_from(fake_zenodo, tmp_path):
+    raw = _raw_bobcat_archive(tmp_path)
+    assert T.cli_main(['download', '--grid', 'sonora-bobcat', '--from', str(raw), '--teff', '1800', '2000',
+                       '--logg', '5', '5', '--dir', str(tmp_path / 'out')]) == 0
+    assert len(_converted(tmp_path / 'out')) == 3
