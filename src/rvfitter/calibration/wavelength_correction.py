@@ -20,6 +20,7 @@ from .. import io
 from ..constants import C_KMS
 from ..features import features
 from ..numerics import rms
+from ..templates import GridCoverageError
 from ..types import Spectrum
 from . import dar, sky_zeropoint, slit, telluric, telluric_zeropoint
 
@@ -35,7 +36,7 @@ ZP_KEYS = ('zp_sky_kms', 'zp_sky_err', 'zp_sky_slope', 'zp_sky_model_spread', 'z
 ZP_FLAGS: dict[str, int] = {
     'sky_applied': 1,  # the sky curve Δv_sky(λ) was applied
     'telluric_applied': 2,  # the star's telluric curve was applied
-    'star_sky_applied': 4,  # the star − sky constant was applied with the sky curve ('sky+star')
+    'star_sky_applied': 4,  # the star − sky constant was applied, with the sky curve ('sky+star') or alone ('star')
     'sky_not_needed': 8,  # sky-if-needed: the offset is not significant or below the practical floor
     'sky_unsafe': 16,  # sky-if-needed: too few sky segments, or the regions rely on unmeasured parts of the curve
     'telluric_unavailable': 32,  # the telluric model is not built: telluric terms skipped
@@ -191,12 +192,16 @@ def _telluric_coverage(tzp: Any, spec: Spectrum, regions: Sequence) -> tuple[boo
     if not regions:
         return True, 'ok'
     ff = telluric_zeropoint.frame_factor(spec.meta)
-    nodes = np.asarray(tzp.node_wave, float)
-    far = [(r.name, float(np.min(np.abs(nodes - 0.5 * (r.wmin + r.wmax) / ff)))) for r in regions]
-    far = [(n, d) for n, d in far if d > TELLURIC_MAX_NODE_GAP]
+    nodes = np.asarray(tzp.node_wave, float)  # the used segments' centres, in order
+    far = []
+    for r in regions:
+        gap = np.abs(nodes - 0.5 * (r.wmin + r.wmax) / ff)
+        k = int(np.argmin(gap))
+        if gap[k] > TELLURIC_MAX_NODE_GAP:
+            far.append(f'{r.name}: {gap[k]:.0f} Å from {used[k]["band"]} (node at {nodes[k]:.0f} Å)')
     if far:
-        return False, (f'{len(far)} region(s) lie more than {TELLURIC_MAX_NODE_GAP:.0f} Å from every telluric node ('
-                       + ', '.join(f'{n}: {d:.0f} Å' for n, d in far[:5]) + (', ...' if len(far) > 5 else '') + ')')
+        return False, (f'{len(far)} region(s) lie more than {TELLURIC_MAX_NODE_GAP:.0f} Å from the nearest usable '
+                       f'telluric node: ' + '; '.join(far))
     return True, 'ok'
 
 
@@ -327,6 +332,8 @@ def _telluric_zeropoint(src: Spectrum, cfg: Any, name: str):
             try:
                 template = prior_template(cfg, resolution, wr)
                 alts = neighbour_templates(cfg, resolution, wr, template)
+            except GridCoverageError:  # the prior is beyond the grid: never silently a smooth star
+                raise
             except ValueError as exc:  # no template covers the spectrum: a smooth stellar continuum
                 log.warning('%s: no template for the telluric zero point (%s); assuming a smooth star', name, exc)
     return telluric_zeropoint.measure(src, resolution=resolution, template=template, seg_width=width, teff=teff,
@@ -351,10 +358,11 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
 
     ``raw`` is the spectrum as read, ``spec`` as it will be measured (e.g. barycentric-corrected; the correction is
     a multiplicative factor). ``regions`` (selected before any correction) feed the sky-if-needed and telluric
-    coverage tests. Modes: 'sky-if-needed' the sky curve when `_sky_needed` passes; 'auto' the same plus the
-    star − sky constant when measured ('sky+star'); 'sky' the sky curve; 'telluric' the telluric curve if it covers
-    the regions; 'none' nothing. The tellurics are measured for 'telluric', when the sky is applied in
-    sky-if-needed/auto, or whenever ``calibration.telluric_source`` is given. Returns the spectrum (with
+    coverage tests. Modes: 'sky-if-needed' the sky curve when `_sky_needed` passes; 'auto' the star − sky constant
+    whenever it is measured, with that sky curve ('sky+star') or alone ('star', e.g. a spectrum already tied to the
+    sky in the reduction); 'sky' the sky curve; 'telluric' the telluric curve if it covers the regions; 'none'
+    nothing. The tellurics are measured for 'telluric' and 'auto', when the sky is applied in sky-if-needed, or
+    whenever ``calibration.telluric_source`` is given. Returns the spectrum (with
     meta['sky_zeropoint'], ['telluric_zeropoint'] and ['star_minus_sky'] when measured) and {'mode', 'applied',
     'zp_flags', 'sky_tests', 'star_sky_applied', 'star_sky', 'slit', *ZP_KEYS}.
     """
@@ -393,10 +401,10 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
             info['zp_flags'] |= ZP_FLAGS['sky_not_needed' if info['sky_tests']['coverage_ok'] else 'sky_unsafe']
     elif zp is not None and mode == 'sky':
         sky_ok = True
-    # telluric (the star's own zero point): for 'telluric', and for the star - sky constant when the sky correction
-    # is applied; always measured when a telluric_source is given
+    # telluric (the star's own zero point): for 'telluric', for the star - sky constant in 'auto', and when
+    # sky-if-needed applies the sky; always measured when a telluric_source is given
     tzp, tsrc = None, None
-    if mode == 'telluric' or cal.telluric_source or (mode in ('sky-if-needed', 'auto') and sky_ok):
+    if mode in ('telluric', 'auto') or cal.telluric_source or (mode == 'sky-if-needed' and sky_ok):
         loud = log.warning if (mode == 'telluric' or cal.telluric_source) else log.info
         if not telluric.available():
             info['zp_flags'] |= ZP_FLAGS['telluric_unavailable']
@@ -442,12 +450,13 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     # apply: the sky measured in each region's own window where it can be (`_region_sky`)
     if sky_ok:
         zp = _region_sky(zp, regions, spec, cfg, name, info)
-    if sky_ok and mode == 'auto' and np.isfinite(info['zp_star_sky']):  # opt-in until validated beyond J1745
-        spec = sky_zeropoint.apply(spec, zp, constant_kms=info['zp_star_sky'], constant_err=info['zp_star_sky_err'],
-                                   dar=_dar_table(info, spec), source='sky+star')
-        info['applied'] = 'sky+star'
+    if mode == 'auto' and np.isfinite(info['zp_star_sky']):  # with the sky curve if it is applied, else alone
+        source = 'sky+star' if sky_ok else 'star'
+        spec = sky_zeropoint.apply(spec, zp if sky_ok else None, constant_kms=info['zp_star_sky'],
+                                   constant_err=info['zp_star_sky_err'], dar=_dar_table(info, spec), source=source)
+        info['applied'] = source
         info['star_sky_applied'] = True
-        info['zp_flags'] |= ZP_FLAGS['sky_applied'] | ZP_FLAGS['star_sky_applied']
+        info['zp_flags'] |= ZP_FLAGS['star_sky_applied'] | (ZP_FLAGS['sky_applied'] if sky_ok else 0)
     elif sky_ok:
         spec = sky_zeropoint.apply(spec, zp, source='sky')
         info['applied'] = 'sky'
@@ -631,32 +640,27 @@ def _star_minus_sky(tzp: Any, zp: Any, info: dict, tsrc: Spectrum, cfg: Any, nam
 
 def _family_templates(tsrc: Spectrum, cfg: Any, name: str, tzp: Any) -> list[tuple[str, Any]]:
     """
-    The other star models of the telluric fit: a smooth star, and the prior template of every other configured or
-    cached grid (e.g. SAND next to BT-Settl); a grid with no template near the priors is skipped (INFO)
+    The other star models of the telluric fit: a smooth star, and the prior template of every other configured grid
+    (templates.grid, e.g. SAND next to BT-Settl); a grid with no template for the spectrum is skipped (INFO), one
+    more than a grid step from the priors raises GridCoverageError
     """
     import copy
 
-    from .. import templates as T
     from ..methods.guidance import grid_names
     from ..methods.telluric_ref import prior_template
     out: list[tuple[str, Any]] = [('smooth star', None)] if tzp.template is not None else []
     if not cfg.calibration.telluric_template or not np.isfinite(tzp.resolution):
         return out
-    configured = grid_names(cfg.templates)
-    cache = T.cache_dir()
-    # a downloaded grid has its metadata file (an empty or partial directory is not a cached grid)
-    cached = sorted(d.name for d in cache.iterdir() if d.name in T.KNOWN_GRIDS
-                    and (d / 'rvfitter_grid.toml').is_file()) if cache.is_dir() else []
     wr = (float(tsrc.wave[0]), float(tsrc.wave[-1]))
-    for grid in dict.fromkeys(configured[1:] + cached):
-        if grid == configured[0]:
-            continue
+    for grid in grid_names(cfg.templates)[1:]:
         alt = copy.deepcopy(cfg)
         alt.templates.grid = grid
         if not isinstance(alt.templates.local_dir, dict):
             alt.templates.local_dir, alt.templates.medium = None, None  # that directory was the first grid's
         try:
             t = prior_template(alt, tzp.resolution, wr)
+        except GridCoverageError:
+            raise
         except ValueError as exc:
             log.info('%s: grid %s gives no telluric-fit template (%s)', name, grid, exc)
             continue
