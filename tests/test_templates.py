@@ -245,3 +245,6 @@ def test_prior_beyond_grid_fails_before_any_fit(tmp_path, monkeypatch):
     with pytest.raises(T.GridCoverageError):
         pipeline.run(far, [])
     assert not read  # nothing was read
+    far.methods.enabled = ['linecentre']  # model-free, no telluric template: the grid is never read, so no check
+    far.calibration.wavelength_correction = 'none'
+    assert pipeline.run(far, []) == [] and read == [1]

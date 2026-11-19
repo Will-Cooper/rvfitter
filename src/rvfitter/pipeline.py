@@ -54,6 +54,27 @@ def enabled_methods(cfg: Any, override: Sequence[str] | None = None) -> list[str
     return names
 
 
+def template_methods(cfg: Any, names: Sequence[str] | None = None) -> list[str]:
+    """
+    Of ``names`` (default the enabled methods), those that read the template grid: all but linecentre (unless its
+    shape_correction is on), and none given its own template by the method option ``template``/``templates``
+    """
+    out = []
+    for m in names if names is not None else cfg.methods.enabled:
+        opts = cfg.methods.options.get(m, {})
+        if opts.get('template') is not None or opts.get('templates'):
+            continue
+        if m != 'linecentre' or opts.get('shape_correction'):
+            out.append(m)
+    return out
+
+
+def needs_templates(cfg: Any, names: Sequence[str] | None = None) -> bool:
+    """Whether the run reads the template grid: a template method, or the telluric fit modelling the star"""
+    return bool(template_methods(cfg, names)) or (
+        cfg.calibration.wavelength_correction in ('telluric', 'auto') and cfg.calibration.telluric_template)
+
+
 def _failed(method: str, exc: Exception) -> MethodResult:
     meas = Measurement(method, '', float('nan'), float('nan'), FLAGS['fit_failed'],
                        {'error': f'{type(exc).__name__}: {exc}'})
@@ -338,9 +359,10 @@ def _measure(spectra: Sequence[Spectrum], cfg: Any, n_procs: int | None, rng: np
              ) -> ObjectResult:
     """
     `measure_object` with a spawn-context process pool (safe with Qt threads) when ``n_procs`` > 1, after checking
-    that the configured grids cover the object's priors (GridCoverageError otherwise)
+    that the configured grids cover the object's priors when the run reads them (GridCoverageError otherwise)
     """
-    check_grid_coverage(cfg.templates)
+    if needs_templates(cfg, enabled_methods(cfg, kw.get('methods'))):
+        check_grid_coverage(cfg.templates)
     pool = (ProcessPoolExecutor(n_procs, mp_context=multiprocessing.get_context('spawn'))
             if n_procs and n_procs > 1 else nullcontext())
     with pool as ex:
@@ -359,11 +381,12 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     process) just before each method of each epoch; if ``cancel`` is set (checked between
     objects and between methods) the results so far are returned and the interrupted object is dropped. Every
     skipped file and failed (object, method) is appended to ``failures`` as ``(what, why)`` and summarised at
-    ERROR at the end. A configured grid more than one grid step from the priors stops the run before anything is
-    read (GridCoverageError).
+    ERROR at the end. When the run reads templates, a configured grid more than one grid step from the priors stops
+    it before anything is read (GridCoverageError).
     """
     names_enabled = enabled_methods(cfg, methods)  # fail before reading anything
-    check_grid_coverage(cfg.templates)
+    if needs_templates(cfg, names_enabled):
+        check_grid_coverage(cfg.templates)
     failures = [] if failures is None else failures
     n_procs = cfg.parallel.n_procs if n_procs is None else n_procs
     if n_procs is None:  # automatic: a pool only pays off for the MCMC

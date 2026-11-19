@@ -221,7 +221,8 @@ class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
     # 'sky-if-needed': apply the OH sky zero point only when it is safe and significant; 'auto': the star - sky
     # constant whenever measured, with that sky curve when it applies; 'sky': sky curve alone; 'telluric': the
-    # star's telluric curve; 'none': report only. See docs/methods.md. What was applied is logged and recorded (wavelength_correction_applied, zp_flags).
+    # star's telluric curve; 'none': report only. See docs/methods.md. What was applied is logged and recorded
+    # (wavelength_correction_applied, zp_flags).
     wavelength_correction: str = field(default=WAVELENGTH_CORRECTION_DEFAULT,
                                        metadata={'choices': WAVELENGTH_CORRECTIONS})
     # slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the slit width W and
