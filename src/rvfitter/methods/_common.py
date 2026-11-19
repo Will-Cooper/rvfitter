@@ -294,7 +294,8 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
       ranges become candidates: teff within teff_range (default teff_prior ± teff_window), log g within
       logg_range (default all), and met, alpha and extra axes within their ranges or held at the value nearest
       their prior/default (templates.met_prior, alpha_prior; extra-axis ranges in templates.ranges). With no
-      point in the ranges, the point nearest teff_prior (and logg_prior, else 5.0 dex) is used (WARNING).
+      point in the ranges, the point nearest teff_prior (and logg_prior, else 5.0 dex) is used (WARNING), unless
+      the priors lie more than one grid step beyond the grid (GridCoverageError).
     """
     def as_spec(t, i):
         if isinstance(t, Spectrum):
@@ -323,10 +324,31 @@ def candidates(cfg: Any, opts: Mapping[str, Any]) -> list[Candidate]:
             if t.teff_prior is None:
                 raise ValueError(f'{grid.name}: no grid points in the template ranges; widen them or set '
                                  'templates.teff_prior')
+            grid.check_covers(prior_request(t, grid))
             points = [grid.nearest(t.teff_prior, t.logg_prior or 5., **priors)]
             log.warning('%s: no grid points in the prior ranges: using %s', grid.name, points[0])
         out += [Candidate(f'{grid.name} ' + '/'.join(f'{v:g}' for v in p), grid=grid, params=p) for p in points]
     return out
+
+
+def prior_request(tcfg: Any, grid: T.TemplateGrid) -> dict[str, float]:
+    """The priors that are set (teff, logg, met, alpha) on the grid's axes"""
+    return {a: float(v) for a in ('teff', 'logg', 'met', 'alpha')
+            if a in grid.axes and (v := getattr(tcfg, f'{a}_prior')) is not None}
+
+
+def check_grid_coverage(tcfg: Any) -> None:
+    """
+    GridCoverageError if templates.teff_prior (or another set prior) lies more than one grid step beyond any
+    configured grid that is available, so a run stops before its first fit instead of fitting with the edge template
+    """
+    if tcfg.teff_prior is None:
+        return
+    for name in grid_names(tcfg):
+        directory = grid_directory(tcfg, name)
+        if directory is not None and directory.expanduser().is_dir():
+            grid = open_grid(tcfg, name)
+            grid.check_covers(prior_request(tcfg, grid))
 
 
 def grid_directory(tcfg: Any, name: str) -> Path | None:

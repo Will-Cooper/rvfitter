@@ -22,6 +22,7 @@ from .calibration import sky_zeropoint
 from .calibration import wavelength_correction as wcorr
 from .config import resolution_too_low
 from .methods import REGISTRY, binary, forward
+from .methods._common import check_grid_coverage
 from .refit import apply_patch, config_for_object, object_seed, plain
 from .results import EXCLUDE_FLAGS, FLAGS
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
@@ -335,7 +336,11 @@ def _read_all(cfg: Any, inputs: Iterable[str | Path], medium: str, failures: Fai
 
 def _measure(spectra: Sequence[Spectrum], cfg: Any, n_procs: int | None, rng: np.random.Generator, **kw
              ) -> ObjectResult:
-    """`measure_object` with a spawn-context process pool (safe with Qt threads) when ``n_procs`` > 1"""
+    """
+    `measure_object` with a spawn-context process pool (safe with Qt threads) when ``n_procs`` > 1, after checking
+    that the configured grids cover the object's priors (GridCoverageError otherwise)
+    """
+    check_grid_coverage(cfg.templates)
     pool = (ProcessPoolExecutor(n_procs, mp_context=multiprocessing.get_context('spawn'))
             if n_procs and n_procs > 1 else nullcontext())
     with pool as ex:
@@ -354,9 +359,11 @@ def run(cfg: Any, inputs: str | Path | Iterable[str | Path] | None = None, *, n_
     process) just before each method of each epoch; if ``cancel`` is set (checked between
     objects and between methods) the results so far are returned and the interrupted object is dropped. Every
     skipped file and failed (object, method) is appended to ``failures`` as ``(what, why)`` and summarised at
-    ERROR at the end.
+    ERROR at the end. A configured grid more than one grid step from the priors stops the run before anything is
+    read (GridCoverageError).
     """
     names_enabled = enabled_methods(cfg, methods)  # fail before reading anything
+    check_grid_coverage(cfg.templates)
     failures = [] if failures is None else failures
     n_procs = cfg.parallel.n_procs if n_procs is None else n_procs
     if n_procs is None:  # automatic: a pool only pays off for the MCMC

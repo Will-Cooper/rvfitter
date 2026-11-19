@@ -97,11 +97,19 @@ def test_trilinear_interpolation_exact_for_linear_model(tmp_path):
 
 
 def test_outside_grid_uses_nearest_with_flag(tmp_path, caplog):
+    """Within one grid step of the edge: the nearest point, flagged; further out: GridCoverageError"""
     grid = T.TemplateGrid(_make_grid(tmp_path / 'g'))
-    spec = grid.get(2400., 5.2, wave_range=(7600., 7620.))
+    spec = grid.get(2100., 5.2, wave_range=(7600., 7620.))
     assert spec.meta['outside_grid']
     np.testing.assert_allclose(spec.flux, 2.0 + 5.0)
     assert 'outside grid' in caplog.text
+    for teff, logg in ((2101., 5.0), (1600., 5.0), (2000., 5.6)):
+        for method in ('linear', 'nearest'):
+            with pytest.raises(T.GridCoverageError, match='grid toy covers .* requested, more than one grid step'):
+                grid.get(teff, logg, method=method, wave_range=(7600., 7620.))
+    with pytest.raises(T.GridCoverageError, match=r'teff 1800-2000 \(step 100 at that edge\), but teff = 1600'):
+        grid.check_covers({'teff': 1600.})
+    grid.check_covers({'teff': 1700., 'logg': 4.0})  # exactly one step out on each axis
     near = grid.get(1930., 4.8, method='nearest', wave_range=(7600., 7620.))
     np.testing.assert_allclose(near.flux, 1.9 + 5.0)
     assert not near.meta['outside_grid']
@@ -204,3 +212,36 @@ def test_svo_ssap_and_spectrum_formats(tmp_path):
     spec['WAVELENGTH'].unit = 'nm'
     with pytest.raises(ValueError, match='unit'):
         T._svo_two_column(_votable_bytes(spec))
+
+
+def _toy_cfg(directory: Path, teff_prior: float | None):
+    from rvfitter import config
+    cfg = config.Config()
+    cfg.templates.grid = 'bt-settl-cifist'
+    cfg.templates.local_dir = str(directory)
+    cfg.templates.teff_prior = teff_prior
+    return cfg
+
+
+def test_prior_beyond_grid_fails_before_any_fit(tmp_path, monkeypatch):
+    """A teff_prior more than one step outside the grid: the candidates and the coverage check raise (a cache of
+    2600-4500 K used to fit every L dwarf with the 2600 K template); within one step the edge point is used"""
+    from rvfitter import pipeline
+    from rvfitter.methods import _common as C
+    d = _make_grid(tmp_path / 'g')
+    ok = _toy_cfg(d, 1700.)
+    C.check_grid_coverage(ok.templates)
+    edge = C.candidates(ok, {'teff_window': 50.})
+    assert [c.params[:2] for c in edge] == [(1800., 5.0)]  # none in the window: the nearest point (WARNING)
+    far = _toy_cfg(d, 1500.)
+    with pytest.raises(T.GridCoverageError, match='teff 1800-2000 .* teff = 1500'):
+        C.check_grid_coverage(far.templates)
+    with pytest.raises(T.GridCoverageError):
+        C.candidates(far, {'teff_window': 50.})
+    C.check_grid_coverage(_toy_cfg(d, None).templates)  # no prior: nothing to check
+    C.check_grid_coverage(_toy_cfg(tmp_path / 'absent', 1500.).templates)  # no grid there: reported where used
+    read = []
+    monkeypatch.setattr(pipeline, '_read_all', lambda *a, **k: read.append(1) or [])
+    with pytest.raises(T.GridCoverageError):
+        pipeline.run(far, [])
+    assert not read  # nothing was read

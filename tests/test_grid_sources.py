@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -434,10 +435,63 @@ def test_folder_missing_points_writes_nothing(fake_zenodo, tmp_path):
         T.download('sonora-bobcat', (1800., 1900.), (5.0, 5.0), directory=out, source_dir=out.parent)
 
 
-def test_folder_unsupported_grid(tmp_path):
-    with pytest.raises(ValueError, match='cannot be converted from its original files'):
-        T.download('bt-settl-cifist', directory=tmp_path / 'b', source_dir=tmp_path)
-    assert not (tmp_path / 'b').exists()
+def _bt_folder(directory: Path, teffs, medium: str = 'air', scale: float = 1.) -> Path:
+    """Two-column BT-Settl spectra under the SVO/Lyon names (lte020.0-5.0-0.0a+0.0.BT-Settl.7.dat.txt)"""
+    directory.mkdir(parents=True)
+    wave = np.arange(7500., 9100., 0.05)
+    for t in teffs:
+        flux = np.full_like(wave, scale * t / 1000.)
+        for _, lam in T.medium_check_lines():
+            c = float(vac_to_air(lam)) if medium == 'air' else lam
+            flux *= 1. - 0.6 * np.exp(-0.5 * ((wave - c) / 0.4) ** 2)
+        np.savetxt(directory / f'lte{t / 100:05.1f}-5.0-0.0a+0.0.BT-Settl.7.dat.txt', np.c_[wave, flux],
+                   header='SVO theory server: WAVELENGTH [A] FLUX [erg/s/cm2/A]')
+    return directory
+
+
+def test_folder_merges_local_bt_settl(tmp_path):
+    """Local BT-Settl spectra (SVO/Lyon names, or a folder in rvfitter's format) are merged into the cached grid:
+    existing points kept, the manifest updated, the medium checked, conflicting duplicates refused"""
+    cache = tmp_path / 'cache' / 'bt-settl-cifist'
+    warm = _bt_folder(tmp_path / 'warm', (2600., 2700.))
+    tg = T.download('bt-settl-cifist', (1200., 3000.), (5.0, 5.0), directory=cache, source_dir=warm)
+    assert sorted(tg.axis_values('teff')) == [2600., 2700.] and tg.meta.medium == 'air'
+    cool = _bt_folder(tmp_path / 'cool', (1700., 1800., 2600.))  # 2600 K identical to the cached one
+    tg = T.download('bt-settl-cifist', (1200., 3000.), (5.0, 5.0), directory=cache, source_dir=cool)
+    assert sorted(tg.axis_values('teff')) == [1700., 1800., 2600., 2700.]
+    manifest = json.loads((cache / 'manifest.json').read_text())
+    assert set(manifest) == {T._generic_name(dict(teff=t, logg=5., met=0., alpha=0.)) for t in (1700, 1800, 2600, 2700)}
+    assert manifest['t1700_g5.00_m+0.00_a+0.00.txt']['from'].endswith('lte017.0-5.0-0.0a+0.0.BT-Settl.7.dat.txt')
+    assert T._read_metadata(cache).pattern == T.GENERIC_PATTERN
+    # a folder in rvfitter's format (e.g. another cache) merges the same way
+    other = tmp_path / 'other' / 'bt-settl-cifist'
+    T.download('bt-settl-cifist', (1200., 3000.), (5.0, 5.0), directory=other,
+               source_dir=_bt_folder(tmp_path / 'hot', (2900.,)))
+    tg = T.download('bt-settl-cifist', (1200., 3000.), (5.0, 5.0), directory=cache, source_dir=other)
+    assert sorted(tg.axis_values('teff')) == [1700., 1800., 2600., 2700., 2900.]
+    # a different model at a cached point: nothing written
+    before = sorted(p.name for p in cache.iterdir())
+    clash = _bt_folder(tmp_path / 'clash', (1700., 2000.), scale=1.1)
+    with pytest.raises(ValueError, match=r'differ from those already.*lte017.0.*t1700_g5.00.*Nothing was written'):
+        T.download('bt-settl-cifist', (1200., 3000.), (5.0, 5.0), directory=cache, source_dir=clash)
+    assert sorted(p.name for p in cache.iterdir()) == before
+    # spectra in vacuum wavelengths under the air-declared BT-Settl names fail the medium check
+    vac = _bt_folder(tmp_path / 'vac', (2000.,), medium='vacuum')
+    with pytest.raises(T.MediumMismatchError):
+        T.download('bt-settl-cifist', (1200., 3000.), (5.0, 5.0), directory=cache, source_dir=vac)
+    assert sorted(p.name for p in cache.iterdir()) == before
+    with pytest.raises(FileNotFoundError, match='no bt-settl-cifist models in the requested ranges'):
+        T.download('bt-settl-cifist', (3500., 4000.), (5.0, 5.0), directory=cache, source_dir=cool)
+    with pytest.raises(ValueError, match='holds grid bt-settl-cifist, not bt-settl-agss2009'):
+        T.download('bt-settl-agss2009', directory=tmp_path / 'agss', source_dir=other)
+
+
+def test_folder_merge_cli(tmp_path):
+    cache = tmp_path / 'c'
+    src = _bt_folder(tmp_path / 'svo', (1500., 1600.))
+    assert T.cli_main(['download', '--grid', 'bt-settl-cifist', '--from', str(src), '--teff', '1500', '2500',
+                       '--logg', '5.0', '5.0', '--dir', str(cache)]) == 0
+    assert len(T.TemplateGrid(cache).files) == 2
 
 
 def test_cli_from(fake_zenodo, tmp_path):

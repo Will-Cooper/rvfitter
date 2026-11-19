@@ -93,6 +93,7 @@ If a server is down, copy a grid obtained elsewhere into `<cache>/<grid>/`, or p
 
 **Original grid files you already have.**
 If you already have a Sonora (Bobcat, Diamondback, Elf Owl) or SAND grid as distributed on Zenodo, convert it from that folder instead of downloading it: `rvfitter templates download --grid sonora-elfowl --from /path/to/sonora_elfowl --teff 1000 1400 --logg 4.5 5.5`, or "Use files I already have…" at Measure RVs in the GUI.
+BT-Settl spectra you already have (two-column files under the SVO/Lyon names, or a folder in rvfitter's format) are merged into the cached grid the same way, e.g. `rvfitter templates download --grid bt-settl-cifist --from /path/to/bt-settl --teff 1500 2500` ([settings.md](settings.md#templates-from-files)).
 The folder may hold the record's archives (e.g. `spectra.zip`, `spectra_m+0.0.tar.gz`) or the files extracted from them; it is only read, and the converted grid goes into the cache as a download would ([settings.md](settings.md#templates-from-files)).
 
 **Plots and LaTeX.** By default (`plot_style = "quick"` under `[output]`) rvfitter draws its figures with bundled Computer Modern fonts; no LaTeX installation is needed.
