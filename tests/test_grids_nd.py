@@ -72,7 +72,7 @@ def test_grid_hole_is_flagged_not_renormalised(tmp_path, caplog):
     assert spec.meta['missing_corners'] == [[1900., 5.0, -0.5, 0.0]]
     assert T._generic_name(hole) in caplog.text and 'hole' in caplog.text
     assert len(spec.meta['files']) == 1  # the nearest point, not a renormalised partial interpolation
-    out = grid.get(2400., 4.8, -0.7, wave_range=(7600., 7620.))
+    out = grid.get(2050., 4.8, -0.7, wave_range=(7600., 7620.))  # within one Teff step of the edge
     assert out.meta['outside_grid'] and not out.meta['grid_hole']
 
 

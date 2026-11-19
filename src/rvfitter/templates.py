@@ -45,7 +45,8 @@ from .numerics import parabola_vertex
 from .types import Spectrum
 
 __all__ = ['GridMeta', 'TemplateGrid', 'KNOWN_GRIDS', 'STANDARD_AXES', 'AXIS_SCALE', 'medium_check_lines',
-           'MediumMismatchError', 'METADATA_FILE', 'read_two_column', 'write_metadata', 'verify_medium',
+           'MediumMismatchError', 'GridCoverageError', 'METADATA_FILE', 'read_two_column', 'write_metadata',
+           'verify_medium',
            'measure_medium', 'download', 'available', 'cache_dir', 'cli_main', 'SVO_SSAP_URL', 'GENERIC_PATTERN']
 
 log = logging.getLogger(__name__)
@@ -83,6 +84,10 @@ def medium_check_lines() -> tuple[tuple[str, float], ...]:
 
 class MediumMismatchError(ValueError):
     """The declared wavelength medium of a grid disagrees with the measured one"""
+
+
+class GridCoverageError(ValueError):
+    """A requested template lies beyond a grid's range by more than one grid step"""
 
 
 @dataclass(frozen=True)
@@ -384,6 +389,25 @@ class TemplateGrid:
             d += ((self.points[:, i] - p[a]) / AXIS_SCALE.get(a, 1.)) ** 2
         return tuple(float(x) for x in self.points[np.argmin(d)])
 
+    def check_covers(self, p: Mapping[str, float]) -> None:
+        """
+        GridCoverageError if a requested value lies beyond the grid's range by more than one grid step (the spacing
+        of the two outermost values on that side; a single-valued axis has none) on any axis of `p`. Within one step,
+        the callers use the nearest grid point and flag it.
+        """
+        for a, v in p.items():
+            vals = self.axis_values(a)
+            if vals[0] - 1e-9 <= v <= vals[-1] + 1e-9:
+                continue
+            edge, inner = (vals[0], vals[1:2]) if v < vals[0] else (vals[-1], vals[-2:-1])
+            step = float(abs(edge - inner[0])) if len(inner) else 0.
+            if abs(v - edge) > step + 1e-9:
+                raise GridCoverageError(
+                    f'grid {self.name} covers {a} {vals[0]:g}-{vals[-1]:g} (step {step:g} at that edge), but '
+                    f'{a} = {v:g} was requested, more than one grid step beyond it: add the missing models '
+                    f'("rvfitter templates download --grid {self.name}", or --from a local folder), configure a '
+                    f'grid that covers it, or change the prior')
+
     def corners(self, p: dict):
         """
         (corners, missing): the multilinear [(path, weight)] over every axis, and the parameter tuples of missing
@@ -417,10 +441,12 @@ class TemplateGrid:
         """
         Corners for a request, with fallbacks: (corners, outside, missing)
 
-        Outside the grid's range → nearest point, outside=True (flag template_grid_edge). Inside the range but
+        More than one grid step outside the grid's range → GridCoverageError (`check_covers`); within one step →
+        nearest point, outside=True (flag template_grid_edge). Inside the range but
         with a missing corner file (a hole) → nearest point, missing lists the absent corners (flag
         template_grid_hole). Renormalising over the corners that exist is not done: it would bias the template.
         """
+        self.check_covers(p)
         corners, missing = (None, []) if method == 'nearest' else self.corners(p)
         outside = False
         if corners is None:
@@ -454,8 +480,9 @@ class TemplateGrid:
         The template at the parameters (vacuum λ, NaN σ), multilinearly interpolated in flux or ('nearest') the
         nearest grid point.
 
-        Outside the grid, or at a hole (a missing corner), 'linear' falls back to the nearest point with a WARNING
-        and meta['outside_grid'] or meta['grid_hole']. Unset axes (met, alpha, `extra`) take the grid defaults.
+        Within one grid step outside the grid, or at a hole (a missing corner), 'linear' falls back to the nearest
+        point with a WARNING and meta['outside_grid'] or meta['grid_hole']; further out it raises GridCoverageError
+        (`check_covers`). Unset axes (met, alpha, `extra`) take the grid defaults.
         """
         if method not in ('linear', 'nearest'):
             raise ValueError(f"method must be 'linear' or 'nearest', not {method!r}")
@@ -694,6 +721,7 @@ def _svo_two_column(votable_bytes: bytes) -> bytes:
 
 
 def _generic_name(p: Mapping[str, float]) -> str:
+    p = {a: float(p[a]) + 0. for a in (*STANDARD_AXES, 'co', 'kzz', 'fsed') if a in p}  # -0.0 (Lyon "-0.0") → +0.00
     name = f't{p["teff"]:g}_g{p["logg"]:.2f}_m{p.get("met", 0.):+.2f}_a{p.get("alpha", 0.):+.2f}'
     for axis in ('co', 'kzz', 'fsed'):
         if axis in p:
@@ -711,10 +739,11 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
 
     The ranges are inclusive; an unranged met/alpha (or extra axis, e.g. ``ranges={'co': (0.5, 1.)}``) is held at
     the grid default. `source` is 'svo', 'zenodo' or 'auto' (the grid's one source: SVO if it serves the
-    grid, else Zenodo; the manifest records the source). `source_dir` instead converts the grid's original
-    distributed files (the Zenodo archives, or the files extracted from them) from that folder, with no download
-    (`grid_sources.convert_folder`). `fetch` (URL → bytes) replaces the SVO GET (tests, proxies); `verify`
-    verifies, or for 'auto' measures, the medium.
+    grid, else Zenodo; the manifest records the source). `source_dir` instead takes the models from a local
+    folder, with no download: a Zenodo grid's original distributed files (the archives, or the files extracted
+    from them; `grid_sources.convert_folder`), else two-column spectra under the SVO/Lyon names or a folder in
+    rvfitter's own format, merged into the cached grid (`_merge_folder`). `fetch` (URL → bytes) replaces the SVO
+    GET (tests, proxies); `verify` verifies, or for 'auto' measures, the medium.
     """
     from . import grid_sources
     if source not in ('auto', 'svo', 'zenodo'):
@@ -732,15 +761,12 @@ def download(grid: str = 'bt-settl-cifist', teff_range: tuple[float, float] = (1
     if source_dir is not None:
         if source != 'auto':
             raise ValueError(f'source_dir converts files from a folder; source={source!r} does not apply')
-        if grid not in grid_sources.ZENODO_GRIDS:
-            raise ValueError(
-                f'grid {grid} cannot be converted from its original files: rvfitter converts only the grids '
-                f'distributed on Zenodo ({", ".join(sorted(grid_sources.ZENODO_GRIDS))}). Download {grid} instead '
-                f'(no source_dir), or put its spectra as two-column text files (wavelength [Å], flux) in a folder '
-                f'and set templates.local_dir to it')
         for axis in meta.extra_axes:
             want.setdefault(axis, (defaults[axis],) * 2)
-        return _convert_folder(meta, want, Path(source_dir), directory, verify)
+        folder = Path(source_dir)
+        if grid in grid_sources.ZENODO_GRIDS and not (folder / METADATA_FILE).is_file():
+            return _convert_folder(meta, want, folder, directory, verify)
+        return _merge_folder(meta, want, folder, directory, verify)
     directory.mkdir(parents=True, exist_ok=True)
     # each known grid has one automatic source: SVO if it serves the grid, else its Zenodo record
     if meta.svo_model is not None and source in ('auto', 'svo'):
@@ -809,6 +835,63 @@ def _download_zenodo(meta: GridMeta, want: dict, directory: Path, verify: bool) 
                                          write=_generic_writer(meta, directory, manifest, media))
     log.info('%s: %d models from Zenodo in %s', meta.name, len(paths), directory)
     return _finish_converted(meta, directory, manifest_path, manifest, media, verify)
+
+
+def _merge_folder(meta: GridMeta, want: dict, folder: Path, directory: Path, verify: bool) -> TemplateGrid:
+    """
+    Add the models of a local `folder` within the `want` ranges to the grid in `directory` (created if absent).
+
+    The folder holds either rvfitter's own format (generic names with its `rvfitter_grid.toml`, e.g. another
+    cache) or two-column text spectra (wavelength [Å], flux) under the names SVO and Lyon use (lte020-5.0-0.0a+0.0
+    ... .txt or .dat; the grid's known medium). The models are written in the generic format and added to the
+    manifest; the points already there are kept. With `verify`, the folder's declared medium is checked on its
+    spectra, and it must equal the cached grid's (MediumMismatchError). A point already cached with different
+    values raises ValueError before anything is written.
+    """
+    own = (folder / METADATA_FILE).is_file()
+    src = TemplateGrid(folder, meta=None if own else meta, verify=verify)
+    if src.name != meta.name:
+        raise ValueError(f'{folder} holds grid {src.name}, not {meta.name}')
+    if verify:
+        src._ensure_verified()
+    dest = _read_metadata(directory) if directory.is_dir() else None
+    if dest is not None and dest.medium != src.meta.medium:
+        raise MediumMismatchError(f'{folder} is in {src.meta.medium} wavelengths but the grid in {directory} is in '
+                                  f'{dest.medium}: convert one of them first')
+    picked: dict[str, tuple[Path, dict]] = {}
+    for path, point in zip(src.files, src.points, strict=True):
+        p = dict(zip(src.axes, map(float, point), strict=True))
+        if all(lo - 1e-9 <= p[a] <= hi + 1e-9 for a, (lo, hi) in want.items() if a in p):
+            name = _generic_name(p)
+            if name in picked:
+                raise ValueError(f'{folder}: {picked[name][0].name} and {path.name} are the same grid point ({name})')
+            picked[name] = (path, p)
+    if not picked:
+        raise FileNotFoundError(f'{folder} has no {meta.name} models in the requested ranges '
+                                f'({", ".join(f"{a} {lo:g}-{hi:g}" for a, (lo, hi) in want.items())})')
+    new, conflicts = {}, []
+    for name, (path, p) in picked.items():
+        if not (directory / name).is_file():
+            new[name] = (path, p)
+            continue
+        (w0, f0), (w1, f1) = read_two_column(directory / name), read_two_column(path)
+        if not (len(w0) == len(w1) and np.allclose(w0, w1, rtol=0., atol=1e-5) and np.allclose(f0, f1, rtol=1e-5)):
+            conflicts.append(f'{path.name} → {name}')
+    if conflicts:
+        raise ValueError(f'{len(conflicts)} model(s) in {folder} differ from those already in {directory}: '
+                         f'{"; ".join(conflicts)}. Nothing was written; remove one of each pair first')
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest_path, manifest = _manifest(directory)
+    _, src_manifest = _manifest(folder)
+    for name, (path, p) in new.items():
+        wave, flux = read_two_column(path)
+        with open(directory / name, 'w') as fh:
+            np.savetxt(fh, np.c_[wave, flux], fmt='%.6f %.6e')
+        manifest[name] = {**src_manifest.get(path.name, {}), **p, 'from': str(path.resolve()),
+                          'sha256': hashlib.sha256((directory / name).read_bytes()).hexdigest()}
+    log.info('%s: %d model(s) added from %s to %s (%d already there)', meta.name, len(new), folder, directory,
+             len(picked) - len(new))
+    return _finish(directory, dest or src.meta, manifest_path, manifest, verify)
 
 
 def _lattice(lo: float, hi: float, step: float) -> np.ndarray:
@@ -950,8 +1033,9 @@ def cli_main(argv: Sequence[str] | None = None) -> int:
     d.add_argument('--source', choices=('auto', 'svo', 'zenodo'), default='auto',
                    help='where to download from (auto: SVO for the BT-Settl grids, Zenodo for the others)')
     d.add_argument('--from', dest='source_dir', default=None, metavar='DIR',
-                   help='convert the original files (the Zenodo archives, or the files extracted from them) in DIR '
-                        'instead of downloading')
+                   help="take the models from DIR instead of downloading: a Zenodo grid's original files (the "
+                        'archives, or the files extracted from them), or two-column spectra under the SVO/Lyon names, '
+                        "or a folder in rvfitter's format, merged into the cached grid")
     ls = sub.add_parser('list', help='list the grids in the cache or a directory, or those available on SVO')
     ls.add_argument('--dir', default=None)
     ls.add_argument('--available', action='store_true', help='query SVO for the known grids')

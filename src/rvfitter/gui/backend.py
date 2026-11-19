@@ -198,18 +198,9 @@ class LazyBackend:
         return out
 
     def template_methods(self, cfg: Any) -> list[str]:
-        """
-        The enabled methods that read the template grid: all but linecentre (unless its shape_correction is on), and
-        none given its own template by the method option ``template``/``templates``
-        """
-        out = []
-        for m in cfg.methods.enabled:
-            opts = cfg.methods.options.get(m, {})
-            if opts.get('template') is not None or opts.get('templates'):
-                continue
-            if m != 'linecentre' or opts.get('shape_correction'):
-                out.append(m)
-        return out
+        """The enabled methods that read the template grid (`pipeline.template_methods`)"""
+        from rvfitter import pipeline
+        return pipeline.template_methods(cfg)
 
     def download_templates(self, cfg: Any, grids: Sequence[str], source_dir: str | None = None) -> None:
         """

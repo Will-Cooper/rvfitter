@@ -107,7 +107,10 @@ rvfitter measures the sky zero point whenever a sky spectrum is present, in ever
 (b) a significant offset (|mean Δv| > 3σ, with σ combining the curve and arc-RMS errors) or a significant variation between segments (χ² p < 0.001);
 (c) a correction larger than 0.05 resolution elements.
 The stellar line scatter is never used.
-When the sky is applied, the star's telluric zero point is measured too, and the star − sky constant is applied with the sky (`wavelength_correction_applied = "sky+star"`) when at least two telluric nodes have the sky measured in the same window; O2 A is not a node below 2800 K.
+In `auto` (and whenever `calibration.telluric_source` is given), the star's telluric zero point is measured too, and in `auto` the star − sky constant is applied whenever at least two telluric nodes have the sky measured in the same window: with the sky curve when the three tests pass (`wavelength_correction_applied = "sky+star"`), and alone otherwise (`"star"`, e.g. on a spectrum already tied to the sky in the reduction, where the tests find nothing to correct).
+O2 A is not a node below 2800 K (its `teff_min` in the feature catalogue), because the pressure-broadened K I 7667/7701 wings fill it, so for L dwarfs the constant rests on the H2O nodes alone.
+The star model of the telluric fit is the template nearest the priors from the first configured grid; the fit is repeated with the prior template of every other configured grid (`templates.grid`) and with a smooth star, and the spread is added to the constant's error.
+Until 2.2.0 every grid in the template cache joined this spread, whether configured or not, so the error of the constant depended on what happened to be downloaded (e.g. on GTC54-15A0/OB0019, 6.9, 6.3 and 4.2 km/s with BT-Settl alone against 9.2, 12.2 and 7.4 km/s with Sonora Bobcat also cached); it now uses the configured grids only.
 When the nodes disagree (χ² p ≤ 0.01), the constant's error is inflated by the Birge factor and flagged (`star_sky_inconsistent`).
 The error budget then has three zero-point terms:
 - `sys_wavezp`, the uncertainty of the applied curve at the measurements' wavelengths (or, when nothing is applied, only the uncertainty of the measured curve, never its value; a WARNING is logged when a significant offset is left unapplied);
@@ -149,7 +152,7 @@ Without the raw header, the four nodes give s = +0.20 ± 0.44, consistent with t
 Since the table below was first made, four changes were made, all decided before the benchmark was looked at:
 the DAR term above;
 the sky applied at each region is measured in a window centred on that region, grown from the region's width until the synthetic bias test passes and its error is no larger than the curve's (otherwise the curve is used, with a WARNING and the bit `sky_window_fallback`; on J1745−1640 this happens for the Na I doublet, where the packaged OH list has few lines);
-the star − sky constant carries the spread over the telluric-fit star models (BT-Settl −23.7, SAND −23.0 and a smooth star −19.4 km/s; 2.3 km/s);
+the star − sky constant carries the spread over the telluric-fit star models (BT-Settl −23.7, SAND −23.0 and a smooth star −19.4 km/s; 2.3 km/s; SAND entered because it was in the cache, which no longer counts unless SAND is configured);
 and the tellcorr file inherits `VEL_CORR` from its spec1d, so the curves are evaluated in the observatory frame.
 
 Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d; `input.raw_header_dir` = the raw headers). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0). In every mode zp_star_sky = −23.7 ± 4.3 km/s, zp_dar_s = −0.052 ± 0.016 and the slit prior is 18.0 km/s (its DAR share is below 0.5 km/s).
@@ -204,8 +207,19 @@ In conclusion, on this spectrum the wavelength calibration, not the RV method, l
 
 On J1745−1640 the telluric nodes measure the star 23.8 ± 3.6 km/s bluer than the sky (4 nodes, χ² 0.4/3), and applying it moves the RV from 18.9 to 42.9 km/s, further from Burgasser et al. (2015).
 The physics of the correction is sound, but it has been tested on one object only, and three of the four nodes lie 540–1260 Å redward of the bluest alkali line used.
-We therefore keep it opt-in (`wavelength_correction = "auto"`) until it is validated on a larger sample with independent RVs, and report the measured constant (`zp_star_sky`) in every mode.
+We therefore kept it opt-in (`wavelength_correction = "auto"`) until it was validated on a larger sample with independent RVs ([below](#the-star--sky-constant-on-sky-tied-spectra)), and report the measured constant (`zp_star_sky`) in every mode.
 In the other modes, the star's slit-centring term enters only through the slit prior (18.0 km/s for J1745).
+
+### The star − sky constant on sky-tied spectra
+
+Here, we discuss the validation of the constant on a larger sample, from an independent re-reduction of the GTC/OSIRIS R2500I sample of Cooper et al. (2024) with `PypeIt` 2.0.1, in which each exposure's wavelength scale was tied to its own OH sky lines before rvfitter was run.
+On these spectra the sky tests find nothing to correct, so before this version `auto` fell back to the slit-centring prior and the measured constant was never applied.
+The constant was measured for 73 of the 75 exposures: median −8.5 km/s, 16th–84th percentiles −24.0 to +9.3 km/s, and a median error of 7.4 km/s.
+It is consistent between exposures of the same object (e.g. J1745−1640: −15.4 ± 4.3 and −11.1 ± 4.4 km/s).
+Against literature RVs (N = 18), not applying it gave a median offset of −15.9 km/s and a robust scatter of 31.7 km/s; applying it gave about −2.5 and 14.3 km/s.
+As a result, `auto` now applies a measured constant (with its error, `sys_star_sky`) whenever it is measured, with or without the sky curve.
+We note that on the original reductions, which were not tied to the sky, `auto` was not better than `none` ([Sky correction on the GTC sample](#sky-correction-on-the-gtc-sample): median +1.7 km/s and robust scatter 32.7 km/s, against −5.4 and 29.8 km/s), probably because there the arc distortion, not the slit centring, dominates.
+We therefore keep `none` as the default, and recommend `auto` for spectra whose wavelength scale is tied to the sky.
 
 ### Regions on unmeasured parts of the sky curve
 
@@ -265,7 +279,7 @@ On the nine literature objects where `sky-if-needed` applied the sky, the robust
 The sky distortion shapes agree within a night (correlation r ≥ 0.9 on 10 of 14 nights) but vary between nights, so a correction from one night's sky cannot be carried to another.
 We could not test `auto`, because the sample has only H₂O telluric nodes and no O₂ A band.
 On J1745−1640 the adopted RV (template fit, CCF and line centring) was 36.6 km/s with `none`, 15.2 km/s with `sky-if-needed` and 40.5 km/s with `auto`, against the sample's literature value of 26.0 ± 2.0 km/s, so even the benchmark does not favour one mode.
-As a result, `none` is the default, and `sky-if-needed` and `auto` are opt-in; we recommend `sky-if-needed` only as a check when a sky spectrum is present, since it moves RVs by up to tens of km/s.
+As a result, `none` is the default, and `sky-if-needed` and `auto` are opt-in; we recommend `sky-if-needed` only as a check when a sky spectrum is present, since it moves RVs by up to tens of km/s, and `auto` for spectra already tied to the sky ([The star − sky constant on sky-tied spectra](#the-star--sky-constant-on-sky-tied-spectra)).
 The sky zero point is still measured and reported in every mode (`zp_sky_kms`), and the Diagnostics tab and the `wavelength_shift_kms` column give how much an applied correction moved each RV.
 
 ## References

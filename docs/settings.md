@@ -224,6 +224,7 @@ The BT-Settl grids come from SVO, one spectrum per request, and the Sonora grids
 ### Getting a grid: original files you already have
 
 If you already have a grid's original files, as distributed on Zenodo, rvfitter converts them instead of downloading them: choose "Use files I already have…" at Measure RVs and pick the folder, or run `rvfitter templates download --grid G --from DIR` with the same ranges.
+For the BT-Settl grids, `--from DIR` takes two-column spectra (wavelength [Å], flux) under the names that SVO and Lyon use (e.g. `lte020.0-5.0-0.0a+0.0.BT-Settl.7.dat.txt`), or a folder in rvfitter's own format (another cache, with its `rvfitter_grid.toml`), and merges the points within the ranges into the cached grid of that name: the points already there are kept, the manifest records the folder, the folder's medium is checked and must match the cached grid's, and a point that is already cached with different values stops the merge before anything is written.
 The folder (searched with its subfolders) holds either the record's archives (`spectra_m+0.0.tar.gz` for Sonora Bobcat, `spectra.zip` for Diamondback, `teff_<min>_<max>.tar.gz` for Elf Owl, `SAND.zip`) or the files extracted from them (e.g. `sp_t1000g316nc_m0.0.gz`, `spectra_logzz_4.0_teff_1000.0_grav_316.0_mh_0.0_co_1.0.nc`); the extracted files are used when present, because they are quicker to read.
 The conversion, the medium check and the manifest (which records the folder) are those of a download, and the result goes into the cache in the same way, so the folder itself is never changed.
 Every requested Teff/log g point (in steps of 100 K and 0.5 dex within the ranges) must be in the folder; otherwise nothing is written and the error names the missing points.
@@ -282,6 +283,8 @@ The expected Teff, in K (e.g. from the spectral type); default unset.
 It chooses the features (each catalogue feature has a Teff range in which it is useful; e.g. Rb I 1300–2400 K, TiO 1900–3500 K) and centres the template search.
 We recommend always setting it, e.g. ~2100 K for an L1.
 Without it, every feature in the catalogue is considered and the whole grid is searched, which is slower and can admit features that are absent or blended at the target's Teff.
+A prior (Teff, or a set log g, [M/H] or [α/M] prior) more than one grid step beyond a configured grid that is available stops the run before anything is read, with an error naming the grid, its range and the request; within one step, the nearest grid point is used and the measurement flagged `template_grid_edge`.
+This is because a fit at the edge template is biased, not merely less precise: with a cache holding only BT-Settl-CIFIST 2600–4500 K, every L dwarf (1700–2100 K) was fitted with the 2600 K template, which shifted the whole sample by about +14 km/s.
 
 <a id="templates-logg_prior"></a>
 ### `templates.logg_prior`
@@ -436,7 +439,7 @@ The full analysis is in [methods.md](methods.md#wavelength-zero-point-of-the-gtc
 The wavelength zero-point correction:
 - `none` (default): measure and report only;
 - `sky-if-needed` (opt-in): the OH sky curve Δv(λ), applied only when it is safe and significant;
-- `auto` (opt-in): the sky curve plus the star − sky constant from the star's telluric lines;
+- `auto` (opt-in): the star − sky constant from the star's telluric lines whenever it is measured, with the sky curve when `sky-if-needed` would apply it, and alone otherwise (`wavelength_correction_applied = "star"`, e.g. on a spectrum already tied to the sky in the reduction);
 - `sky`: the sky curve alone, whenever it can be measured;
 - `telluric`: the star's telluric curve alone.
 
@@ -444,8 +447,11 @@ We made `none` the default because on the GTC sample of 20 objects with literatu
 `sky-if-needed` applies the sky curve only when three tests on the calibration data pass: at least three measured sky segments covering more than half of every region; a significant offset (|mean Δv| > 3σ) or variation between segments (χ² p < 0.001); and a correction larger than 0.05 resolution elements.
 The stellar line scatter is never used, so the decision does not depend on the RVs being measured.
 We offer it because arc-lamp solutions can be distorted by tens of km/s with a small arc RMS: on the GTC/OSIRIS spectrum of J1745−1640 the sky shows +5 to +38 km/s over 7700–8950 Å, and correcting it reduced the line-to-line scatter from 11.3 to 3.2 km/s.
-We keep `auto` opt-in because the star − sky constant has been tested on one object only, where it moved the RV further from the literature value ([methods.md](methods.md#why-the-star--sky-constant-is-opt-in)).
-`telluric` is refused when the regions lie too far from the telluric nodes, as for the optical alkali lines.
+`auto` needs a spectrum with its telluric absorption (a `PypeIt` spec1d, or `calibration.telluric_source`) and a sky; its constant's error is `sys_star_sky`.
+On 75 GTC/OSIRIS R2500I exposures whose wavelengths were already tied to the OH sky lines in the reduction, applying the constant brought the RVs of the 18 objects with literature values from a median offset of −15.9 to about −2.5 km/s, and the robust scatter from 31.7 to 14.3 km/s; on the original reductions, which were not tied to the sky, `auto` was not better than `none` ([methods.md](methods.md#the-star--sky-constant-on-sky-tied-spectra)).
+We therefore keep `none` as the default, and recommend `auto` for spectra whose wavelength scale is tied to the sky.
+The O2 A band is not a telluric node below 2800 K (the `teff_min` of O2 A in the feature catalogue), because the pressure-broadened K I 7667/7701 wings fill it; for L dwarfs the star − sky constant therefore rests on the H2O nodes alone.
+`telluric` is refused when the regions lie more than 250 Å from every usable telluric node, as for the optical alkali lines; the WARNING names each such region, its nearest node and the distance (e.g. `Rb I 7802: 429 Å from H2O 8200 (node at 8231 Å)`).
 A spectrum without a sky (most Spextool and JWST files) is left uncorrected in every mode.
 [Wavelength-correction mode](#recipe-correction-mode) gives our recommendation and what the validation rests on.
 
@@ -601,6 +607,7 @@ This is a lower limit: it has no zero-point term, and at low R the zero point do
 
 We recommend the default, `none` ([`calibration.wavelength_correction`](#calibration-wavelength_correction)).
 This was decided by a test on the GTC sample fixed before the results were seen: against 20 literature RVs, `sky-if-needed` lowered the robust scatter from 29.8 to 22.5 km/s but left the pull width unchanged (1.20 against 1.19), and the uncorrected offsets did not follow each object's sky Δv significantly (Spearman p = 0.17; [methods.md](methods.md#sky-correction-on-the-gtc-sample)).
+For spectra whose wavelength scale was already tied to the OH sky lines in the reduction, we recommend `auto`, which then applies the star − sky constant alone ([methods.md](methods.md#the-star--sky-constant-on-sky-tied-spectra)).
 Without a sky spectrum (every Spextool and JWST file, and coadds without a `sky_source`) every mode applies nothing.
 With a sky, `sky-if-needed` is a useful check: on J1745−1640 it reduced the line-to-line scatter from 11.3 to 3.2 km/s but moved line centring from 35.0 to 13.6 km/s, against 26.2 ± 2.3 km/s in the literature.
 No mode agrees with the literature within the statistical errors for every method, whilst every mode lies within 1.3 of its total errors ([methods.md](methods.md#results-by-method)), so the zero point of that spectrum, not the mode, limits it.

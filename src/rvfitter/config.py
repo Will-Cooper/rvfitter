@@ -46,7 +46,7 @@ WAVELENGTH_CORRECTION_DEFAULT = 'none'  # why: docs/methods.md, "Sky correction 
 WAVELENGTH_MODE_TEXT = {  # what each mode applies
     'sky-if-needed': 'the OH sky zero-point curve, only where it is well measured at the regions and significant',
     'sky': 'the OH sky zero-point curve, whenever it is measured',
-    'auto': 'the sky-if-needed curve plus the star − sky constant (opt-in)',
+    'auto': 'the star − sky constant whenever it is measured, with the sky-if-needed curve when that applies',
     'telluric': "the star's own telluric zero-point curve, if it covers the regions",
     'none': 'nothing (the zero point is only measured and reported)',
 }
@@ -219,9 +219,10 @@ class OutputConfig:
 @dataclass
 class CalibrationConfig:
     """Wavelength-solution corrections applied to the spectra before any method runs"""
-    # 'sky-if-needed': apply the OH sky zero point only when it is safe and significant; 'auto' (opt-in): also
-    # apply the star - sky constant; 'sky': sky curve alone; 'telluric': the star's telluric curve; 'none': report
-    # only. See docs/methods.md. What was applied is logged and recorded (wavelength_correction_applied, zp_flags).
+    # 'sky-if-needed': apply the OH sky zero point only when it is safe and significant; 'auto': the star - sky
+    # constant whenever measured, with that sky curve when it applies; 'sky': sky curve alone; 'telluric': the
+    # star's telluric curve; 'none': report only. See docs/methods.md. What was applied is logged and recorded
+    # (wavelength_correction_applied, zp_flags).
     wavelength_correction: str = field(default=WAVELENGTH_CORRECTION_DEFAULT,
                                        metadata={'choices': WAVELENGTH_CORRECTIONS})
     # slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the slit width W and
@@ -880,7 +881,8 @@ def setting_advice(spectrum: Spectrum, cfg: Config, fit_teff: float | None = Non
         where = 'the file' if spectrum.sky is not None else 'Sky source'
         out['calibration.wavelength_correction'] = SettingAdvice(
             WAVELENGTH_CORRECTION_DEFAULT, f'Sky lines in {where}: try sky-if-needed as a check (it can move RVs by '
-                                           'tens of km/s).')
+                                           'tens of km/s), or auto to apply the star − sky offset measured from '
+                                           'the telluric lines (needs a non-telluric-corrected spectrum).')
     else:
         out['calibration.wavelength_correction'] = SettingAdvice(
             'none', '' if space or tellcorr or cfg.input.telluric_corrected else

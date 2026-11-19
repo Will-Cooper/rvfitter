@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from injection import cfg_of
-from rvfitter import broadening, config, medium
+from rvfitter import broadening, config, medium, systematics
 from rvfitter.calibration import sky_zeropoint, telluric
 from rvfitter.calibration import telluric_zeropoint as TZ
 from rvfitter.calibration import wavelength_correction as wcorr
@@ -216,7 +216,6 @@ def test_pipeline_telluric_and_auto_modes():
     # 'auto' (opt-in): the sky curve when needed, plus the star - sky constant when measured
     regs = [Region('Na I', 'line', 8175., 8205.), Region('Rb I', 'line', 7940., 7960.),
             Region('Cs I', 'line', 8515., 8530.)]
-    from rvfitter import systematics
     # sky-if-needed applies the sky curve only; the constant is measured and reported, not applied
     cfg.calibration.wavelength_correction = 'sky-if-needed'
     spec_d, info_d = wcorr.correct(raw, raw, cfg, 'X', regions=regs)
@@ -239,8 +238,9 @@ def test_pipeline_telluric_and_auto_modes():
     assert info_t['applied'] == 'none' and info_t['zp_flags'] & wcorr.ZP_FLAGS['no_sky']
 
 
-def test_telluric_curve_refused_far_from_nodes():
-    """A region far from every telluric node is not corrected by the telluric curve"""
+def test_telluric_curve_refused_far_from_nodes(caplog):
+    """A region far from every telluric node is not corrected by the telluric curve; the WARNING names the region,
+    its nearest usable node and the distance"""
     raw = _observed()
     cfg = config.Config()
     cfg.input.resolution = R
@@ -251,6 +251,11 @@ def test_telluric_curve_refused_far_from_nodes():
     out, bad = wcorr.correct(raw, raw, cfg, 'X', regions=[Region('X', 'line', 10700., 10720.)])
     assert bad['applied'] == 'none' and bad['zp_flags'] & wcorr.ZP_FLAGS['telluric_refused']
     assert np.array_equal(out.wave, raw.wave)
+    tzp = out.meta['telluric_zeropoint']
+    k = int(np.argmax(tzp['node_wave']))
+    msg = next(r.getMessage() for r in caplog.records if 'not applied' in r.getMessage())
+    node = tzp['node_wave'][k]
+    assert f'X: {10710. - node:.0f} Å from H2O' in msg and f'(node at {node:.0f} Å)' in msg
 
 
 # ------------------------------------------------------------------------------- the absolute zero-point budget
@@ -305,6 +310,32 @@ def test_distortion_plus_constant_recovered_and_applied():
     assert info['zp_flags'] & wcorr.ZP_FLAGS['dar_pa_unknown'] and abs(ss['s']) < 3. * ss['s_err'] + 0.1
     assert term['value'] == pytest.approx(np.sqrt(np.mean(var))) and 'measured' in term['term']
     assert np.isfinite(term['prior'])  # the slit prior is reported even when the constant was measured
+
+
+def test_auto_applies_constant_on_sky_tied_spectrum():
+    """A spectrum already tied to the sky (no sky distortion; the star 25 km/s off it): the sky tests find nothing
+    to correct, and 'auto' still applies the measured star - sky constant, alone ('star'); sky-if-needed does not"""
+    flat = lambda w: 0. * w  # noqa: E731
+    sky = _observed(dv_func=flat, with_sky=True).sky
+    star = _observed(dv_func=lambda w: 25. + 0. * w)
+    raw = Spectrum(star.wave, star.flux, star.sigma, None, {**star.meta, **SLIT_META}, 'synthetic', sky)
+    spec, info = wcorr.correct(raw, raw, _budget_cfg('auto'), 'X', regions=REGS)
+    assert info['zp_flags'] & wcorr.ZP_FLAGS['sky_not_needed'] and not info['zp_flags'] & wcorr.ZP_FLAGS['sky_applied']
+    assert info['applied'] == 'star' and info['star_sky_applied']
+    assert info['zp_flags'] & wcorr.ZP_FLAGS['star_sky_applied']
+    assert abs(info['zp_star_sky'] - 25.) < 3. * info['zp_star_sky_err'] + 1.
+    wc = spec.meta['wavelength_correction']
+    assert wc['sky'] is None and wc['constant_kms'] == pytest.approx(info['zp_star_sky'])
+    assert wc['constant_err'] == pytest.approx(info['zp_star_sky_err'])
+    for lam in (7950., 8520.):  # the constant (plus the fitted DAR term) everywhere
+        applied = float(sky_zeropoint.applied_dv(spec.meta, lam))
+        assert applied == pytest.approx(25., abs=3. * info['zp_star_sky_err'] + 3.)
+    # its error is sys_star_sky (measured), and sys_wavezp still carries the measured, unapplied sky curve's error
+    term = wcorr.star_sky_term(info, spec, np.array([8190., 8520.]), _budget_cfg('auto'), 'X')
+    assert 'measured' in term['term'] and term['value'] >= info['zp_star_sky_err'] - 1e-9
+    assert np.isfinite(systematics.wavelength_zero_point(spec))
+    _, info_s = wcorr.correct(raw, raw, _budget_cfg(), 'X', regions=REGS)
+    assert info_s['applied'] == 'none' and not info_s['star_sky_applied']
 
 
 def test_unmeasured_constant_uses_slit_prior(caplog):
@@ -460,10 +491,12 @@ def test_j1745_telluric_zero_point(real_telluric_model):
     assert all(abs(s['dv']) < 100. for s in zp.segments if s['used'])
 
 
-def test_family_templates_skip_partial_cache(tmp_path, monkeypatch):
-    """The telluric-fit families: a smooth star always; an empty cache directory is not a cached grid"""
+def test_family_templates_are_the_configured_grids(tmp_path, monkeypatch):
+    """The telluric-fit families: a smooth star, and the other configured grids only; a downloaded grid in the
+    cache that is not configured is not a family (it used to be, so a Sonora grid joined every fit)"""
     from types import SimpleNamespace
     (tmp_path / 'sonora-bobcat').mkdir()
+    (tmp_path / 'sonora-bobcat' / 'rvfitter_grid.toml').write_text('name = "sonora-bobcat"\n')
     monkeypatch.setenv('RVFITTER_CACHE', str(tmp_path))
     raw = _observed()
     cfg = _budget_cfg()
