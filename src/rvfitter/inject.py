@@ -8,6 +8,9 @@ spectrum or a ln λ grid. Each of --n seeds per RV is measured by `pipeline.meas
 (barycentric correction skipped; wavelength correction "none": the injected wavelengths are exact). Per method
 (and the adopted RV), the table gives the bias (mean RV − truth), bias/scatter, and the pull (RV − truth)/σ mean and
 width; a calibrated method has |bias| < 0.2 scatter and pull width 0.8–1.2.
+
+With --tellurics, inject away from RV 0 too (e.g. --rv -30 0 30): at RV 0 the stellar lines sit on the telluric
+lines (both at rest), so a method pulled towards the telluric frame recovers the truth and the pulling is hidden.
 """
 import argparse
 import copy
@@ -35,6 +38,9 @@ def spectra(template: Spectrum, wave: np.ndarray, resolution: float, snr: float,
         from .calibration import telluric
         kw = {} if pwv is None else {'pwv': pwv}
         trans = telluric.transmission(wave, airmass, resolution=resolution, **kw)
+        if all(rv == 0. for rv in rvs):
+            log.warning('injecting with tellurics at RV 0 only: the stellar and telluric lines align, which hides '
+                        'telluric pulling; inject at e.g. ±30 km/s too (--rv -30 0 30)')
     out = []
     for rv in rvs:
         clean = tpl.at(wave, rv) * trans
@@ -101,7 +107,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='rvfitter inject', description='Injection-recovery of the configured methods '
                                 'on a degraded grid template: bias and pull width per method.')
     forecast.add_arguments(p)
-    p.add_argument('--rv', type=float, nargs='+', default=[0.], help='injected RVs [km/s] (default 0)')
+    p.add_argument('--rv', type=float, nargs='+', default=[0.],
+                   help='injected RVs [km/s] (default 0; with --tellurics add e.g. -30 30: at RV 0 the stellar and '
+                   'telluric lines align and telluric pulling is hidden)')
     p.add_argument('--n', type=int, default=20, help='noise realisations per RV (default 20)')
     p.add_argument('--seed', type=int, help='random seed (default: the config\'s)')
     p.add_argument('--methods', help='comma-separated methods (default: the config\'s)')

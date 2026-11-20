@@ -37,6 +37,8 @@ We compare each method with the benchmark through the difference divided by the 
 z = |RV − 26.2| / √(2.3² + σ_RV²).
 Agreement is good for z ≤ 1 and acceptable for z ≤ 2; anything above 2 is investigated and explained individually.
 Because a large quoted error would make z small trivially, error honesty is checked separately: the injection–recovery tests require calibrated uncertainties (pull distribution width 0.8–1.2).
+When `rvfitter inject` adds tellurics (`--tellurics`), we inject away from RV 0 too (e.g. `--rv -30 0 30`).
+This is because at RV 0 the stellar and telluric lines sit at the same wavelengths, so a method pulled towards the telluric frame still recovers the truth and the pulling is hidden; `inject` warns when every injected RV is 0.
 We do not tune any method towards this number: the criterion is checked, not fitted.
 
 On this criterion, the original Cooper et al. (2024) values sit at:

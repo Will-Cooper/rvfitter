@@ -39,3 +39,14 @@ def test_cli(tmp_path, monkeypatch):
                      '--out', str(out)]) == 0
     t = Table.read(out, format='ascii.csv')
     assert list(t['method']) == ['template_fit', 'adopted'] and t['n'][0] == 2
+
+
+def test_tellurics_at_rv_zero_only_warn(caplog):
+    """At RV 0 alone the stellar and telluric lines align (telluric pulling hidden): a warning; another RV: none"""
+    _, tpl, wave, r = _setup()
+    rng = np.random.default_rng(0)
+    for rvs, warned in (([0.], True), ([0., 30.], False)):
+        caplog.clear()
+        out = inject.spectra(tpl, wave, r, 50., 0., rvs, 2, rng, airmass=1.2)
+        assert [t for t, _ in out] == [rv for rv in rvs for _ in range(2)]
+        assert ('hides telluric pulling' in caplog.text) is warned
