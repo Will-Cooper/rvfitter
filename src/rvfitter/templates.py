@@ -232,13 +232,50 @@ def read_two_column(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     return wave, flux[i]
 
 
-@functools.lru_cache(maxsize=32)
+def _first_wave(lines) -> float | None:
+    """λ of the first line read by `read_two_column` (finite λ > 0 and flux; '#' comments skipped), None if none"""
+    for line in lines:
+        cols = line.split(b'#', 1)[0].split()
+        if len(cols) < 2:
+            continue
+        try:
+            wave, flux = float(cols[0]), float(cols[1])
+        except ValueError:
+            continue
+        if np.isfinite(wave) and np.isfinite(flux) and wave > 0:
+            return wave
+    return None
+
+@functools.cache
+def _file_wave_range(path: str, mtime_ns: int, size: int, medium: str) -> tuple[float, float]:
+    """
+    Vacuum λ range [Å] of a template file from its first and last data lines only (the key includes mtime and size)
+
+    Assumes the file ascends in λ; `_load_vacuum` checks this when it reads the whole file.
+    """
+    with open(path, 'rb') as fh:
+        lo = _first_wave(fh)
+        start = max(size - 65536, 0)
+        fh.seek(start)
+        tail = fh.read().splitlines()
+    hi = _first_wave(reversed(tail[1:] if start else tail))  # the first tail line may be cut
+    if lo is None or hi is None or hi <= lo:
+        raise ValueError(f'template {path}: no valid ascending wavelength range in its first and last lines')
+    wmin, wmax = to_vacuum(np.array([lo, hi]), medium)
+    return float(wmin), float(wmax)
+
+# Sized to hold a ±300 K prior window of a 50 K-step grid over three log g (39 files) plus template-spread variants,
+# so the per-method passes over the candidates do not thrash it
+@functools.lru_cache(maxsize=64)
 def _load_vacuum(path: str, mtime_ns: int, size: int, medium: str) -> tuple[np.ndarray, np.ndarray]:
     """Cached read of one template file, converted to vacuum (the key includes mtime and size)"""
     wave, flux = read_two_column(path)
     wave = to_vacuum(wave, medium)
     keep = np.concatenate([[True], np.diff(wave) > 0])  # rounding may merge neighbours: rebin needs strict order
     wave, flux = wave[keep], flux[keep]
+    if not np.allclose((wave[0], wave[-1]), _file_wave_range(path, mtime_ns, size, medium), rtol=1e-9, atol=0):
+        raise ValueError(f'template {path} is not in ascending wavelength order: its first and last lines are not '
+                         f'its λ range ({wave[0]:.6g}–{wave[-1]:.6g} Å)')
     wave.setflags(write=False)
     flux.setflags(write=False)
     return wave, flux
@@ -249,7 +286,7 @@ def _file_key(path: Path) -> tuple[str, int, int]:
     return str(path.resolve()), st.st_mtime_ns, st.st_size
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=256)  # small entries: one per file and output grid (method window)
 def _broadened_file(path: str, mtime_ns: int, size: int, medium: str, grid: str, resolution: float | None,
                     resolution_native: float | None, wmin: float, wmax: float, dv: float) -> np.ndarray:
     """
@@ -279,6 +316,7 @@ def _broadened_file(path: str, mtime_ns: int, size: int, medium: str, grid: str,
 
 def clear_cache() -> None:
     """Empty the in-memory template and broadening caches"""
+    _file_wave_range.cache_clear()
     _load_vacuum.cache_clear()
     _broadened_file.cache_clear()
 
@@ -471,8 +509,7 @@ class TemplateGrid:
     def wave_range(self, teff: float, logg: float = 5., met: float | None = None, **extra: float
                    ) -> tuple[float, float]:
         """Vacuum wavelength range [Å] of the grid file nearest the parameters"""
-        wave = _load_vacuum(*_file_key(self._index[self.nearest(teff, logg, met, **extra)]), self.meta.medium)[0]
-        return float(wave[0]), float(wave[-1])
+        return _file_wave_range(*_file_key(self._index[self.nearest(teff, logg, met, **extra)]), self.meta.medium)
 
     def get(self, teff: float, logg: float = 5., met: float | None = None, *,
             wave_range: tuple[float, float] | None = None, method: str = 'linear', **extra: float) -> Spectrum:
