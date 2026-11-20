@@ -32,6 +32,15 @@ def test_tiny_run():
     assert np.array_equal(out['bias'], again['bias'])  # seeded
 
 
+def test_tied_spectrum_recipe_still_injects():
+    """Synthetic spectra have no header: header-backed calibration settings take their defaults in injections"""
+    cfg, tpl, wave, r = _setup()
+    cal = cfg.calibration
+    cal.zero_point_tied, cal.slit_prior, cal.star_sky_applied = 'header:WSKYERR', 'header:WSTARERR', 'header:WSTARCOR'
+    out = inject.inject(cfg, tpl, wave, r, 50., 0., [10.], 1, seed=3)
+    assert out[0]['n_failed'] == 0
+
+
 def test_cli(tmp_path, monkeypatch):
     monkeypatch.setattr(forecast, 'setup', lambda args: _setup())
     out = tmp_path / 'inj.csv'

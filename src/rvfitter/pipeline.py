@@ -348,7 +348,7 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     # the spread is measured with a used grid-template method on its own regions: template_fit when used, else the
     # first enabled one; telluric_ref (a star model nearest the priors) and shape-corrected linecentre (templates
     # calibrate the line shapes only) have their own one-Teff-step terms
-    grid_methods = [m for m in template_methods(cfg) if m in used and m not in ('linecentre', 'telluric_ref')]
+    grid_methods = [m for m in template_methods(cfg, names) if m in used and m not in ('linecentre', 'telluric_ref')]
     spread_method = 'template_fit' if 'template_fit' in grid_methods else next(iter(grid_methods), None)
     if spread_method is None and 'telluric_ref' in used:  # its star model is the template varied
         sysd['template_spread'] = systematics.telluric_ref_template_spread(

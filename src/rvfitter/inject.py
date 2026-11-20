@@ -20,7 +20,7 @@ from collections.abc import Sequence
 import numpy as np
 from astropy.table import Table
 
-from . import forecast, pipeline
+from . import config, forecast, pipeline
 from .types import Spectrum
 
 __all__ = ['main', 'inject', 'spectra', 'summarise']
@@ -76,6 +76,12 @@ def inject(cfg, template: Spectrum, wave: np.ndarray, resolution: float, snr: fl
     """Run the injections and return the per-method summary table (one row per method, then 'adopted')"""
     cfg = copy.deepcopy(cfg)
     cfg.calibration.wavelength_correction = 'none'
+    # synthetic spectra have no observation: the reduction-specific (possibly header-backed) calibration settings
+    # take their defaults, so the tied-spectrum recipe (e.g. zero_point_tied = "header:WSKYERR") still injects
+    default = config.CalibrationConfig()
+    cal = cfg.calibration
+    cal.zero_point_tied, cal.slit_prior, cal.star_sky_applied = (default.zero_point_tied, default.slit_prior,
+                                                                 default.star_sky_applied)
     names = pipeline.enabled_methods(cfg, methods)
     noise_ss, method_ss = np.random.SeedSequence(seed).spawn(2)
     trials = spectra(template, wave, resolution, snr, vsini, rvs, n, np.random.default_rng(noise_ss),

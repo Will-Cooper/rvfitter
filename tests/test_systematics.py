@@ -118,6 +118,16 @@ def test_template_spread_one_teff_step_about_the_best_fit(tmp_path, monkeypatch)
         assert out['delta_modes'] == 427. and out['sd_templates'] == 1. and out['total'] == 1.
 
 
+def test_spread_follows_a_methods_override(tmp_path):
+    """A methods= override that runs template_fit on a linecentre-only config still measures the template spread"""
+    from rvfitter import pipeline, results
+    spec, cfg = _toy(tmp_path)
+    cfg.methods.enabled = ['linecentre']
+    res = pipeline.measure_object([spec], cfg, None, np.random.default_rng(0), methods=['template_fit'])
+    sys_template = results.to_table([res])['sys_template'].iloc[0]
+    assert np.isfinite(sys_template) and sys_template > 0
+
+
 def test_grid_reopened_when_a_template_file_is_overwritten(tmp_path):
     """An in-place overwrite leaves the directory mtime alone; the cached grid and its medium check must not survive"""
     _, cfg = _toy(tmp_path)
