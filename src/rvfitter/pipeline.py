@@ -345,14 +345,20 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     # methods that contributed a usable measurement (an enabled template method that failed everywhere does not)
     used = {m for m, r in results.items()
             if any(np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS for x in r.measurements)}
-    if used <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
+    # the spread is measured with a used grid-template method on its own regions: template_fit when used, else the
+    # first enabled one (linecentre's templates calibrate shapes only; telluric_ref's star model is fixed)
+    grid_methods = [m for m in template_methods(cfg) if m in used and m not in ('linecentre', 'telluric_ref')]
+    spread_method = 'template_fit' if 'template_fit' in grid_methods else next(iter(grid_methods), None)
+    if spread_method is None and used - {'linecentre'}:  # e.g. telluric_ref alone: its template is not varied
+        sysd['template_spread'] = np.nan
+    elif spread_method is None and not sysd.get('linecentre_shape_correction'):
         sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
-    elif used <= {'linecentre'}:  # its templates calibrate the line shapes only: no template_fit to vary
+    elif spread_method is None:  # shape-corrected line centring alone: its templates shift every line coherently
         sysd['template_spread'] = systematics.shape_template_spread(
             [x for x in results['linecentre'].measurements if np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS])
     else:
         spread = systematics.template_spread_details(corrected[0], sels[0], cfg, executor=executor,
-                                                     rng=rng.spawn(1)[0])
+                                                     rng=rng.spawn(1)[0], method=spread_method)
         sysd['template_spread'] = float(spread['total'])
         sysd['template_window_delta'] = float(spread['delta_modes'])  # a diagnostic, not in sys_template
     sysd['floor'] = float(cfg.combine.systematic_floor)

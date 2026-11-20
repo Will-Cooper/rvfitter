@@ -36,6 +36,13 @@ def test_template_spread_components(tmp_path):
     assert np.isfinite(out['total']) and out['total'] < 5. and np.isfinite(out['delta_modes'])
 
 
+def test_template_spread_with_ccf_on_its_own_regions(tmp_path):
+    spec, cfg = _toy(tmp_path)
+    sel = regions.select(spec, teff=1900., methods=['ccf'])
+    out = systematics.template_spread_details(spec, sel, cfg, rng=np.random.default_rng(1), method='ccf')
+    assert len(out['teff_steps']) >= 2 and np.isfinite(out['total'])
+
+
 def test_grid_opened_once_and_reruns_at_debug(tmp_path, monkeypatch, caplog):
     spec, cfg = _toy(tmp_path)
     cfg.templates.grid = 'toy'  # as the variants pin it: one grid name, one cache entry

@@ -67,8 +67,8 @@ def fakes(monkeypatch):
     monkeypatch.setattr(combine, 'hierarchical', hierarchical, raising=False)
     monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, **kw: 0.5)
     monkeypatch.setattr(systematics, 'template_spread_details',
-                        lambda s, r, c, *, executor=None, rng: dict(total=0.4, delta_modes=0.3,
-                                                                    window_modes=dict(full=1.3, features=1.)))
+                        lambda s, r, c, *, executor=None, rng, method: dict(
+                            total=0.4, delta_modes=0.3, window_modes=dict(full=1.3, features=1.)))
     monkeypatch.setattr(pipeline, 'REGISTRY', {'ccf': FakeMethod('ccf'), 'template_fit': FakeMethod('template_fit'),
                                                'telluric_ref': FakeMethod('telluric_ref', fail=True)})
     return types.SimpleNamespace(calls=calls)
@@ -243,6 +243,28 @@ def test_failed_template_method_leaves_no_template_term(fakes, monkeypatch):
     cfg.methods.enabled = ['linecentre', 'template_fit']
     res = pipeline.run(cfg, INPUTS, n_procs=1, failures=[])
     assert all(r.systematics['template_spread'] == 0. for r in res)
+
+
+@pytest.mark.parametrize('enabled, expected', [(['ccf'], 'ccf'), (['lsd'], 'lsd'),
+                                               (['ccf', 'template_fit'], 'template_fit'),
+                                               (['linecentre', 'lsd', 'ccf'], 'lsd')])
+def test_template_spread_uses_an_enabled_template_method(fakes, monkeypatch, enabled, expected):
+    """The spread is measured with a used template method on its own regions (template_fit first), never with
+    template_fit when it is not enabled (it had no regions: sys_template was NaN for ccf or lsd alone)"""
+    seen = []
+
+    def details(s, sel, c, *, executor=None, rng, method):
+        assert method in sel  # its own selected regions
+        seen.append(method)
+        return dict(total=0.4, delta_modes=0.3, window_modes=dict(full=1.3, features=1.))
+
+    monkeypatch.setattr(systematics, 'template_spread_details', details)
+    monkeypatch.setattr(pipeline, 'REGISTRY', {m: FakeMethod(m) for m in enabled})
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = enabled
+    res = pipeline.run(cfg, INPUTS[:1], n_procs=1, failures=[])
+    assert seen == [expected] and res[0].systematics['template_spread'] == 0.4
+    assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
 
 
 def test_shape_corrected_linecentre_alone_has_a_finite_template_term(fakes, monkeypatch):
