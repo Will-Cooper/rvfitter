@@ -341,6 +341,8 @@ The options most worth knowing are:
 - `forward_mcmc`: `n_walkers` (32), `n_burn` (1000), `n_steps` (4000), `telluric` (false).
 
 We keep `shape_correction` off by default because it makes line centring template-dependent, which removes its value as the model-free check; on J1745−1640 it moved the RV by only +1.6 to +2.0 km/s ([methods.md](methods.md#j17451640-after-the-task-15-fixes)).
+However, at R ≈ 2600 the Voigt fit is biased line by line on blended lines (noise-free offsets: Rb I 7802 −7.1, Na I 8197 −5.1, Na I 8185 −0.4, Rb I 7949 +7.7 km/s), and `shape_correction` calibrates these offsets on the template and removes them.
+We therefore recommend turning it on whenever templates are available, unless line centring is wanted as the model-free check.
 Widen `rv_min`/`rv_max` only for objects expected beyond ±500 km/s, since a wider search admits more spurious peaks.
 
 <a id="methods-binary"></a>

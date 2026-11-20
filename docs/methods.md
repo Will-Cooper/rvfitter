@@ -173,6 +173,9 @@ We therefore do not regard the DAR as the cause of the `auto` offset on this spe
 
 Line centring is model-free by default: its RVs come from the NIST rest wavelengths alone, with no template, so it is the template-independent cross-check of CCF and the template fit, whose agreement would otherwise rest on the same models.
 The opt-in `shape_correction` subtracts, line by line, the RV that the same profile fit measures on the noise-free template nearest the priors (same R, pixels and windows), and adds the spread over the ±1 Teff-step neighbours to the error; the method is then template-dependent (INFO, and `linecentre_shape_correction` in the results).
+At R ≈ 2600 a single Voigt profile is biased on lines blended with neighbouring atomic and molecular features: on noise-free BT-Settl templates it returns −7.1 km/s for Rb I 7802, −5.1 km/s for Na I 8197, −0.4 km/s for Na I 8185 and +7.7 km/s for Rb I 7949.
+These per-line offsets partly cancel in the combined RV but inflate the line-to-line scatter (τ_line), and they do not average out when only some lines survive the selection.
+Because `shape_correction` calibrates exactly these offsets on the template, it removes the bias, and we recommend turning it on whenever templates are available, keeping it off only when line centring must stay the model-free check.
 Cs I 8946 is no longer used for line centring: its catalogue caveat now says it is blended at R ≈ 2600 (BT-Settl fits of it range from −54 to +3 km/s).
 
 Table: J1745−1640 line centring (Voigt; R 2602; same inputs as above), with the default (model-free) and with `shape_correction`.
