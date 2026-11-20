@@ -17,6 +17,7 @@ from scipy.ndimage import median_filter
 from scipy.stats import chi2 as chi2_dist
 
 from .. import io
+from ..config import HEADER_PREFIX
 from ..constants import C_KMS
 from ..features import features
 from ..numerics import rms
@@ -24,7 +25,8 @@ from ..templates import GridCoverageError
 from ..types import Spectrum
 from . import dar, sky_zeropoint, slit, telluric, telluric_zeropoint
 
-__all__ = ['correct', 'star_sky_term', 'combine_epochs', 'arc_kms', 'valid_range', 'matching_object', 'ZP_KEYS',
+__all__ = ['correct', 'star_sky_term', 'combine_epochs', 'setting_value', 'setting_kms', 'arc_kms',
+           'valid_range', 'matching_object', 'ZP_KEYS',
            'ZP_FLAGS', 'zp_flag_names']
 
 log = logging.getLogger(__name__)
@@ -450,7 +452,8 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
     # apply: the sky measured in each region's own window where it can be (`_region_sky`)
     if sky_ok:
         zp = _region_sky(zp, regions, spec, cfg, name, info)
-    if mode == 'auto' and np.isfinite(info['zp_star_sky']):  # with the sky curve if it is applied, else alone
+    done = mode == 'auto' and np.isfinite(info['zp_star_sky']) and _star_sky_done(spec, cfg, name, info)
+    if mode == 'auto' and np.isfinite(info['zp_star_sky']) and not done:  # with the sky curve if applied, else alone
         source = 'sky+star' if sky_ok else 'star'
         spec = sky_zeropoint.apply(spec, zp if sky_ok else None, constant_kms=info['zp_star_sky'],
                                    constant_err=info['zp_star_sky_err'], dar=_dar_table(info, spec), source=source)
@@ -485,11 +488,42 @@ def correct(raw: Spectrum, spec: Spectrum, cfg: Any, name: str = '', regions: di
             log.warning('%s: the OH sky lines say the wavelength solution is offset by %+.1f ± %.1f km/s (%.0f-%.0f '
                         'Å), but no correction is applied (mode %s) and that offset is not in the errors', name,
                         zp.zp_kms, zp.zp_err, *zp.main_span, mode)
-    if np.isfinite(info['zp_star_sky']) and not info['star_sky_applied']:
+    if np.isfinite(info['zp_star_sky']) and not info['star_sky_applied'] and not done:
         log.info('%s: the measured star - sky offset %+.1f ± %.1f km/s (%d nodes) is not applied (mode %s, %s): its '
                  'value is not an error; the slit-centring prior is used instead', name, info['zp_star_sky'],
                  info['zp_star_sky_err'], info['zp_star_sky_n'], mode, info['applied'])
     return spec, info
+
+
+def setting_value(value: Any, spec: Spectrum) -> Any:
+    """A calibration setting's value for one spectrum: itself, or for 'header:KEY' its header card KEY"""
+    if isinstance(value, str) and value.startswith(HEADER_PREFIX):
+        return io.header_value(spec, value.removeprefix(HEADER_PREFIX).strip().upper())
+    return value
+
+
+def setting_kms(value: Any, spec: Spectrum, setting: str) -> float:
+    """`setting_value` as a velocity >= 0 [km/s]; anything else raises naming the file, setting and value"""
+    v = setting_value(value, spec)
+    if isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, float, np.number)) or not np.isfinite(v) or v < 0:
+        raise ValueError(f'{spec.source or "the spectrum"}: {setting} = {value!r} gives {v!r}, not a velocity >= 0 '
+                         '[km/s]')
+    return float(v)
+
+
+def _star_sky_done(spec: Spectrum, cfg: Any, name: str, info: dict) -> bool:
+    """Whether ``calibration.star_sky_applied`` says the reduction already applied the star − sky offset (logged)"""
+    setting = cfg.calibration.star_sky_applied
+    done = setting_value(setting, spec)
+    if not isinstance(done, (bool, np.bool_)):
+        raise ValueError(f'{spec.source or "the spectrum"}: calibration.star_sky_applied = {setting!r} gives '
+                         f'{done!r}, not true or false')
+    if done:
+        log.info('%s: the star - sky offset was already applied in the reduction (calibration.star_sky_applied = '
+                 '%r): the measured constant %+.1f ± %.1f km/s (%d nodes) is a check, not applied again; the slit '
+                 'term is calibration.slit_prior', name, setting, info['zp_star_sky'], info['zp_star_sky_err'],
+                 info['zp_star_sky_n'])
+    return bool(done)
 
 
 def _region_sky(zp: Any, regions: Sequence, spec: Spectrum, cfg: Any, name: str, info: dict) -> Any:
@@ -727,8 +761,9 @@ def star_sky_term(info: dict, spec: Spectrum, waves: np.ndarray | None, cfg: Any
     elif cfg.calibration.zero_point_known:
         out.update(value=0., term='none: calibration.zero_point_known')
         log.info('%s: calibration.zero_point_known: no slit-centring term', name)
-    elif isinstance(choice, (int, float)) and not isinstance(choice, bool):
-        out.update(value=float(choice), term='slit prior (calibration.slit_prior)', flags=ZP_FLAGS['slit_prior'])
+    elif choice not in ('auto', 'none'):  # a number or 'header:KEY'
+        out.update(value=setting_kms(choice, spec, 'calibration.slit_prior'),
+                   term=f'slit prior (calibration.slit_prior = {choice})', flags=ZP_FLAGS['slit_prior'])
     elif str(choice) == 'none':
         out.update(value=0., term='none: calibration.slit_prior = "none"', flags=ZP_FLAGS['zp_unconstrained'])
         log.warning('%s: calibration.slit_prior = "none": the absolute wavelength zero point (slit centring) is '
@@ -776,7 +811,8 @@ def combine_epochs(zp_epochs: list[dict]) -> dict[str, Any]:
                 z[key] = float(np.mean(fin)) if fin else float('nan')
         for key in ('wavelength_zero_point', 'star_sky', 'slit_prior'):
             z[key] = rms([e[key] for e in zp_epochs])
-        z['star_sky_term'] = '/'.join(dict.fromkeys(e['star_sky_term'] for e in zp_epochs))
+        for key in ('star_sky_term', 'wavezp_term'):
+            z[key] = '/'.join(dict.fromkeys(e[key] for e in zp_epochs))
         z['slit'] = zp_epochs[0]['slit']
         z['applied'] = '/'.join(dict.fromkeys(e['applied'] for e in zp_epochs))
         z['mode'] = zp_epochs[0]['mode']

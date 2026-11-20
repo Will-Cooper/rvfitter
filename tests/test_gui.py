@@ -556,6 +556,14 @@ def test_text_or_number_fields_are_plain_boxes(qtbot):
     assert form.get_config().input.hdu == 3
     hdu.edit.setText('SCI')
     assert form.get_config().input.hdu == 'SCI'
+    applied, tied = form.editor('calibration.star_sky_applied'), form.editor('calibration.zero_point_tied')
+    assert applied.edit.text() == 'False' and tied.edit.text() == ''
+    applied.edit.setText('header:WSTARCOR')
+    tied.edit.setText('header:WSKYERR')
+    cal = form.get_config().calibration
+    assert cal.star_sky_applied == 'header:WSTARCOR' and cal.zero_point_tied == 'header:WSKYERR'
+    applied.edit.setText('true')
+    assert form.get_config().calibration.star_sky_applied is True
 
 
 def test_choice_fields_are_combo_boxes_from_config(qtbot):

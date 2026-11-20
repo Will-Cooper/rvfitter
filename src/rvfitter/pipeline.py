@@ -189,6 +189,26 @@ def _uncorrect(per_epoch: list[dict[str, MethodResult]], corrected: list[Spectru
     return waves
 
 
+def _wavelength_term(spec: Spectrum, info: dict, w: np.ndarray | None, cfg: Any, name: str) -> tuple[float, str]:
+    """
+    sys_wavezp of one epoch and what it is: ``calibration.zero_point_tied`` (the error of the reduction's tie to the
+    sky, whose wavelengths are those in use) unless rvfitter applied a curve of its own; else
+    `systematics.wavelength_zero_point`
+    """
+    measured = float(systematics.wavelength_zero_point(spec, wave=w))
+    tied = cfg.calibration.zero_point_tied
+    if tied is None:
+        return measured, 'measured'
+    if info['applied'] not in ('none', 'star'):
+        log.warning('%s: calibration.zero_point_tied is set but the %s curve was applied here, so the wavelengths are '
+                    'no longer the tie\'s: sys_wavezp is that curve\'s %.1f km/s', name, info['applied'], measured)
+        return measured, f'measured ({info["applied"]} curve applied over the tie)'
+    value = wcorr.setting_kms(tied, spec, 'calibration.zero_point_tied')
+    log.info('%s: sys_wavezp = %.1f km/s, the reduction\'s tie to the sky (calibration.zero_point_tied = %s), '
+             'replacing the measured %.1f km/s (the sky curve is reported as a check)', name, value, tied, measured)
+    return value, f'tied (calibration.zero_point_tied = {tied})'
+
+
 def _zero_point_terms(corrected: list[Spectrum], infos: list[dict], waves: list[list[float]], cfg: Any,
                       name: str) -> list[dict]:
     """The zero-point systematics of each epoch, at the wavelengths of its measurements"""
@@ -196,9 +216,10 @@ def _zero_point_terms(corrected: list[Spectrum], infos: list[dict], waves: list[
     for spec, info, lams in zip(corrected, infos, waves, strict=True):
         w = np.asarray(lams) if lams else None
         term = wcorr.star_sky_term(info, spec, w, cfg, name)
+        wzp, wterm = _wavelength_term(spec, info, w, cfg, name)
         out.append({**{key: info[key] for key in wcorr.ZP_KEYS}, 'mode': info['mode'], 'applied': info['applied'],
                     'zp_flags': int(info['zp_flags']) | term['flags'], 'sky_tests': info['sky_tests'],
-                    'wavelength_zero_point': float(systematics.wavelength_zero_point(spec, wave=w)),
+                    'wavelength_zero_point': wzp, 'wavezp_term': wterm,
                     'star_sky': term['value'], 'star_sky_term': term['term'], 'slit_prior': term['prior'],
                     'slit': term['slit']})
     return out

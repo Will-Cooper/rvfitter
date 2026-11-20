@@ -132,7 +132,16 @@ TIPS = {
         + '. ' + WAVELENGTH_SIZE_TEXT,
     'calibration.slit_prior': 'Slit-centring error when the star - sky constant is not applied: auto ((W - F)/√12 '
                               'from the slit width and trace FWHM; without a slit width the total error is '
-                              'undefined), a velocity [km/s], or none (no slit-centring term: 0, with a warning).',
+                              'undefined), a velocity [km/s], header:KEY (read per spectrum from its header, '
+                              'e.g. the error of an offset applied in the reduction), or none (no slit-centring term: '
+                              '0, with a warning).',
+    'calibration.zero_point_tied': 'For spectra whose wavelengths were already tied to the sky in the reduction: the '
+                                   'tie\'s error [km/s], or header:KEY to read it per spectrum. It replaces the '
+                                   'measured and arc terms of sys_wavezp; the sky curve is still measured as a check. '
+                                   'Empty = not tied.',
+    'calibration.star_sky_applied': 'The star - sky offset was already applied in the reduction: true, false, or '
+                                    'header:KEY (a true/false card). auto then does not apply a second measured '
+                                    'constant, and the slit term is the slit prior as given. Default false.',
     'calibration.seeing_fwhm': 'Seeing FWHM [arcsec] assumed for the auto slit prior when the file has no trace FWHM '
                                '(flagged seeing_assumed). Default 0.8.',
     'calibration.wave_rms_kms': 'Wavelength-calibration accuracy [km/s] assumed when the file records no arc RMS '
@@ -346,6 +355,10 @@ class TextEditor(Editor):
             return json.loads(text)
         if isinstance(self.kind, tuple):  # a union such as int | str: the first type that parses (str last)
             for t in self.kind:
+                if t is bool:  # bool('x') is always True: only the words
+                    if text.lower() in ('true', 'false'):
+                        return text.lower() == 'true'
+                    continue
                 try:
                     return t(text)
                 except ValueError:
@@ -607,8 +620,8 @@ def make_editor(tp: Any, f: dataclasses.Field, path: str, tooltips: dict[str, st
             return CheckListEditor(_CHOICE_LISTS[name], container)
         return SeqEditor(container, elem, optional, browse=browse)
     scalars = set(get_args(tp)) - {type(None)}
-    if str in scalars and scalars <= {str, int, float}:  # e.g. slit_prior ('auto' or km/s), hdu (index or name)
-        return TextEditor(tuple(t for t in (int, float, str) if t in scalars),
+    if str in scalars and scalars <= {str, int, float, bool}:  # e.g. slit_prior ('auto' or km/s), hdu (index/name)
+        return TextEditor(tuple(t for t in (bool, int, float, str) if t in scalars),
                           optional=optional or type(None) in get_args(tp))
     return TextEditor('json', optional=optional or type(None) in get_args(tp), browse=browse)  # e.g. local_dir
 

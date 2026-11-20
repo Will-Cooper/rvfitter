@@ -113,6 +113,7 @@ _SPEC: tuple[str | tuple, ...] = (
     'rv_mean', 'rv_spread',
     ('sys_template', 'systematics', 'template_spread', _num, None),
     ('sys_wavezp', 'systematics', 'wavelength_zero_point', _num, None),
+    ('wavezp_term', 'systematics', 'wavezp_term', str, ''),  # what sys_wavezp is: measured, or the reduction's tie
     # the star's absolute zero point (slit centring): the applied star - sky constant's error, else the slit-centring
     # prior (never a measured offset's value); NaN when unconstrained (see star_sky_term)
     ('sys_star_sky', 'systematics', 'star_sky_systematic', _num, None),

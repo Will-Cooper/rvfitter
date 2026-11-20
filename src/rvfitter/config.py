@@ -43,6 +43,7 @@ SCHEMA_VERSION = 1
 WAVELENGTH_CORRECTIONS = ('sky-if-needed', 'sky', 'auto', 'telluric', 'none')
 # the default of calibration.wavelength_correction: every text (GUI, CLI, advice) reads it from here
 WAVELENGTH_CORRECTION_DEFAULT = 'none'  # why: docs/methods.md, "Sky correction on the GTC sample"
+HEADER_PREFIX = 'header:'  # a calibration setting given as 'header:KEY' is read per spectrum from its header
 WAVELENGTH_MODE_TEXT = {  # what each mode applies
     'sky-if-needed': 'the OH sky zero-point curve, only where it is well measured at the regions and significant',
     'sky': 'the OH sky zero-point curve, whenever it is measured',
@@ -226,8 +227,14 @@ class CalibrationConfig:
     wavelength_correction: str = field(default=WAVELENGTH_CORRECTION_DEFAULT,
                                        metadata={'choices': WAVELENGTH_CORRECTIONS})
     # slit-centring term when the star - sky constant is not applied: 'auto' = (W - F)/√12 from the slit width W and
-    # trace FWHM F; a number [km/s]; or 'none' (unconstrained, warned)
+    # trace FWHM F; a number [km/s]; 'header:KEY' (per spectrum, km/s); or 'none' (unconstrained, warned)
     slit_prior: str | float = 'auto'
+    # [km/s] the wavelengths were already tied to the sky in the reduction with this error (a number, or
+    # 'header:KEY'): it replaces the measured and arc terms of sys_wavezp; the sky curve is still measured as a check
+    zero_point_tied: float | str | None = None
+    # the star - sky offset was already applied in the reduction (true/false or 'header:KEY'): 'auto' does not apply
+    # a second measured constant, and the slit term is slit_prior as given
+    star_sky_applied: bool | str = False
     # [arcsec] seeing FWHM assumed for the 'auto' slit prior when the trace FWHM is unknown (WARNING, seeing_assumed)
     seeing_fwhm: float = 0.8
     # [km/s] wavelength-calibration accuracy assumed when the file records no arc RMS (WARNING, wave_rms_assumed); wins
@@ -397,6 +404,18 @@ def _from_dict(cls: type, data: Any, where: str) -> Any:
 # validation
 # ----------------------------------------------------------------------------------------------------------------------
 
+def _header_key(value: Any) -> bool:
+    """'header:KEY' with a non-empty KEY"""
+    return (isinstance(value, str) and value.startswith(HEADER_PREFIX)
+            and bool(value.removeprefix(HEADER_PREFIX).strip()))
+
+
+def _header_or_kms(value: Any) -> bool:
+    """'header:KEY' or a finite velocity >= 0"""
+    return _header_key(value) or (isinstance(value, (int, float)) and not isinstance(value, bool)
+                                  and math.isfinite(value) and value >= 0)
+
+
 def _choice(problems: list[str], where: str, value: Any, choices: tuple[str, ...]) -> None:
     if value not in choices:
         problems.append(f'{where} = {value!r} is not one of {", ".join(choices)}{_suggest(value, choices)}')
@@ -517,11 +536,19 @@ def _validate(cfg: Config) -> list[str]:
     _choice(p, 'calibration.wavelength_correction', cfg.calibration.wavelength_correction,
             WAVELENGTH_CORRECTIONS)
     _range(p, 'calibration.wave_valid_range', cfg.calibration.wave_valid_range, positive=True)
-    sp = cfg.calibration.slit_prior
-    if isinstance(sp, str):
-        _choice(p, 'calibration.slit_prior', sp, ('auto', 'none'))
-    elif not (isinstance(sp, (int, float)) and not isinstance(sp, bool) and math.isfinite(sp) and sp >= 0):
-        p.append(f'calibration.slit_prior = {sp!r} must be "auto", "none" or a velocity >= 0 [km/s]')
+    cal = cfg.calibration
+    if not (cal.slit_prior in ('auto', 'none') or _header_or_kms(cal.slit_prior)):
+        p.append(f'calibration.slit_prior = {cal.slit_prior!r} must be "auto", "none", "{HEADER_PREFIX}KEY" or a '
+                 'velocity >= 0 [km/s]')
+    if not (cal.zero_point_tied is None or _header_or_kms(cal.zero_point_tied)):
+        p.append(f'calibration.zero_point_tied = {cal.zero_point_tied!r} must be empty, "{HEADER_PREFIX}KEY" or a '
+                 'velocity >= 0 [km/s]')
+    elif cal.zero_point_tied is not None and cal.wavelength_correction in ('sky', 'telluric'):
+        p.append(f'calibration.zero_point_tied is set but wavelength_correction = "{cal.wavelength_correction}" '
+                 'replaces the tie with its own curve')
+    if not (isinstance(cal.star_sky_applied, bool) or _header_key(cal.star_sky_applied)):
+        p.append(f'calibration.star_sky_applied = {cal.star_sky_applied!r} must be true, false or '
+                 f'"{HEADER_PREFIX}KEY"')
     if not cfg.calibration.seeing_fwhm > 0:
         p.append(f'calibration.seeing_fwhm = {cfg.calibration.seeing_fwhm} must be > 0 [arcsec]')
     if cfg.calibration.wave_rms_kms is not None and not cfg.calibration.wave_rms_kms > 0:
