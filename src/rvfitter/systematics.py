@@ -2,10 +2,9 @@
 Systematic error terms, kept separate from the statistical errors: the statistical,
 template-spread and wavelength zero-point terms are reported separately, plus their quadrature total.
 
-- `template_spread`: the RV spread over plausible template choices: one Teff grid step either side of the
-  best-fitting candidate, each enabled grid, and the other template-window mode (features vs full spans),
-  measured with a template method (template_fit by default; it is fast). The components are logged and
-  returned by `template_spread_details`.
+- `template_spread_details`: the RV spread over plausible template choices (one Teff grid step either side of
+  the best-fitting candidate, and each enabled grid), measured with a template method (template_fit by
+  default; it is fast), and the other template-window mode's RV difference as a diagnostic.
 - `wavelength_zero_point`: the uncertainty of the wavelength zero point at the measurements' wavelengths.
 """
 import copy
@@ -28,7 +27,7 @@ from .methods.guidance import TEMPLATE_COLUMNS, grid_names
 from .numerics import rms
 from .types import Region, Spectrum
 
-__all__ = ['template_spread', 'template_spread_details', 'wavelength_zero_point']
+__all__ = ['template_spread_details', 'wavelength_zero_point']
 
 log = logging.getLogger(__name__)
 
@@ -62,9 +61,12 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
     at its other parameters (one at a grid edge; measured if not a candidate), 'grids' {grid: rv} for each
     enabled grid (when several), 'window_modes' {mode: rv} for 'features' and 'full', and [km/s]
     'sd_templates' (the RMS of the Teff steps' RV − the best fit's RV), 'sd_grids' (the SD of the grids' RVs;
-    NaN with one grid, which has no grid choice), 'delta_modes' (other − configured mode) and 'total', the
-    standard deviation (ddof = 1) of the 'teff_steps', 'grids' and 'window_modes' RVs. A variant that cannot be
-    measured (ValueError) is NaN with a WARNING; NaN with fewer than two variants.
+    NaN with one grid, which has no grid choice), 'delta_modes' (full − features RV) and 'total', the
+    standard deviation (ddof = 1) of the 'teff_steps' and 'grids' RVs (sys_template; NaN with fewer than two).
+    The window modes are a diagnostic only: below R 4500 'features' is used because the grids model the
+    molecular bands poorly, so a 'full' fit that disagrees is a model failure, not an uncertainty of the
+    features fit (from R 4500 up both are the full spans). A variant that cannot be measured (ValueError) is
+    NaN with a WARNING.
     """
     measure = REGISTRY[method]
     regs = regions.get(method, [])
@@ -140,20 +142,13 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
                               options=dataclasses.replace(_regions.options_for(cfg), template_windows=other))
     out['window_modes'][other] = rv(run(cfg, sel.get(method, []), seeds[2]))
     out['sd_grids'] = _sd(out['grids'].values())
-    modes = list(out['window_modes'].values())
-    out['delta_modes'] = float(modes[1] - modes[0])
-    out['total'] = _sd([*out['teff_steps'].values(), *out['grids'].values(), *modes])
+    out['delta_modes'] = float(out['window_modes']['full'] - out['window_modes']['features'])
+    out['total'] = _sd([*out['teff_steps'].values(), *out['grids'].values()])
     log.info('template spread (%s): %.2f km/s; one Teff step %.2f km/s about %s (of %d candidates), grids SD '
-             '%.2f km/s, %s − %s windows %.2f km/s', method, out['total'], out['sd_templates'],
-             best.label if best is not None else '-', len(out['templates']), out['sd_grids'], other, mode,
+             '%.2f km/s; full − features windows %.2f km/s (diagnostic, not in the spread)', method, out['total'],
+             out['sd_templates'], best.label if best is not None else '-', len(out['templates']), out['sd_grids'],
              out['delta_modes'])
     return out
-
-
-def template_spread(spectrum: Spectrum, regions: dict[str, list[Region]], cfg: Any, *,
-                    executor: Executor | None = None, rng: np.random.Generator) -> float:
-    """The template-spread systematic [km/s]: the 'total' of `template_spread_details`"""
-    return float(template_spread_details(spectrum, regions, cfg, executor=executor, rng=rng)['total'])
 
 
 def wavelength_zero_point(spectrum: Spectrum, *, wave: np.ndarray | Sequence[float] | None = None) -> float:

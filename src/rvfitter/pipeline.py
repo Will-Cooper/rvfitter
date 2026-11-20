@@ -24,7 +24,7 @@ from .config import resolution_too_low
 from .methods import REGISTRY, binary, forward
 from .methods._common import check_grid_coverage
 from .refit import apply_patch, config_for_object, object_seed, plain
-from .results import EXCLUDE_FLAGS, FLAGS
+from .results import EXCLUDE_FLAGS, FLAGS, total_err
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
 __all__ = ['run', 'measure_object', 'refit_object', 'enabled_methods', 'region_selector', 'NoMethodsError']
@@ -348,9 +348,17 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     if used <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
         sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
     else:
-        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
-                                                                    rng=rng.spawn(1)[0]))
+        spread = systematics.template_spread_details(corrected[0], sels[0], cfg, executor=executor,
+                                                     rng=rng.spawn(1)[0])
+        sysd['template_spread'] = float(spread['total'])
+        sysd['template_window_delta'] = float(spread['delta_modes'])  # a diagnostic, not in sys_template
     sysd['floor'] = float(cfg.combine.systematic_floor)
+    delta, total = sysd.get('template_window_delta', np.nan), total_err(adopted.get('err'), sysd)
+    if abs(delta) > 3. * total:  # False when either is NaN
+        win = spread['window_modes']
+        log.warning('%s: the full-span template fit (%.2f km/s) differs from the features fit (%.2f km/s) by '
+                    '%.2f km/s, more than 3 × rv_total_err (%.2f km/s): the grid models the molecular bands poorly '
+                    '(not in sys_template)', name, win['full'], win['features'], delta, total)
     unknown = [k for k, v in (('the adopted error', adopted.get('err')), ('sys_template', sysd['template_spread']),
                               ('sys_wavezp', sysd.get('wavelength_zero_point')),
                               ('sys_star_sky', sysd.get('star_sky_systematic')))

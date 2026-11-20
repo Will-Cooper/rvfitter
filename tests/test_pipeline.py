@@ -66,7 +66,9 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(combine, 'hierarchical', hierarchical, raising=False)
     monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, **kw: 0.5)
-    monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4)
+    monkeypatch.setattr(systematics, 'template_spread_details',
+                        lambda s, r, c, *, executor=None, rng: dict(total=0.4, delta_modes=0.3,
+                                                                    window_modes=dict(full=1.3, features=1.)))
     monkeypatch.setattr(pipeline, 'REGISTRY', {'ccf': FakeMethod('ccf'), 'template_fit': FakeMethod('template_fit'),
                                                'telluric_ref': FakeMethod('telluric_ref', fail=True)})
     return types.SimpleNamespace(calls=calls)
@@ -219,12 +221,24 @@ def test_binary_test_only_when_enabled(fakes, monkeypatch, enabled):
     assert table.loc['B', 'binary_dbic'] == -3. and not bool(table.loc['B', 'binary_flag'])
 
 
+def test_template_window_delta_is_a_column_and_warns_only_beyond_3_total_errors(fakes, monkeypatch, caplog):
+    for delta, warns in ((0.3, False), (-317., True)):
+        monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, d=delta, **k: dict(
+            total=0.4, delta_modes=d, window_modes=dict(full=1. + d, features=1.)))
+        caplog.clear()
+        res = pipeline.run(config.loads(config.dumps(CFG)), INPUTS[:1], n_procs=1, failures=[])
+        row = results.to_table(res).iloc[0]
+        assert row['template_window_delta_kms'] == delta and row['sys_template'] == 0.4
+        assert any('full-span template fit (-316.00 km/s)' in r.getMessage() for r in caplog.records
+                   if r.levelno == logging.WARNING) is warns
+
+
 def test_failed_template_method_leaves_no_template_term(fakes, monkeypatch):
     """A template method enabled but failing everywhere (e.g. an optical grid on NIR data) contributes nothing, so
     model-free line centring alone has no template systematic (absent, not unknown)"""
     monkeypatch.setattr(pipeline, 'REGISTRY', {'linecentre': FakeMethod('linecentre'),
                                                'template_fit': FakeMethod('template_fit', fail=True)})
-    monkeypatch.setattr(systematics, 'template_spread', lambda *a, **k: float('nan'))
+    monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, **k: dict(total=np.nan, delta_modes=np.nan))
     cfg = config.loads(config.dumps(CFG))
     cfg.methods.enabled = ['linecentre', 'template_fit']
     res = pipeline.run(cfg, INPUTS, n_procs=1, failures=[])

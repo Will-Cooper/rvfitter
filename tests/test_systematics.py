@@ -33,8 +33,7 @@ def test_template_spread_components(tmp_path):
     out = systematics.template_spread_details(spec, sel, cfg, rng=np.random.default_rng(1))
     assert len(out['templates']) == 6 and all(np.isfinite(v) for v in out['templates'].values())
     assert set(out['window_modes']) == {'features', 'full'}
-    assert np.isfinite(out['total']) and out['total'] < 5.
-    assert systematics.template_spread(spec, sel, cfg, rng=np.random.default_rng(1)) == out['total']
+    assert np.isfinite(out['total']) and out['total'] < 5. and np.isfinite(out['delta_modes'])
 
 
 def test_grid_opened_once_and_reruns_at_debug(tmp_path, monkeypatch, caplog):
@@ -63,7 +62,7 @@ def test_grid_opened_once_and_reruns_at_debug(tmp_path, monkeypatch, caplog):
 def test_template_spread_one_teff_step_about_the_best_fit(tmp_path, monkeypatch):
     """A 1500-4500 K grid, best fit at 2000 K/5.0: the term is the RV change one Teff step either side, at log g
     5.0, measured when outside the candidates (prior 1700 K); catastrophic templates (4400 K, and 2100 K/4.5)
-    at +437 km/s never enter, with or without a prior"""
+    at +437 km/s never enter, with or without a prior, and nor does a catastrophic full-span fit"""
     spec, cfg = _toy(tmp_path)
     sel = regions.select(spec, teff=1900., methods=['template_fit'])
     pts = np.array([(t, g, 0., 0.) for t in np.arange(1500., 4501., 100.) for g in (4.5, 5.)])
@@ -81,7 +80,8 @@ def test_template_spread_one_teff_step_about_the_best_fit(tmp_path, monkeypatch)
 
     def fake(spectrum, regs, c, *, executor=None, rng):
         t, g = (c.templates.teff_range[0], c.templates.logg_range[0]) if c.templates.teff_range else (2000., 5.)
-        rv = 437. if t == 4400. or (t, g) == (2100., 4.5) else 10. + (t - 2000.) / 100.
+        rv = 437. if t == 4400. or (t, g) == (2100., 4.5) or len(regs) != len(sel['template_fit']) \
+            else 10. + (t - 2000.) / 100.
         chi2 = 1000. + 50. * ((t - 2000.) / 100.) ** 2 + (0. if g == 5. else 10.)
         return MethodResult('template_fit', rv, 1., 1, [Measurement('template_fit', 'w', rv, 1., 0,
                                                                     dict(chi2=chi2, dof=1000))])
@@ -92,7 +92,7 @@ def test_template_spread_one_teff_step_about_the_best_fit(tmp_path, monkeypatch)
         cfg.templates.teff_prior = prior
         out = systematics.template_spread_details(spec, sel, cfg, rng=np.random.default_rng(1))
         assert out['teff_steps'] == {'fake 2000/5/0/0': 10., 'fake 1900/5/0/0': 9., 'fake 2100/5/0/0': 11.}
-        assert out['sd_templates'] == 1. and out['total'] == np.std([9., 10., 11., 10., 10.], ddof=1)
+        assert out['delta_modes'] == 427. and out['sd_templates'] == 1. and out['total'] == 1.
 
 
 def test_grid_reopened_when_a_template_file_is_overwritten(tmp_path):

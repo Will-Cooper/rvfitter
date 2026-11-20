@@ -101,6 +101,13 @@ def _quad(*terms: float) -> float:
     return float(math.sqrt(sum(t * t for t in terms)))
 
 
+def total_err(adopted_err: Any, systematics: dict) -> float:
+    """rv_total_err: the adopted error ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky ⊕ the floor (none if absent)"""
+    return _quad(_num(adopted_err), *(_num(systematics.get(k)) for k in
+                                      ('template_spread', 'wavelength_zero_point', 'star_sky_systematic')),
+                 _num(systematics.get('floor', 0.)))
+
+
 # Output columns in order. A plain name is computed in `to_table`; a tuple (column, source, key, converter, default)
 # is read from ``source`` ('adopted', 'systematics', 'epochs', 'barycentric' or 'binary') of the ObjectResult.
 _SPEC: tuple[str | tuple, ...] = (
@@ -118,6 +125,8 @@ _SPEC: tuple[str | tuple, ...] = (
     # prior (never a measured offset's value); NaN when unconstrained (see star_sky_term)
     ('sys_star_sky', 'systematics', 'star_sky_systematic', _num, None),
     'rv_total_err',
+    # the template_fit RV with full spans − with feature windows: a model-failure diagnostic, not in sys_template
+    ('template_window_delta_kms', 'systematics', 'template_window_delta', _num, None),
     # how much the applied wavelength correction moved the RV (pipeline.wavelength_shift)
     ('wavelength_shift_kms', 'barycentric', 'wavelength_shift_kms', _num, None),
     *TEMPLATE_COLUMNS,
@@ -192,8 +201,7 @@ def to_table(results: Sequence[ObjectResult]) -> pd.DataFrame:
             row['rv_mean'] = float(rv_arr.mean()) if len(rv_arr) else _NAN
         row['rv_spread'] = float(np.std(rv_arr, ddof=1)) if len(rv_arr) > 1 else _NAN
         # NaN when a term is unknown (the pipeline warns and sets zp flag total_err_undefined); an absent floor is none
-        row['rv_total_err'] = _quad(row['rv_adopted_err'], row['sys_template'], row['sys_wavezp'], row['sys_star_sky'],
-                                    _num(src['systematics'].get('floor', 0.)))
+        row['rv_total_err'] = total_err(ad.get('err'), src['systematics'])
         row.update(_template_row(res))
         rows.append(row)
     df = pd.DataFrame(rows, columns=_COLUMNS)
