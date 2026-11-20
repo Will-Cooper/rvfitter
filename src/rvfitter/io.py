@@ -41,7 +41,8 @@ from .medium import to_vacuum
 from .types import Spectrum
 
 __all__ = ['read_spectrum', 'read_spectra', 'list_spectra', 'SpectrumEntry', 'split_source', 'cube_image',
-           'brightest_spaxel', 'RawSpectrum', 'raw_headers', 'estimate_resolution', 'implausible_resolution',
+           'brightest_spaxel', 'RawSpectrum', 'raw_headers', 'header_value',
+           'estimate_resolution', 'implausible_resolution',
            'SNR_USABLE_MIN', 'CUBE_RADIUS_DEFAULT']
 
 log = logging.getLogger(__name__)
@@ -851,7 +852,8 @@ def _sniff_pypeit_coadd(path: Path, hdu: int | str | None = None, columns: Any =
         return _coadd_hdu(hdul, hdu) is not None
 
 
-_COADD_FROM_RE = re.compile(r'From "(spec1d_[^"]+?\.fits)"')
+# coadd1d's HISTORY: 'From "spec1d_….fits"', then the object table it took (e.g. SPAT0241-SLIT0467-DET02)
+_COADD_FROM_RE = re.compile(r'From "(spec1d_[^"]+?\.fits)"(SPAT\d+-SLIT\d+-(?:DET|MSC)\d+)?')
 
 
 def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
@@ -864,8 +866,10 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     from the coadd's HISTORY ('From "spec1d_…"'); a tellcorr file (often with an empty header) takes them from the
     coadd of the same name next to it. When the spec1d files are not found the frame is unknown: a WARNING, and
     ``RVF_FRAME_NOTE`` says so (`rvfitter.barycentric` repeats it instead of calling the frame 'observed').
+    ``RVF_SOURCE_HEADERS`` holds the flat object-table headers taken (the table named in the HISTORY, else the
+    first with VEL_CORR), for `header_value`.
     """
-    def sources(head: fits.Header) -> list[str]:
+    def sources(head: fits.Header) -> list[tuple[str, str]]:
         return _COADD_FROM_RE.findall(''.join(str(v) for k, v in head.items() if k == 'HISTORY'))
 
     out: dict[str, Any] = {}
@@ -874,17 +878,22 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     if not names and coadd != path and coadd.is_file():
         primary = fits.getheader(coadd, 0)
         names = sources(primary)
-    found = [path.parent / n for n in names if (path.parent / n).is_file()]
+    found = [(path.parent / n, t) for n, t in names if (path.parent / n).is_file()]
     if not names or len(found) < len(names):
         log.warning('%s: the spec1d file(s) it was coadded from (%s) are not next to it: the velocity frame '
-                    '(VEL_CORR) is unknown. %s', path.name, ', '.join(names) or 'none named in its HISTORY or a coadd',
-                    PYPEIT_FRAME_NOTE)
+                    '(VEL_CORR) is unknown. %s', path.name,
+                    ', '.join(n for n, _ in names) or 'none named in its HISTORY or a coadd', PYPEIT_FRAME_NOTE)
         return {'RVF_FRAME_NOTE': PYPEIT_FRAME_NOTE}
     heads = []
-    for p in found:  # PypeIt writes VEL_CORR in the object tables, the raw FILENAME in the primary header
+    for p, table in found:  # PypeIt writes VEL_CORR in the object tables, the raw FILENAME in the primary header
         with fits.open(p) as hl:
-            ext = next((h.header for h in hl[1:] if 'VEL_CORR' in h.header), fits.Header())
-            heads.append((hl[0].header, ext))
+            exts = [h.header for h in hl[1:] if (h.header.get('NAME', h.name) == table if table
+                                                 else 'VEL_CORR' in h.header)]
+            if table and not exts:
+                raise ValueError(f'{path.name}: {p.name} has no object table {table} (named in the coadd HISTORY)')
+            heads.append((hl[0].header, exts[0] if exts else fits.Header()))
+    out['RVF_SOURCE_HEADERS'] = [{**_header_dict(e), 'RVF_FILE': p.name}
+                                 for (_, e), (p, _) in zip(heads, found, strict=True)]
     corr = [_as_float(e.get('VEL_CORR')) for _, e in heads]
     out['RVF_RAW_FILES'] = ','.join(str(h.get('FILENAME', '')) for h, _ in heads)
     if any(c is None for c in corr):
@@ -893,8 +902,33 @@ def _coadd_provenance(path: Path, primary: fits.Header) -> dict[str, Any]:
     if heads[0][1].get('VEL_TYPE') is not None:
         out['VEL_TYPE'] = heads[0][1]['VEL_TYPE']
     log.info('%s: VEL_CORR %.9f (%s) from %s%s', path.name, out['VEL_CORR'], out.get('VEL_TYPE', 'frame unnamed'),
-             ', '.join(names), f' (mean of {len(corr)}; spread {np.ptp(corr):.2g})' if len(corr) > 1 else '')
+             ', '.join(n for n, _ in names),
+             f' (mean of {len(corr)}; spread {np.ptp(corr):.2g})' if len(corr) > 1 else '')
     return out
+
+
+def header_value(spec: Spectrum, key: str) -> Any:
+    """
+    Header card `key` of a spectrum from `read_spectrum` (``meta['header']``); for a PypeIt coadd or tellcorr file
+    without it, from the spec1d object tables it was coadded from (``RVF_SOURCE_HEADERS``): their common value, or
+    the RMS of numbers that differ (cards read this way are uncertainties, e.g. per-exposure errors). A card missing
+    from the file (and from any of its spec1d tables) raises, naming the file and the key.
+    """
+    head = spec.meta.get('header') or {}
+    if key in head:
+        return head[key]
+    srcs = head.get('RVF_SOURCE_HEADERS') or []
+    missing = [h['RVF_FILE'] for h in srcs if key not in h]
+    if not srcs or missing:
+        raise ValueError(f'{spec.source or "the spectrum"}: no header card {key}'
+                         + (f' (nor in the spec1d file(s) it was coadded from: {", ".join(missing)})' if srcs else ''))
+    vals = [h[key] for h in srcs]
+    if len({repr(v) for v in vals}) == 1:
+        return vals[0]
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+        return float(np.sqrt(np.mean(np.square(vals))))
+    each = ', '.join(f'{h["RVF_FILE"]}: {h[key]!r}' for h in srcs)
+    raise ValueError(f'{spec.source}: header card {key} differs between the spec1d files it was coadded from ({each})')
 
 
 def raw_headers(meta: Mapping[str, Any], pattern: str | None = None, directory: str | None = None
@@ -1555,7 +1589,7 @@ def read_spectrum(path: str | Path, *, medium: str = 'auto', medium_method: str 
     sky = _clean_sky(sky, path.name)
 
     meta = _meta_from_header(raw.header)
-    meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader, **raw.meta)
+    meta.update(medium_in=medium_in, medium_source=source, reader=raw.reader, header=raw.header, **raw.meta)
     for key in ('flux_conversion', 'extraction'):
         if key in raw.meta:
             log.info('%s: %s', path.name, raw.meta[key]['text'] if key == 'extraction' else raw.meta[key])

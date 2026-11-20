@@ -188,7 +188,8 @@ def _shape_corrected(spectrum: Spectrum, cfg: Any, groups: list[list[_Line]], na
     wr = (float(spectrum.wave[0]), float(spectrum.wave[-1]))
     nominal = prior_template(cfg, res, wr)
     alts = neighbour_templates(cfg, res, wr, nominal)
-    offs = np.array([_shape_offsets(spectrum, t, groups, names, masks, profile) for t in [nominal, *alts]])
+    tpls = [nominal, *alts]
+    offs = np.array([_shape_offsets(spectrum, t, groups, names, masks, profile) for t in tpls])
     log.info('%s: shape_correction on: per-line offsets from template %s (spread over %s) are subtracted; the '
              'method is now template-dependent and no longer a model-free cross-check', METHOD, nominal.label,
              ', '.join(t.label for t in alts) or 'no neighbours')
@@ -200,7 +201,8 @@ def _shape_corrected(spectrum: Spectrum, cfg: Any, groups: list[list[_Line]], na
         if not np.isfinite(off):
             flag |= C.FLAG_FIT_FAILED
         diag = {**diag, 'shape_correction': True, 'shape_offset': off, 'shape_spread': spread,
-                'shape_template': nominal.label, 'rv_uncorrected_shape': v}
+                'shape_template': nominal.label, 'rv_uncorrected_shape': v,
+                'shape_offsets': {t.label: float(o) for t, o in zip(tpls, offs[:, k], strict=True)}}
         log.info('%s %s: shape offset %+.1f km/s (spread %.1f) subtracted', METHOD, names[k], off, spread)
         out.append((v - off, float(np.hypot(err, spread)), flag, chi2_red, diag))
     return out

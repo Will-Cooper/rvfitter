@@ -281,6 +281,7 @@ Free these only when the spectrum's band shapes clearly depend on them (e.g. T d
 
 The expected Teff, in K (e.g. from the spectral type); default unset.
 It chooses the features (each catalogue feature has a Teff range in which it is useful; e.g. Rb I 1300–2400 K, TiO 1900–3500 K) and centres the template search.
+If the prior drops every feature a method needs (e.g. `linecentre` at 3300 K, above every optical alkali line's range), that method fails with an error naming the prior and the dropped features with their Teff ranges.
 We recommend always setting it, e.g. ~2100 K for an L1.
 Without it, every feature in the catalogue is considered and the whole grid is searched, which is slower and can admit features that are absent or blended at the target's Teff.
 A prior (Teff, or a set log g, [M/H] or [α/M] prior) more than one grid step beyond a configured grid that is available stops the run before anything is read, with an error naming the grid, its range and the request; within one step, the nearest grid point is used and the measurement flagged `template_grid_edge`.
@@ -340,6 +341,8 @@ The options most worth knowing are:
 - `forward_mcmc`: `n_walkers` (32), `n_burn` (1000), `n_steps` (4000), `telluric` (false).
 
 We keep `shape_correction` off by default because it makes line centring template-dependent, which removes its value as the model-free check; on J1745−1640 it moved the RV by only +1.6 to +2.0 km/s ([methods.md](methods.md#j17451640-after-the-task-15-fixes)).
+However, at R ≈ 2600 the Voigt fit is biased line by line on blended lines (noise-free offsets: Rb I 7802 −7.1, Na I 8197 −5.1, Na I 8185 −0.4, Rb I 7949 +7.7 km/s), and `shape_correction` calibrates these offsets on the template and removes them.
+We therefore recommend turning it on whenever templates are available, unless line centring is wanted as the model-free check.
 Widen `rv_min`/`rv_max` only for objects expected beyond ±500 km/s, since a wider search admits more spurious peaks.
 
 <a id="methods-binary"></a>
@@ -402,7 +405,7 @@ The windows for `ccf`, `template_fit` and `forward_mcmc` below R 4500 (the edge 
 From R 4500 up the full spans are always used.
 We recommend `features` because the synthetic grids reproduce the molecular bands (TiO, VO, CrH, FeH, H2O) of late-M and L dwarfs poorly, which shifts the template RVs band by band; the atomic lines and bandheads are modelled well.
 Use `full` for warmer stars (above ~3650 K), which have no catalogue features at their Teff (see [Stars](#stars-fgk-and-m-dwarfs)).
-The other mode is always run as a check, and its difference enters the template spread, `sys_template`.
+The other mode is always run as a check: its RV difference is the `template_window_delta_kms` column (full − features), with a WARNING when it exceeds 3 × `rv_total_err`, but it does not enter `sys_template` (see [methods.md](methods.md#what-rvfitter-does)).
 
 <a id="combine"></a>
 ## Combine
@@ -458,11 +461,26 @@ A spectrum without a sky (most Spextool and JWST files) is left uncorrected in e
 <a id="calibration-slit_prior"></a>
 ### `calibration.slit_prior`
 
-The slit-centring error, used when the star − sky constant is not applied: `auto`, a velocity in km/s, or `none`; default `auto`.
+The slit-centring error, used when the star − sky constant is not applied: `auto`, a velocity in km/s, `"header:KEY"` (a velocity in km/s read per spectrum from its header), or `none`; default `auto`.
 `auto` takes the star to sit anywhere within the slit, which gives σ ≈ (W − F)/√12 for a slit width W and trace FWHM F, converted to a velocity through the plate scale and dispersion (18.0 km/s for J1745−1640).
 This is because the sky fills the slit uniformly, whilst the star may be off-centre, so the sky cannot measure the star's own offset.
 `none` sets the term to 0 with a WARNING and the flag `zp_unconstrained`, so the total error then omits the slit centring and is understated.
-Give a number when the acquisition accuracy is known better than this uniform prior.
+Give a number when the acquisition accuracy is known better than this uniform prior, and `"header:KEY"` when the reduction already applied the star's offset and recorded its error ([Spectra already tied to the sky](#recipe-tied)).
+A `header:` card missing from a spectrum raises, naming the file and the key; a coadd or tellcorr file without the card takes it from the spec1d object tables it was coadded from (their common value, or the RMS of differing numbers).
+
+<a id="calibration-zero_point_tied"></a>
+### `calibration.zero_point_tied`
+
+The error of a tie of the wavelengths to the sky made in the reduction, in km/s: a number, or `"header:KEY"` read per spectrum; default unset (not tied).
+When set, it is `sys_wavezp`, replacing both the measured sky-curve term and the arc term, because the wavelengths in use are those of the tie, so the uncertainty of the zero point actually in use is the tie's.
+The sky curve is still measured and reported (`zp_sky_*`) as a check, and `wavezp_term` records which term `sys_wavezp` is.
+If rvfitter applies a curve of its own on top (`sky-if-needed` or `auto` with the sky applied), the wavelengths are no longer the tie's: a WARNING, and `sys_wavezp` is that curve's term; with `sky` or `telluric`, which always replace the tie, the setting is refused.
+
+<a id="calibration-star_sky_applied"></a>
+### `calibration.star_sky_applied`
+
+Whether the reduction already applied the star − sky offset: true, false, or `"header:KEY"` (a true/false card read per spectrum); default false.
+When true, `auto` does not apply its own measured constant a second time (logged; the measured constant is still reported as a check), and `sys_star_sky` is [`calibration.slit_prior`](#calibration-slit_prior) as given, e.g. the reduction's own error of the offset.
 
 <a id="calibration-seeing_fwhm"></a>
 ### `calibration.seeing_fwhm`
@@ -593,6 +611,7 @@ In this Section, we give a starting point for common kinds of data:
 | Galaxies | [Galaxies](#recipe-galaxies) (not supported) |
 | Which features a band offers at a given Teff | [Features by band](#features-by-band) |
 | Which wavelength correction to use | [Wavelength-correction mode](#recipe-correction-mode) |
+| Spectra already tied to the sky in the reduction | [Spectra already tied to the sky](#recipe-tied) |
 
 In every case, set [`input.resolution`](#input-resolution) if the header lacks it and a [Teff prior](#templates-teff_prior) from the spectral type, and look at the diagnostics before trusting an RV.
 The input must be one merged 1D spectrum per object (or an IFU cube, or a multi-object x1d file): rvfitter has no reader for per-order or 2D echelle files, except Spextool's order stack, which it merges (where orders overlap, the bluer order's pixels are kept).
@@ -612,6 +631,26 @@ Without a sky spectrum (every Spextool and JWST file, and coadds without a `sky_
 With a sky, `sky-if-needed` is a useful check: on J1745−1640 it reduced the line-to-line scatter from 11.3 to 3.2 km/s but moved line centring from 35.0 to 13.6 km/s, against 26.2 ± 2.3 km/s in the literature.
 No mode agrees with the literature within the statistical errors for every method, whilst every mode lies within 1.3 of its total errors ([methods.md](methods.md#results-by-method)), so the zero point of that spectrum, not the mode, limits it.
 When you have a sky, we therefore suggest comparing a run with `sky-if-needed` against the default, and treating a difference larger than the statistical errors as a zero-point problem of that spectrum.
+
+<a id="recipe-tied"></a>
+### Spectra already tied to the sky
+
+When the reduction has already tied each exposure's wavelengths to the OH sky lines, and perhaps applied the star − sky offset, the zero point in use is the reduction's, so its uncertainty is that of the reduction's tie, not that of rvfitter's own re-measurement of the sky curve.
+On 75 GTC/OSIRIS R2500I exposures tied to the sky with a median error of 3.0 km/s at 8200 Å, rvfitter's re-measured curve gave a median `sys_wavezp` of 15.4 km/s, the largest term in `rv_total_err`.
+If the reduction records these errors in the headers, e.g. as cards `WSKYERR` and `WSTARERR` with a true/false card `WSTARCOR` for the applied offset (the names are the reduction's, not rvfitter's), set
+
+```toml
+[calibration]
+wavelength_correction = "none"
+zero_point_tied = "header:WSKYERR"
+slit_prior = "header:WSTARERR"
+star_sky_applied = "header:WSTARCOR"
+```
+
+[`zero_point_tied`](#calibration-zero_point_tied) then replaces the measured sky-curve and arc terms of `sys_wavezp`, and [`slit_prior`](#calibration-slit_prior) gives the applied offset's own error as `sys_star_sky`.
+[`star_sky_applied`](#calibration-star_sky_applied) guards against a double correction: with `auto`, the star − sky constant is not applied a second time.
+Each card must be in every spectrum of the run (a missing one raises), so give a standard star without them its own settings.
+The sky curve and the star − sky constant are still measured and reported: offsets consistent with zero confirm the tie.
 
 <a id="recipe-optical-low-r"></a>
 ### Brown dwarfs in the optical at low R (e.g. GTC/OSIRIS R2500I)

@@ -66,7 +66,9 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(combine, 'hierarchical', hierarchical, raising=False)
     monkeypatch.setattr(systematics, 'wavelength_zero_point', lambda s, **kw: 0.5)
-    monkeypatch.setattr(systematics, 'template_spread', lambda s, r, c, *, executor=None, rng: 0.4)
+    monkeypatch.setattr(systematics, 'template_spread_details',
+                        lambda s, r, c, *, executor=None, rng, method: dict(
+                            total=0.4, delta_modes=0.3, window_modes=dict(full=1.3, features=1.)))
     monkeypatch.setattr(pipeline, 'REGISTRY', {'ccf': FakeMethod('ccf'), 'template_fit': FakeMethod('template_fit'),
                                                'telluric_ref': FakeMethod('telluric_ref', fail=True)})
     return types.SimpleNamespace(calls=calls)
@@ -219,16 +221,81 @@ def test_binary_test_only_when_enabled(fakes, monkeypatch, enabled):
     assert table.loc['B', 'binary_dbic'] == -3. and not bool(table.loc['B', 'binary_flag'])
 
 
+def test_template_window_delta_is_a_column_and_warns_only_beyond_3_total_errors(fakes, monkeypatch, caplog):
+    for delta, warns in ((0.3, False), (-317., True)):
+        monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, d=delta, **k: dict(
+            total=0.4, delta_modes=d, window_modes=dict(full=1. + d, features=1.)))
+        caplog.clear()
+        res = pipeline.run(config.loads(config.dumps(CFG)), INPUTS[:1], n_procs=1, failures=[])
+        row = results.to_table(res).iloc[0]
+        assert row['template_window_delta_kms'] == delta and row['sys_template'] == 0.4
+        assert any('full-span template fit (-316.00 km/s)' in r.getMessage() for r in caplog.records
+                   if r.levelno == logging.WARNING) is warns
+
+
 def test_failed_template_method_leaves_no_template_term(fakes, monkeypatch):
     """A template method enabled but failing everywhere (e.g. an optical grid on NIR data) contributes nothing, so
     model-free line centring alone has no template systematic (absent, not unknown)"""
     monkeypatch.setattr(pipeline, 'REGISTRY', {'linecentre': FakeMethod('linecentre'),
                                                'template_fit': FakeMethod('template_fit', fail=True)})
-    monkeypatch.setattr(systematics, 'template_spread', lambda *a, **k: float('nan'))
+    monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, **k: dict(total=np.nan, delta_modes=np.nan))
     cfg = config.loads(config.dumps(CFG))
     cfg.methods.enabled = ['linecentre', 'template_fit']
     res = pipeline.run(cfg, INPUTS, n_procs=1, failures=[])
     assert all(r.systematics['template_spread'] == 0. for r in res)
+
+
+@pytest.mark.parametrize('enabled, expected', [(['ccf'], 'ccf'), (['lsd'], 'lsd'),
+                                               (['ccf', 'template_fit'], 'template_fit'),
+                                               (['linecentre', 'lsd', 'ccf'], 'lsd')])
+def test_template_spread_uses_an_enabled_template_method(fakes, monkeypatch, enabled, expected):
+    """The spread is measured with a used template method on its own regions (template_fit first), never with
+    template_fit when it is not enabled (it had no regions: sys_template was NaN for ccf or lsd alone)"""
+    seen = []
+
+    def details(s, sel, c, *, executor=None, rng, method):
+        assert method in sel  # its own selected regions
+        seen.append(method)
+        return dict(total=0.4, delta_modes=0.3, window_modes=dict(full=1.3, features=1.))
+
+    monkeypatch.setattr(systematics, 'template_spread_details', details)
+    monkeypatch.setattr(pipeline, 'REGISTRY', {m: FakeMethod(m) for m in enabled})
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = enabled
+    res = pipeline.run(cfg, INPUTS[:1], n_procs=1, failures=[])
+    assert seen == [expected] and res[0].systematics['template_spread'] == 0.4
+    assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
+
+
+def test_telluric_ref_alone_has_its_own_template_term(fakes, monkeypatch):
+    """telluric_ref alone (the high-R configuration) has its star-model term, not a NaN template_fit spread"""
+    monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, **k: pytest.fail('no template_fit run'))
+    monkeypatch.setattr(systematics, 'telluric_ref_template_spread', lambda s, r, c, *, executor=None, rng: 0.7)
+    monkeypatch.setattr(pipeline, 'REGISTRY', {'telluric_ref': FakeMethod('telluric_ref')})
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = ['telluric_ref']
+    res = pipeline.run(cfg, INPUTS[:1], n_procs=1, failures=[])
+    assert res[0].systematics['template_spread'] == 0.7
+    assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
+
+
+def test_shape_corrected_linecentre_alone_has_a_finite_template_term(fakes, monkeypatch):
+    """Shape-corrected line centring alone has no template_fit regions (sys_template was NaN): its term is the
+    weighted mean shift of the lines' shape offsets for each ±1 Teff-step template, RMS over the steps"""
+    offs = [{'nom': 1., 'lo': 3., 'hi': 0.}, {'nom': 2., 'lo': 4., 'hi': 1.}]  # shifts +2 and −1 on both lines
+
+    def lc(spectrum, regs, cfg, *, executor, rng):
+        ms = [Measurement('linecentre', f'l{i}', 10., 1., 0, dict(shape_correction=True, shape_template='nom',
+                                                                   shape_offsets=o)) for i, o in enumerate(offs)]
+        return MethodResult('linecentre', 10., 1., 2, ms)
+
+    monkeypatch.setattr(pipeline, 'REGISTRY', {'linecentre': lc})
+    monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, **k: pytest.fail('no template_fit run'))
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = ['linecentre']
+    res = pipeline.run(cfg, INPUTS[:1], n_procs=1, failures=[])
+    assert res[0].systematics['template_spread'] == pytest.approx(np.sqrt((4. + 1.) / 2.))
+    assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
 
 
 @pytest.mark.parametrize('enabled, expected', [(['ccf', 'template_fit'], 1), (['ccf', 'forward_mcmc'], 8)])

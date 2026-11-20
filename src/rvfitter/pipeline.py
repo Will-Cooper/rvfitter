@@ -24,7 +24,7 @@ from .config import resolution_too_low
 from .methods import REGISTRY, binary, forward
 from .methods._common import check_grid_coverage
 from .refit import apply_patch, config_for_object, object_seed, plain
-from .results import EXCLUDE_FLAGS, FLAGS
+from .results import EXCLUDE_FLAGS, FLAGS, total_err
 from .types import Measurement, MethodResult, ObjectResult, Spectrum
 
 __all__ = ['run', 'measure_object', 'refit_object', 'enabled_methods', 'region_selector', 'NoMethodsError']
@@ -121,14 +121,20 @@ def _drop_uncovered(sel: dict, info: dict) -> dict:
 def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor: Executor | None,
                  rngs: dict[str, np.random.Generator], name: str, cancel: threading.Event | None,
                  failures: Failures, on_step: StepCallback | None = None) -> dict[str, MethodResult]:
+    def run(m: str) -> MethodResult:
+        regs = sel.get(m, [])
+        if not regs and (why := regions.prior_refusal(spec, teff=cfg.templates.teff_prior, method=m,
+                                                      options=regions.options_for(cfg))):
+            raise ValueError(why)
+        return REGISTRY[m](spec, regs, cfg, executor=executor, rng=rngs[m])
+
     out = {}
     for m in names:
         if cancel is not None and cancel.is_set():
             raise _Cancelled
         if on_step is not None:
             on_step(name, m)
-        out[m] = _guarded(lambda m=m: REGISTRY[m](spec, sel.get(m, []), cfg, executor=executor, rng=rngs[m]),
-                          m, name, failures)
+        out[m] = _guarded(lambda m=m: run(m), m, name, failures)
     return out
 
 
@@ -189,6 +195,26 @@ def _uncorrect(per_epoch: list[dict[str, MethodResult]], corrected: list[Spectru
     return waves
 
 
+def _wavelength_term(spec: Spectrum, info: dict, w: np.ndarray | None, cfg: Any, name: str) -> tuple[float, str]:
+    """
+    sys_wavezp of one epoch and what it is: ``calibration.zero_point_tied`` (the error of the reduction's tie to the
+    sky, whose wavelengths are those in use) unless rvfitter applied a curve of its own; else
+    `systematics.wavelength_zero_point`
+    """
+    measured = float(systematics.wavelength_zero_point(spec, wave=w))
+    tied = cfg.calibration.zero_point_tied
+    if tied is None:
+        return measured, 'measured'
+    if info['applied'] not in ('none', 'star'):
+        log.warning('%s: calibration.zero_point_tied is set but the %s curve was applied here, so the wavelengths are '
+                    'no longer the tie\'s: sys_wavezp is that curve\'s %.1f km/s', name, info['applied'], measured)
+        return measured, f'measured ({info["applied"]} curve applied over the tie)'
+    value = wcorr.setting_kms(tied, spec, 'calibration.zero_point_tied')
+    log.info('%s: sys_wavezp = %.1f km/s, the reduction\'s tie to the sky (calibration.zero_point_tied = %s), '
+             'replacing the measured %.1f km/s (the sky curve is reported as a check)', name, value, tied, measured)
+    return value, f'tied (calibration.zero_point_tied = {tied})'
+
+
 def _zero_point_terms(corrected: list[Spectrum], infos: list[dict], waves: list[list[float]], cfg: Any,
                       name: str) -> list[dict]:
     """The zero-point systematics of each epoch, at the wavelengths of its measurements"""
@@ -196,9 +222,10 @@ def _zero_point_terms(corrected: list[Spectrum], infos: list[dict], waves: list[
     for spec, info, lams in zip(corrected, infos, waves, strict=True):
         w = np.asarray(lams) if lams else None
         term = wcorr.star_sky_term(info, spec, w, cfg, name)
+        wzp, wterm = _wavelength_term(spec, info, w, cfg, name)
         out.append({**{key: info[key] for key in wcorr.ZP_KEYS}, 'mode': info['mode'], 'applied': info['applied'],
                     'zp_flags': int(info['zp_flags']) | term['flags'], 'sky_tests': info['sky_tests'],
-                    'wavelength_zero_point': float(systematics.wavelength_zero_point(spec, wave=w)),
+                    'wavelength_zero_point': wzp, 'wavezp_term': wterm,
                     'star_sky': term['value'], 'star_sky_term': term['term'], 'slit_prior': term['prior'],
                     'slit': term['slit']})
     return out
@@ -318,12 +345,31 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
     # methods that contributed a usable measurement (an enabled template method that failed everywhere does not)
     used = {m for m, r in results.items()
             if any(np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS for x in r.measurements)}
-    if used <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
+    # the spread is measured with a used grid-template method on its own regions: template_fit when used, else the
+    # first enabled one; telluric_ref (a star model nearest the priors) and shape-corrected linecentre (templates
+    # calibrate the line shapes only) have their own one-Teff-step terms
+    grid_methods = [m for m in template_methods(cfg, names) if m in used and m not in ('linecentre', 'telluric_ref')]
+    spread_method = 'template_fit' if 'template_fit' in grid_methods else next(iter(grid_methods), None)
+    if spread_method is None and 'telluric_ref' in used:  # its star model is the template varied
+        sysd['template_spread'] = systematics.telluric_ref_template_spread(
+            corrected[0], sels[0].get('telluric_ref', []), cfg, executor=executor, rng=rng.spawn(1)[0])
+    elif spread_method is None and not sysd.get('linecentre_shape_correction'):
         sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
+    elif spread_method is None:  # shape-corrected line centring alone: its templates shift every line coherently
+        sysd['template_spread'] = systematics.shape_template_spread(
+            [x for x in results['linecentre'].measurements if np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS])
     else:
-        sysd['template_spread'] = float(systematics.template_spread(corrected[0], sels[0], cfg, executor=executor,
-                                                                    rng=rng.spawn(1)[0]))
+        spread = systematics.template_spread_details(corrected[0], sels[0], cfg, executor=executor,
+                                                     rng=rng.spawn(1)[0], method=spread_method)
+        sysd['template_spread'] = float(spread['total'])
+        sysd['template_window_delta'] = float(spread['delta_modes'])  # a diagnostic, not in sys_template
     sysd['floor'] = float(cfg.combine.systematic_floor)
+    delta, total = sysd.get('template_window_delta', np.nan), total_err(adopted.get('err'), sysd)
+    if abs(delta) > 3. * total:  # False when either is NaN
+        win = spread['window_modes']
+        log.warning('%s: the full-span template fit (%.2f km/s) differs from the features fit (%.2f km/s) by '
+                    '%.2f km/s, more than 3 × rv_total_err (%.2f km/s): the grid models the molecular bands poorly '
+                    '(not in sys_template)', name, win['full'], win['features'], delta, total)
     unknown = [k for k, v in (('the adopted error', adopted.get('err')), ('sys_template', sysd['template_spread']),
                               ('sys_wavezp', sysd.get('wavelength_zero_point')),
                               ('sys_star_sky', sysd.get('star_sky_systematic')))

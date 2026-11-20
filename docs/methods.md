@@ -37,6 +37,8 @@ We compare each method with the benchmark through the difference divided by the 
 z = |RV − 26.2| / √(2.3² + σ_RV²).
 Agreement is good for z ≤ 1 and acceptable for z ≤ 2; anything above 2 is investigated and explained individually.
 Because a large quoted error would make z small trivially, error honesty is checked separately: the injection–recovery tests require calibrated uncertainties (pull distribution width 0.8–1.2).
+When `rvfitter inject` adds tellurics (`--tellurics`), we inject away from RV 0 too (e.g. `--rv -30 0 30`).
+This is because at RV 0 the stellar and telluric lines sit at the same wavelengths, so a method pulled towards the telluric frame still recovers the truth and the pulling is hidden; `inject` warns when every injected RV is 0.
 We do not tune any method towards this number: the criterion is checked, not fitted.
 
 On this criterion, the original Cooper et al. (2024) values sit at:
@@ -50,7 +52,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 | Method | Previous release | Previous release, bug-fixed | rvfitter | z (quadrature) |
 |---|---|---|---|---|
-| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (opt-in): 13.55 ± 3.62 (σ_total 19.42); `none` (default): 34.99 ± 5.55 (σ_total 22.83) | sky-if-needed 2.95 (0.65 total); none 1.46 (0.38 total) |
+| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (opt-in): 13.60 ± 3.64 (σ_total 19.43); `none` (default): 34.99 ± 5.55 (σ_total 22.83) | sky-if-needed 2.92 (0.64 total); none 1.46 (0.38 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
 | Forward model (MCMC) | — | | `sky-if-needed` (opt-in): 18.83 ± 2.45 (σ_total 20.62); `none` (default): 37.58 ± 4.85 (σ_total 21.04); vsini 39–88 km/s and Teff 1810–1970 K per window (not physical at R 2600) | sky-if-needed 2.19 (0.36 total); none 2.12 (0.54 total) |
@@ -113,9 +115,19 @@ The star model of the telluric fit is the template nearest the priors from the f
 Until 2.2.0 every grid in the template cache joined this spread, whether configured or not, so the error of the constant depended on what happened to be downloaded (e.g. on GTC54-15A0/OB0019, 6.9, 6.3 and 4.2 km/s with BT-Settl alone against 9.2, 12.2 and 7.4 km/s with Sonora Bobcat also cached); it now uses the configured grids only.
 When the nodes disagree (χ² p ≤ 0.01), the constant's error is inflated by the Birge factor and flagged (`star_sky_inconsistent`).
 The error budget then has three zero-point terms:
-- `sys_wavezp`, the uncertainty of the applied curve at the measurements' wavelengths (or, when nothing is applied, only the uncertainty of the measured curve, never its value; a WARNING is logged when a significant offset is left unapplied);
+- `sys_wavezp`, the uncertainty of the applied curve at the measurements' wavelengths (or, when nothing is applied, only the uncertainty of the measured curve, never its value; a WARNING is logged when a significant offset is left unapplied), or, for wavelengths already tied to the sky in the reduction, the error of that tie (`calibration.zero_point_tied`, a number or a header card), which replaces both the measured-curve and the arc terms because the zero point in use is the tie's; the curve is then still measured and reported as a check, and `wavezp_term` says which term was used. On 75 tied GTC/OSIRIS R2500I exposures (tie error 3.0 km/s at 8200 Å), the re-measured curve's term was 15.4 km/s (median), the largest in `rv_total_err`;
 - `sys_star_sky`, the error of the applied star − sky constant;
-- otherwise, `sys_star_sky` is a slit-centring prior. The star's profile (a Gaussian of FWHM F) is taken to sit anywhere within ±max((W − F)/2, 0.1 arcsec) of the slit centre, clipped by the slit edges, and σ is the RMS centroid of the transmitted light. This is (W − F)/√12 for F ≪ W, and it stays finite and small when the seeing overfills the slit. It is converted to a velocity through the plate scale along the dispersion and the dispersion of the wavelength solution (`calibration.slit_prior = "auto"`; a number in km/s, or `"none"`). W comes from the header (`SLITW`, else 'N.NNarcsec' in `MASKNAME` or `DECKER`), F from `PypeIt`'s trace FWHM, and the plate scale from the header or `data/instruments.csv`, matched on `PYP_SPEC`, then `INSTRUME` and `INSTR` (OSIRIS 0.127 arcsec per unbinned pixel, GTC OSIRIS manual and `PypeIt`; uSpeX 0.10, IRTF SpeX page; ARCoIRIS 0.417, CTIO overview; the NIR arrays are unbinned). A file with no arc RMS (every Spextool file) gets `calibration.wave_rms_kms` if set, else the instrument's typical value from the same table, with a WARNING and the `wave_rms_assumed` flag; no instrument has a documented typical value yet, so without the option that term, and `rv_total_err`, stay NaN. W, the plate scale and the binning may also come from the raw frames' headers (`input.raw_header_dir`; a coadd without its spec1d files is matched to its raw spectrum frames by `OBJECT`). Without a trace FWHM, F is the typical seeing `calibration.seeing_fwhm` (0.8 arcsec by default), with a WARNING and the `seeing_assumed` flag. Without W, a WARNING says that the absolute zero point is unconstrained, the term is NaN and `zp_flags` has `zp_unconstrained`. `calibration.zero_point_known = true` (fibre, IFU or absolute calibration) sets the term to 0. A spectrum extracted from an IFU cube has no slit: the term is 0, and the slit inputs, the DAR across the slit and the star − sky offset are not computed (both logged). An unknown (NaN) term makes `rv_total_err` NaN, with a WARNING and the `total_err_undefined` flag; it is never counted as 0.
+- otherwise, `sys_star_sky` is a slit-centring prior. The star's profile (a Gaussian of FWHM F) is taken to sit anywhere within ±max((W − F)/2, 0.1 arcsec) of the slit centre, clipped by the slit edges, and σ is the RMS centroid of the transmitted light. This is (W − F)/√12 for F ≪ W, and it stays finite and small when the seeing overfills the slit. It is converted to a velocity through the plate scale along the dispersion and the dispersion of the wavelength solution (`calibration.slit_prior = "auto"`; a number in km/s, `"header:KEY"` for a per-spectrum value such as the error of an offset applied in the reduction, or `"none"`). When the reduction already applied the star − sky offset (`calibration.star_sky_applied`, true or a header card), `auto` does not apply its measured constant a second time and the term is `slit_prior` as given. W comes from the header (`SLITW`, else 'N.NNarcsec' in `MASKNAME` or `DECKER`), F from `PypeIt`'s trace FWHM, and the plate scale from the header or `data/instruments.csv`, matched on `PYP_SPEC`, then `INSTRUME` and `INSTR` (OSIRIS 0.127 arcsec per unbinned pixel, GTC OSIRIS manual and `PypeIt`; uSpeX 0.10, IRTF SpeX page; ARCoIRIS 0.417, CTIO overview; the NIR arrays are unbinned). A file with no arc RMS (every Spextool file) gets `calibration.wave_rms_kms` if set, else the instrument's typical value from the same table, with a WARNING and the `wave_rms_assumed` flag; no instrument has a documented typical value yet, so without the option that term, and `rv_total_err`, stay NaN. W, the plate scale and the binning may also come from the raw frames' headers (`input.raw_header_dir`; a coadd without its spec1d files is matched to its raw spectrum frames by `OBJECT`). Without a trace FWHM, F is the typical seeing `calibration.seeing_fwhm` (0.8 arcsec by default), with a WARNING and the `seeing_assumed` flag. Without W, a WARNING says that the absolute zero point is unconstrained, the term is NaN and `zp_flags` has `zp_unconstrained`. `calibration.zero_point_known = true` (fibre, IFU or absolute calibration) sets the term to 0. A spectrum extracted from an IFU cube has no slit: the term is 0, and the slit inputs, the DAR across the slit and the star − sky offset are not computed (both logged). An unknown (NaN) term makes `rv_total_err` NaN, with a WARNING and the `total_err_undefined` flag; it is never counted as 0.
+
+The template term, `sys_template`, is the standard deviation of the `template_fit` RVs over two template choices: the Teff and the configured grids (no grid term with a single grid, since there is then no grid choice; `sd_grids` is NaN).
+For the Teff, we pinned every grid candidate (within ±300 K of the Teff prior, or the whole grid without one), took the best fit (least χ²), and measured the templates one Teff grid step below and above it at its other parameters (only one at a grid edge; a step outside the candidates is measured as well).
+Only these three RVs (and the grids' RVs) enter `sys_template`, and the Teff part alone (`sd_templates`) is the RMS of their differences from the best fit, i.e.\ the RV sensitivity to one grid step.
+This is because only templates next to the best fit are physically consistent with the spectrum, whilst a template far from it can return a catastrophic RV; the rule is therefore the same with or without a prior, and never uses the whole grid.
+In 2.2.0 and earlier every candidate entered: on the re-reduced 2MUCD11694 without a prior (best fit at the 4500 K edge) the term was 48.2 km/s from 111 templates between 1500 and 4500 K, dominated by one (2250 K, log g = 5.0) at +437 km/s; it is now 0.18 km/s.
+The template-window modes do not enter `sys_template`.
+Below R 4500 rvfitter fits feature windows precisely because the synthetic grids reproduce the molecular bands poorly ([settings.md](settings.md#regions-template_windows)), so the full-span fit is a known-unreliable model, and its disagreement is a model failure, not an uncertainty of the features fit; from R 4500 up the full spans are always used, so there is no variant.
+For example, on 2MUCD11694 with a 1822 K prior the full-span fit was 317 km/s from the features fit, which in 2.2.0 gave `sys_template` = 68.3 km/s; it is now 30.2 km/s, from the one-step Teff term alone.
+The comparison is kept as a diagnostic: the `template_window_delta_kms` column (the full − features RV), with a WARNING naming both RVs when it exceeds 3 × `rv_total_err`.
 
 The sky segments now carry a synthetic bias test: noise-free model skies with the line width off by −20 or +25 per cent, or the line amplitudes perturbed by ±30 per cent, are measured like the data, and the largest |Δv| is added in quadrature to the segment's error (a segment biased by more than 0.1 resolution elements is excluded).
 On J1745−1640 the short blue-edge segment next to O2 A has the largest bias (12 km/s against a statistical error of 5 km/s) and is down-weighted; none is excluded.
@@ -155,22 +167,25 @@ the sky applied at each region is measured in a window centred on that region, g
 the star − sky constant carries the spread over the telluric-fit star models (BT-Settl −23.7, SAND −23.0 and a smooth star −19.4 km/s; 2.3 km/s; SAND entered because it was in the cache, which no longer counts unless SAND is configured);
 and the tellcorr file inherits `VEL_CORR` from its spec1d, so the curves are evaluated in the observatory frame.
 
-Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d; `input.raw_header_dir` = the raw headers). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0). In every mode zp_star_sky = −23.7 ± 4.3 km/s, zp_dar_s = −0.052 ± 0.016 and the slit prior is 18.0 km/s (its DAR share is below 0.5 km/s).
+Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d; `input.raw_header_dir` = the raw headers). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0). In every mode zp_star_sky = −23.7 ± 4.3 km/s, zp_dar_s = −0.052 ± 0.016 and the slit prior is 18.0 km/s (its DAR share is below 0.5 km/s). Recomputed with rvfitter 2.2.x (2026-11-20); sys_template is the one-Teff-grid-step term and the window-mode comparison is reported separately. Earlier versions gave RVs up to 1.1 km/s higher.
 
 | Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|---|
-| none (default) | none | 37.73 | 5.03 (2.08) | 22.21 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior ⊕ DAR) |
-| sky-if-needed | sky | 16.26 | 3.50 (2.37) | 21.09 (0.47) | 2.7 | 8.7 | 5.6 | 18.0 (slit prior ⊕ DAR) |
-| auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 41.18 | 3.34 (3.70) | 11.75 (1.25) | 2.7 | 8.8 | 5.6 | 4.3 (measured) |
-| auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.62 | 3.38 (2.55) | 14.05 (0.73) | 2.4 | 8.0 | 5.6 | 9.5 (measured) |
+| none (default) | none | 36.63 | 3.77 (2.36) | 21.55 (0.48) | 9.3 | 0.7 | 11.1 | 18.1 (slit prior ⊕ DAR) |
+| sky-if-needed | sky | 15.24 | 2.59 (3.17) | 19.29 (0.56) | 4.8 | 1.4 | 6.1 | 18.0 (slit prior ⊕ DAR) |
+| auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 40.60 | 2.49 (4.25) | 8.27 (1.68) | 4.3 | 1.4 | 6.1 | 4.7 (measured) |
+| auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.02 | 2.38 (2.97) | 11.78 (0.82) | 3.5 | 1.6 | 6.1 | 9.6 (measured) |
 
-The per-region sky windows lower `sys_wavezp` from 9.7 to 5.6 km/s and τ_line stays small (2.4–2.7 km/s), whilst `sky-if-needed` moves from 18.95 to 16.26 km/s.
-With the PA known, the DAR barely changes the constant, and `auto` lands 15.0 km/s above the benchmark (z = 1.25 with the total error, 3.7 with the statistical error alone), much as before (42.86 km/s).
-With the PA unknown, the fitted s takes up some of the slope between the 8200 Å node and the 9300 Å nodes and the RV falls to 36.6 km/s; this is not evidence for either value of s, since the known s is well inside the fitted posterior.
+The per-region sky windows lower `sys_wavezp` from 9.7 to 6.1 km/s and τ_line is 3.5–4.8 km/s, whilst `sky-if-needed` moves from 18.95 to 15.24 km/s.
+With the PA known, the DAR barely changes the constant, and `auto` lands 14.4 km/s above the benchmark (z = 1.68 with the total error, 4.3 with the statistical error alone), much as before (42.86 km/s).
+With the PA unknown, the fitted s takes up some of the slope between the 8200 Å node and the 9300 Å nodes and the RV falls to 36.0 km/s; this is not evidence for either value of s, since the known s is well inside the fitted posterior.
 We therefore do not regard the DAR as the cause of the `auto` offset on this spectrum: the slit was close to the parallactic angle.
 
 Line centring is model-free by default: its RVs come from the NIST rest wavelengths alone, with no template, so it is the template-independent cross-check of CCF and the template fit, whose agreement would otherwise rest on the same models.
 The opt-in `shape_correction` subtracts, line by line, the RV that the same profile fit measures on the noise-free template nearest the priors (same R, pixels and windows), and adds the spread over the ±1 Teff-step neighbours to the error; the method is then template-dependent (INFO, and `linecentre_shape_correction` in the results).
+At R ≈ 2600 a single Voigt profile is biased on lines blended with neighbouring atomic and molecular features: on noise-free BT-Settl templates it returns −7.1 km/s for Rb I 7802, −5.1 km/s for Na I 8197, −0.4 km/s for Na I 8185 and +7.7 km/s for Rb I 7949.
+These per-line offsets partly cancel in the combined RV but inflate the line-to-line scatter (τ_line), and they do not average out when only some lines survive the selection.
+Because `shape_correction` calibrates exactly these offsets on the template, it removes the bias, and we recommend turning it on whenever templates are available, keeping it off only when line centring must stay the model-free check.
 Cs I 8946 is no longer used for line centring: its catalogue caveat now says it is blended at R ≈ 2600 (BT-Settl fits of it range from −54 to +3 km/s).
 
 Table: J1745−1640 line centring (Voigt; R 2602; same inputs as above), with the default (model-free) and with `shape_correction`.
@@ -178,9 +193,9 @@ Table: J1745−1640 line centring (Voigt; R 2602; same inputs as above), with th
 | Mode | shape_correction | RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|
 | none | off (default) | 34.99 | 5.55 (1.46) | 22.83 (0.38) | 11.0 | 12.7 | 18.1 |
-| none | on | 36.60 | 6.26 (1.56) | 23.01 (0.45) | 12.8 | 12.7 | 18.1 |
-| sky-if-needed | off (default) | 13.55 | 3.62 (2.95) | 19.42 (0.65) | 6.4 | 6.2 | 18.0 |
-| sky-if-needed | on | 15.54 | 4.45 (2.13) | 19.59 (0.54) | 8.4 | 6.2 | 18.0 |
+| none | on | 36.63 | 6.30 (1.56) | 23.02 (0.45) | 12.9 | 12.7 | 18.1 |
+| sky-if-needed | off (default) | 13.60 | 3.64 (2.92) | 19.43 (0.64) | 6.5 | 6.2 | 18.0 |
+| sky-if-needed | on | 15.44 | 4.40 (2.17) | 19.59 (0.55) | 8.4 | 6.2 | 18.0 |
 
 The shape correction moves the method by +1.6 to +2.0 km/s and increases τ_line, so on this spectrum the profile bias is not what separates line centring from the template methods.
 
@@ -259,6 +274,11 @@ The pull is ΔRV/√(σ₁² + σ₂²), and a robust pull width of 0.8–1.2 (1
 - The largest outliers are 2MASS J1331+3407 (−97 km/s; the Rb I 7802 line lies where that wavelength solution is distorted) and 2MASS J0940+2946 (+55 km/s; the previous release was also high, so the cause is probably the zero point or the low-resolution literature value).
 - Several optical coadds have solutions distorted blueward of about 7950 Å; a leave-one-out line-outlier test removes the affected lines.
 - Only J1745−1640 has a sky spectrum among these coadds, so this set alone cannot choose a wavelength-correction mode; the GTC sample below does.
+
+We also calibrated the statistical errors on injections of model templates (1600–2800 K) into pure noise, with and without tellurics, at S/N 10, 20, 50 and 100.
+The pull width of the adopted RV's statistical error was ≈0.85–1.1 at every S/N, so the adopted error is close to honest.
+The per-method errors are conservative (pull widths ≈0.55–0.9, lowest for `linecentre` at high S/N), because each method's combination is a random-effects model over few regions, whose between-region term is poorly constrained.
+Methods that share pixels are highly correlated (median ρ ≈ 0.96 between `template_fit` and `ccf`).
 
 ### Sky correction on the GTC sample
 

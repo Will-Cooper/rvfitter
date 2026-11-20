@@ -135,6 +135,29 @@ def test_broadened_is_cached_and_correct(tmp_path):
     assert abs(sd - expected) / expected < 0.15  # the line is not Gaussian in depth, so loosely
 
 
+def test_wave_range_reads_only_the_file_ends(tmp_path):
+    """wave_range never loads a whole spectrum; it follows a rewritten file; a file out of λ order fails on load"""
+    d = _make_grid(tmp_path / 'g')
+    grid = T.TemplateGrid(d)
+    misses = T._load_vacuum.cache_info().misses
+    lo, hi = grid.wave_range(1900., 5.0)
+    assert T._load_vacuum.cache_info().misses == misses
+    wave = grid.get(1900., 5.0).wave
+    np.testing.assert_allclose((lo, hi), (wave[0], wave[-1]), rtol=1e-12)
+    path = d / 'lte019.0-5.0.txt'
+    w, f = _model(1900., 5.0)
+    np.savetxt(path, np.c_[w[:-200], f[:-200]], header='comment', footer='trailing comment')
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
+    assert grid.wave_range(1900., 5.0)[1] < hi
+    np.savetxt(path, np.c_[w[::-1], f[::-1]])
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 2 * 10**9))
+    with pytest.raises(ValueError, match='no valid ascending wavelength range'):
+        grid.wave_range(1900., 5.0)
+    np.savetxt(path, np.c_[np.r_[w[:10], w[-1] + 1., w[10:]], np.r_[f[:10], 1., f[10:]]])
+    with pytest.raises(ValueError, match='not in ascending wavelength order'):
+        grid.get(1900., 5.0)
+
+
 def _fake_ssap(rows):
     t = Table(rows=[(r['url'], r['teff'], r['logg'], r['met']) for r in rows],
               names=('Access.Reference', 'teff', 'logg', 'meta'), dtype=(str, float, float, float))

@@ -329,3 +329,22 @@ def test_unknown_resolution_is_estimated_as_io_does():
     spec = _synth((7600., 7800.))
     spec = Spectrum(spec.wave, spec.flux, spec.sigma, None, spec.meta)
     assert _Context(spec, SelectOptions()).R == io.estimate_resolution(spec.wave)
+
+
+def test_prior_refusal_names_the_prior_and_features():
+    """A prior that empties linecentre fails it, naming the prior and the features with their Teff ranges"""
+    from rvfitter import config, pipeline
+    from rvfitter.regions import prior_refusal
+    spec = _synth((7400., 9000.))
+    assert prior_refusal(spec, teff=None, method='linecentre') is None
+    assert prior_refusal(spec, teff=1800., method='linecentre') is None  # the prior leaves lines
+    assert prior_refusal(_synth((9950., 10050.)), teff=3300., method='linecentre') is None  # no lines at all
+    why = prior_refusal(spec, teff=3300., method='linecentre')
+    assert 'Teff prior 3300 K' in why and 'Na I 8197 (1300-3200 K)' in why
+    cfg = config.Config()
+    cfg.templates.teff_prior = 3300.
+    failures = []
+    sel = select(spec, teff=3300., methods=['linecentre'])
+    pipeline._run_methods(spec, sel, ['linecentre'], cfg, None, {'linecentre': np.random.default_rng(1)}, 'x',
+                          None, failures)
+    assert failures == [('x linecentre', f'ValueError: {why}')]
