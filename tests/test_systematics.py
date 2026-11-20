@@ -7,7 +7,8 @@ from rvfitter import config, regions, systematics
 from rvfitter import templates as T
 from rvfitter.methods import REGISTRY
 from rvfitter.methods import _common as C
-from rvfitter.types import Spectrum
+from rvfitter.methods.guidance import TEMPLATE_COLUMNS as TEMPLATE_AXES
+from rvfitter.types import Measurement, MethodResult, Spectrum
 from test_templates import _make_grid
 
 
@@ -57,6 +58,41 @@ def test_grid_opened_once_and_reruns_at_debug(tmp_path, monkeypatch, caplog):
                  if r.name.endswith('template_fit') and r.getMessage().startswith('template_fit: ')
                  and 'km/s (template' in r.getMessage()]
     assert len(summaries) > 2 and summaries == [logging.INFO] + [logging.DEBUG] * (len(summaries) - 1)
+
+
+def test_template_spread_one_teff_step_about_the_best_fit(tmp_path, monkeypatch):
+    """A 1500-4500 K grid, best fit at 2000 K/5.0: the term is the RV change one Teff step either side, at log g
+    5.0, measured when outside the candidates (prior 1700 K); catastrophic templates (4400 K, and 2100 K/4.5)
+    at +437 km/s never enter, with or without a prior"""
+    spec, cfg = _toy(tmp_path)
+    sel = regions.select(spec, teff=1900., methods=['template_fit'])
+    pts = np.array([(t, g, 0., 0.) for t in np.arange(1500., 4501., 100.) for g in (4.5, 5.)])
+
+    class Grid:
+        name, axes, points = 'fake', TEMPLATE_AXES, pts
+
+        def params(self, **p):
+            return dict(dict(logg=5., met=0., alpha=0.), **p)
+
+    def cands(cfg, opts):
+        t0 = cfg.templates.teff_prior
+        return [C.Candidate(f'fake {t:g}/{g:g}/0/0', grid=Grid(), params=(t, g)) for t, g, _, _ in pts
+                if t0 is None or abs(t - t0) <= opts['teff_window']]
+
+    def fake(spectrum, regs, c, *, executor=None, rng):
+        t, g = (c.templates.teff_range[0], c.templates.logg_range[0]) if c.templates.teff_range else (2000., 5.)
+        rv = 437. if t == 4400. or (t, g) == (2100., 4.5) else 10. + (t - 2000.) / 100.
+        chi2 = 1000. + 50. * ((t - 2000.) / 100.) ** 2 + (0. if g == 5. else 10.)
+        return MethodResult('template_fit', rv, 1., 1, [Measurement('template_fit', 'w', rv, 1., 0,
+                                                                    dict(chi2=chi2, dof=1000))])
+
+    monkeypatch.setattr(C, 'candidates', cands)
+    monkeypatch.setitem(REGISTRY, 'template_fit', fake)
+    for prior in (None, 1700.):
+        cfg.templates.teff_prior = prior
+        out = systematics.template_spread_details(spec, sel, cfg, rng=np.random.default_rng(1))
+        assert out['teff_steps'] == {'fake 2000/5/0/0': 10., 'fake 1900/5/0/0': 9., 'fake 2100/5/0/0': 11.}
+        assert out['sd_templates'] == 1. and out['total'] == np.std([9., 10., 11., 10., 10.], ddof=1)
 
 
 def test_grid_reopened_when_a_template_file_is_overwritten(tmp_path):
