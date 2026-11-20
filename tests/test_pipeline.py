@@ -267,6 +267,18 @@ def test_template_spread_uses_an_enabled_template_method(fakes, monkeypatch, ena
     assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
 
 
+def test_telluric_ref_alone_has_its_own_template_term(fakes, monkeypatch):
+    """telluric_ref alone (the high-R configuration) has its star-model term, not a NaN template_fit spread"""
+    monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, **k: pytest.fail('no template_fit run'))
+    monkeypatch.setattr(systematics, 'telluric_ref_template_spread', lambda s, r, c, *, executor=None, rng: 0.7)
+    monkeypatch.setattr(pipeline, 'REGISTRY', {'telluric_ref': FakeMethod('telluric_ref')})
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = ['telluric_ref']
+    res = pipeline.run(cfg, INPUTS[:1], n_procs=1, failures=[])
+    assert res[0].systematics['template_spread'] == 0.7
+    assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
+
+
 def test_shape_corrected_linecentre_alone_has_a_finite_template_term(fakes, monkeypatch):
     """Shape-corrected line centring alone has no template_fit regions (sys_template was NaN): its term is the
     weighted mean shift of the lines' shape offsets for each ±1 Teff-step template, RMS over the steps"""

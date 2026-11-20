@@ -27,7 +27,8 @@ from .methods.guidance import TEMPLATE_COLUMNS, grid_names
 from .numerics import rms
 from .types import Region, Spectrum
 
-__all__ = ['shape_template_spread', 'template_spread_details', 'wavelength_zero_point']
+__all__ = ['shape_template_spread', 'telluric_ref_template_spread', 'template_spread_details',
+           'wavelength_zero_point']
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,12 @@ def _pinned(cfg: Any, **templates) -> Any:
     for k, v in templates.items():
         setattr(new.templates, k, v)
     return new
+
+
+def _pin(cfg: Any, grid: Any, p: dict) -> Any:
+    """A copy of cfg whose only template candidate is the grid point p {axis: value}"""
+    return _pinned(cfg, grid=grid.name, **{f'{a}_range': (p[a], p[a]) for a in TEMPLATE_COLUMNS},
+                   ranges={a: (v, v) for a, v in p.items() if a not in TEMPLATE_COLUMNS})
 
 
 def _sd(vals) -> float:
@@ -94,11 +101,6 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
         return out
     # (1) every candidate of every configured grid, pinned (grid and all axes); the Teff term is the RV change
     # for one Teff grid step either side of the best fit, so templates far from it never enter
-    def pin(grid, p: dict) -> Any:
-        std = {f'{a}_range': (p[a], p[a]) for a in TEMPLATE_COLUMNS}
-        return _pinned(cfg, grid=grid.name, **std,
-                       ranges={a: (v, v) for a, v in p.items() if a not in TEMPLATE_COLUMNS})
-
     def key(grid, p: dict) -> tuple:
         return grid.name, tuple(float(p[a]) for a in grid.axes)
 
@@ -107,7 +109,7 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
     for cand, seed in zip(cands, seeds[0].spawn(len(cands)), strict=True):
         if cand.params is None:
             continue
-        res = run(pin(cand.grid, cand.param_dict), regs, seed)
+        res = run(_pin(cfg, cand.grid, cand.param_dict), regs, seed)
         out['templates'][cand.label] = measured[key(cand.grid, cand.param_dict)] = rv(res)
         if np.isfinite(rv(res)) and (c := _chi2(res)) < best_chi2:
             best, best_chi2 = cand, c
@@ -123,7 +125,7 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
             q = dict(p, teff=float(t))
             k = key(grid, q)
             if k not in measured:
-                measured[k] = rv(run(pin(grid, q), regs, seed))
+                measured[k] = rv(run(_pin(cfg, grid, q), regs, seed))
             out['teff_steps'][f'{grid.name} ' + '/'.join(f'{v:g}' for v in k[1])] = measured[k]
         dv = np.array(list(out['teff_steps'].values())[1:]) - out['teff_steps'][best.label]
         dv = dv[np.isfinite(dv)]
@@ -148,6 +150,41 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
              '%.2f km/s; full − features windows %.2f km/s (diagnostic, not in the spread)', method, out['total'],
              out['sd_templates'], best.label if best is not None else '-', len(out['templates']), out['sd_grids'],
              out['delta_modes'])
+    return out
+
+
+def telluric_ref_template_spread(spectrum: Spectrum, regions: Sequence[Region], cfg: Any, *,
+                                 executor: Executor | None = None, rng: np.random.Generator) -> float:
+    """
+    The template systematic [km/s] of telluric_ref: its star model is the template nearest the priors, so the term
+    is the RMS of the RV change when that model is the grid point one Teff step below or above it (other
+    parameters equal; `telluric_ref.neighbour_candidates`), on the same spectrum. 0 when the star model is
+    fixed (a given `template`/`templates` option) or the grid has no Teff neighbour (no Teff choice to make).
+    """
+    from .methods import telluric_ref as T
+    opts = C.options(cfg, T.METHOD, T.DEFAULTS)
+    if opts['template'] is not None or opts['templates']:
+        log.info('template spread: telluric_ref has a given star model, so no template choice: 0')
+        return 0.
+    steps = T.neighbour_candidates(cfg, T.prior_candidate(cfg, opts).label, opts)
+    if not steps:
+        log.info('template spread: no Teff grid neighbour of the telluric_ref star model: 0')
+        return 0.
+    rvs = []
+    for c in [None, *steps]:  # the star model nearest the priors, then its Teff steps
+        try:
+            with demoted():
+                rvs.append(T.measure(spectrum, regions, cfg if c is None else _pin(cfg, c.grid, c.param_dict),
+                                     executor=executor, rng=rng).rv)
+        except ValueError as exc:
+            log.warning('template spread: telluric_ref with %s could not be measured (%s)',
+                        'the prior star model' if c is None else c.label, exc)
+            rvs.append(np.nan)
+    dv = np.array(rvs[1:]) - rvs[0]
+    dv = dv[np.isfinite(dv)]
+    out = float(np.sqrt(np.mean(dv ** 2))) if len(dv) else np.nan
+    log.info('template spread (telluric_ref): %.2f km/s, one Teff step of the star model (%s)', out,
+             ', '.join(c.label for c in steps))
     return out
 
 

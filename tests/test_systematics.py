@@ -43,6 +43,22 @@ def test_template_spread_with_ccf_on_its_own_regions(tmp_path):
     assert len(out['teff_steps']) >= 2 and np.isfinite(out['total'])
 
 
+def test_telluric_ref_template_spread_one_teff_step_of_the_star_model(tmp_path, monkeypatch):
+    """telluric_ref alone (high R): the star model nearest the 1900 K prior moved one Teff step (1800, 2000 K)
+    changes the RV by ∓2 km/s, so the term is 2 km/s; a given star model has no template choice (0, not NaN)"""
+    from rvfitter.methods import telluric_ref
+    spec, cfg = _toy(tmp_path)
+
+    def fake(spectrum, regs, c, *, executor=None, rng=None):
+        teff = telluric_ref.prior_candidate(c, C.options(c, 'telluric_ref', telluric_ref.DEFAULTS)).param_dict['teff']
+        return MethodResult('telluric_ref', 10. + 2. * (teff - 1900.) / 100., 1., 1, [])
+
+    monkeypatch.setattr(telluric_ref, 'measure', fake)
+    assert systematics.telluric_ref_template_spread(spec, [], cfg, rng=np.random.default_rng(1)) == 2.
+    cfg.methods.options['telluric_ref'] = {'template': (spec.wave, spec.flux)}
+    assert systematics.telluric_ref_template_spread(spec, [], cfg, rng=np.random.default_rng(1)) == 0.
+
+
 def test_grid_opened_once_and_reruns_at_debug(tmp_path, monkeypatch, caplog):
     spec, cfg = _toy(tmp_path)
     cfg.templates.grid = 'toy'  # as the variants pin it: one grid name, one cache entry

@@ -20,7 +20,8 @@ from ..constants import C_KMS
 from ..types import Measurement, MethodResult, Region, Spectrum
 from . import _common as C
 
-__all__ = ['measure', 'DEFAULTS', 'prior_template', 'neighbour_templates']
+__all__ = ['measure', 'DEFAULTS', 'prior_candidate', 'prior_template', 'neighbour_candidates',
+           'neighbour_templates']
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,11 @@ def prior_template(cfg: Any, resolution: float, wave_range: tuple[float, float],
     The template nearest the configured priors (teff_prior, logg_prior; 5.0 dex if unset) at `resolution`,
     covering wave_range ± 1500 km/s; ValueError if none is available
     """
+    return C.build_template(prior_candidate(cfg, opts), resolution, wave_range)
+
+
+def prior_candidate(cfg: Any, opts: dict | None = None) -> C.Candidate:
+    """The candidate nearest the configured priors (teff_prior, logg_prior; 5.0 dex if unset)"""
     cands = C.candidates(cfg, opts or DEFAULTS)
     teff, logg = cfg.templates.teff_prior, cfg.templates.logg_prior or 5.
 
@@ -51,8 +57,7 @@ def prior_template(cfg: Any, resolution: float, wave_range: tuple[float, float],
         return (abs(p.get('teff', 0.) - teff) if teff is not None and 'teff' in p else 0.,
                 abs(p.get('logg', 5.) - logg) if 'logg' in p else 0.)
 
-    best = min(cands, key=distance)
-    return C.build_template(best, resolution, wave_range)
+    return min(cands, key=distance)
 
 
 def neighbour_templates(cfg: Any, resolution: float, wave_range: tuple[float, float], nominal: C.Template,
@@ -61,24 +66,27 @@ def neighbour_templates(cfg: Any, resolution: float, wave_range: tuple[float, fl
     The grid points one step below and above the nominal template's Teff (other parameters equal), at
     `resolution`: the alternatives whose spread is a node's template systematic. Empty for a given template.
     """
+    out = []
+    for c in neighbour_candidates(cfg, nominal.label, opts):
+        try:
+            out.append(C.build_template(c, resolution, wave_range))
+        except (ValueError, OSError) as exc:  # a missing neighbour narrows the spread estimate
+            log.warning('neighbour template %s unavailable (%s): the template spread uses fewer templates',
+                        c.label, exc)
+    return out
+
+
+def neighbour_candidates(cfg: Any, label: str, opts: dict | None = None) -> list[C.Candidate]:
+    """The candidates one Teff step below and above the candidate `label` (other parameters equal)"""
     cands = C.candidates(cfg, opts or DEFAULTS)
-    nom = next((c for c in cands if c.label == nominal.label), None)
+    nom = next((c for c in cands if c.label == label), None)
     if nom is None or not nom.param_dict or 'teff' not in nom.param_dict:
         return []
     p0 = nom.param_dict
     same = [c for c in cands if c.param_dict and all(c.param_dict.get(k) == v for k, v in p0.items() if k != 'teff')]
     lower = [c for c in same if c.param_dict['teff'] < p0['teff']]
     upper = [c for c in same if c.param_dict['teff'] > p0['teff']]
-    out = []
-    for group, pick in ((lower, max), (upper, min)):
-        if group:
-            c = pick(group, key=lambda c: c.param_dict['teff'])
-            try:
-                out.append(C.build_template(c, resolution, wave_range))
-            except (ValueError, OSError) as exc:  # a missing neighbour narrows the spread estimate
-                log.warning('neighbour template %s unavailable (%s): the template spread uses fewer templates',
-                            c.label, exc)
-    return out
+    return [pick(g, key=lambda c: c.param_dict['teff']) for g, pick in ((lower, max), (upper, min)) if g]
 
 
 def _frame_kms(meta: Any) -> float:
