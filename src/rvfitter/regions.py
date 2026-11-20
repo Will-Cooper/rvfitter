@@ -29,7 +29,7 @@ from .features import Feature, features
 from .io import estimate_resolution
 from .types import Region, Spectrum
 
-__all__ = ['SelectOptions', 'select', 'der_snr', 'rv_precision', 'LINE_METHODS', 'TELLURIC_METHODS']
+__all__ = ['SelectOptions', 'select', 'prior_refusal', 'der_snr', 'rv_precision', 'LINE_METHODS', 'TELLURIC_METHODS']
 
 log = logging.getLogger(__name__)
 
@@ -735,3 +735,21 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
         for r in regs:
             log.debug('  %s [%s] %.2f-%.2f: %s', r.name, r.kind, r.wmin, r.wmax, r.reason)
     return result
+
+
+def prior_refusal(spectrum: Spectrum, *, teff: float | None, method: str, options: Any = None) -> str | None:
+    """
+    Why `method` has no regions when the Teff prior alone empties its selection: the prior and the features it
+    drops with their catalogue Teff ranges. None without a prior, if the method has regions with it, or if it has
+    none without it either.
+    """
+    if teff is None or select(spectrum, teff=teff, methods=[method], options=options)[method]:
+        return None
+    free = select(spectrum, teff=None, methods=[method], options=options)[method]
+    if not free:
+        return None
+    feats = {f.name: f for f in features()}
+    named = [f'{r.name} ({feats[r.name].teff_min:.0f}-{feats[r.name].teff_max:.0f} K)' if r.name in feats
+             else r.name for r in free]
+    return (f'the Teff prior {teff:.0f} K (templates.teff_prior) drops every feature {method} needs: '
+            f'{", ".join(named)}; set a prior inside their Teff ranges or disable {method}')

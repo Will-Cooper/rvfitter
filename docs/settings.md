@@ -281,6 +281,7 @@ Free these only when the spectrum's band shapes clearly depend on them (e.g. T d
 
 The expected Teff, in K (e.g. from the spectral type); default unset.
 It chooses the features (each catalogue feature has a Teff range in which it is useful; e.g. Rb I 1300–2400 K, TiO 1900–3500 K) and centres the template search.
+If the prior drops every feature a method needs (e.g. `linecentre` at 3300 K, above every optical alkali line's range), that method fails with an error naming the prior and the dropped features with their Teff ranges.
 We recommend always setting it, e.g. ~2100 K for an L1.
 Without it, every feature in the catalogue is considered and the whole grid is searched, which is slower and can admit features that are absent or blended at the target's Teff.
 A prior (Teff, or a set log g, [M/H] or [α/M] prior) more than one grid step beyond a configured grid that is available stops the run before anything is read, with an error naming the grid, its range and the request; within one step, the nearest grid point is used and the measurement flagged `template_grid_edge`.

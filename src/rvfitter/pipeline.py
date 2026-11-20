@@ -121,14 +121,20 @@ def _drop_uncovered(sel: dict, info: dict) -> dict:
 def _run_methods(spec: Spectrum, sel: dict, names: list[str], cfg: Any, executor: Executor | None,
                  rngs: dict[str, np.random.Generator], name: str, cancel: threading.Event | None,
                  failures: Failures, on_step: StepCallback | None = None) -> dict[str, MethodResult]:
+    def run(m: str) -> MethodResult:
+        regs = sel.get(m, [])
+        if not regs and (why := regions.prior_refusal(spec, teff=cfg.templates.teff_prior, method=m,
+                                                      options=regions.options_for(cfg))):
+            raise ValueError(why)
+        return REGISTRY[m](spec, regs, cfg, executor=executor, rng=rngs[m])
+
     out = {}
     for m in names:
         if cancel is not None and cancel.is_set():
             raise _Cancelled
         if on_step is not None:
             on_step(name, m)
-        out[m] = _guarded(lambda m=m: REGISTRY[m](spec, sel.get(m, []), cfg, executor=executor, rng=rngs[m]),
-                          m, name, failures)
+        out[m] = _guarded(lambda m=m: run(m), m, name, failures)
     return out
 
 
