@@ -52,7 +52,7 @@ The high line-centring value matches the large scatter that Burgasser et al. (20
 
 | Method | Previous release | Previous release, bug-fixed | rvfitter | z (quadrature) |
 |---|---|---|---|---|
-| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (opt-in): 13.55 ± 3.62 (σ_total 19.42); `none` (default): 34.99 ± 5.55 (σ_total 22.83) | sky-if-needed 2.95 (0.65 total); none 1.46 (0.38 total) |
+| Line centring (model-free) | 36.2 ± 4.4 | | `sky-if-needed` (opt-in): 13.60 ± 3.64 (σ_total 19.43); `none` (default): 34.99 ± 5.55 (σ_total 22.83) | sky-if-needed 2.92 (0.64 total); none 1.46 (0.38 total) |
 | Cross-correlation | 28.8 ± 4.7 (by eye) | | | |
 | Template fit | — | | | |
 | Forward model (MCMC) | — | | `sky-if-needed` (opt-in): 18.83 ± 2.45 (σ_total 20.62); `none` (default): 37.58 ± 4.85 (σ_total 21.04); vsini 39–88 km/s and Teff 1810–1970 K per window (not physical at R 2600) | sky-if-needed 2.19 (0.36 total); none 2.12 (0.54 total) |
@@ -176,9 +176,9 @@ Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky
 | auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 40.60 | 2.49 (4.25) | 8.27 (1.68) | 4.3 | 1.4 | 6.1 | 4.7 (measured) |
 | auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.02 | 2.38 (2.97) | 11.78 (0.82) | 3.5 | 1.6 | 6.1 | 9.6 (measured) |
 
-The per-region sky windows lower `sys_wavezp` from 9.7 to 5.6 km/s and τ_line stays small (2.4–2.7 km/s), whilst `sky-if-needed` moves from 18.95 to 16.26 km/s.
-With the PA known, the DAR barely changes the constant, and `auto` lands 15.0 km/s above the benchmark (z = 1.25 with the total error, 3.7 with the statistical error alone), much as before (42.86 km/s).
-With the PA unknown, the fitted s takes up some of the slope between the 8200 Å node and the 9300 Å nodes and the RV falls to 36.6 km/s; this is not evidence for either value of s, since the known s is well inside the fitted posterior.
+The per-region sky windows lower `sys_wavezp` from 9.7 to 6.1 km/s and τ_line is 3.5–4.8 km/s, whilst `sky-if-needed` moves from 18.95 to 15.24 km/s.
+With the PA known, the DAR barely changes the constant, and `auto` lands 14.4 km/s above the benchmark (z = 1.68 with the total error, 4.3 with the statistical error alone), much as before (42.86 km/s).
+With the PA unknown, the fitted s takes up some of the slope between the 8200 Å node and the 9300 Å nodes and the RV falls to 36.0 km/s; this is not evidence for either value of s, since the known s is well inside the fitted posterior.
 We therefore do not regard the DAR as the cause of the `auto` offset on this spectrum: the slit was close to the parallactic angle.
 
 Line centring is model-free by default: its RVs come from the NIST rest wavelengths alone, with no template, so it is the template-independent cross-check of CCF and the template fit, whose agreement would otherwise rest on the same models.
@@ -193,9 +193,9 @@ Table: J1745−1640 line centring (Voigt; R 2602; same inputs as above), with th
 | Mode | shape_correction | RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|
 | none | off (default) | 34.99 | 5.55 (1.46) | 22.83 (0.38) | 11.0 | 12.7 | 18.1 |
-| none | on | 36.63 | 6.30 (1.56) | 23.01 (pending) | 12.9 | 12.7 | 18.1 |
+| none | on | 36.63 | 6.30 (1.56) | 23.02 (0.45) | 12.9 | 12.7 | 18.1 |
 | sky-if-needed | off (default) | 13.60 | 3.64 (2.92) | 19.43 (0.64) | 6.5 | 6.2 | 18.0 |
-| sky-if-needed | on | 15.44 | 4.40 (2.17) | 19.59 (pending) | 8.4 | 6.2 | 18.0 |
+| sky-if-needed | on | 15.44 | 4.40 (2.17) | 19.59 (0.55) | 8.4 | 6.2 | 18.0 |
 
 The shape correction moves the method by +1.6 to +2.0 km/s and increases τ_line, so on this spectrum the profile bias is not what separates line centring from the template methods.
 
