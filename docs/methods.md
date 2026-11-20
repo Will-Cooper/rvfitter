@@ -167,14 +167,14 @@ the sky applied at each region is measured in a window centred on that region, g
 the star − sky constant carries the spread over the telluric-fit star models (BT-Settl −23.7, SAND −23.0 and a smooth star −19.4 km/s; 2.3 km/s; SAND entered because it was in the cache, which no longer counts unless SAND is configured);
 and the tellcorr file inherits `VEL_CORR` from its spec1d, so the curves are evaluated in the observatory frame.
 
-Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d; `input.raw_header_dir` = the raw headers). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0). In every mode zp_star_sky = −23.7 ± 4.3 km/s, zp_dar_s = −0.052 ± 0.016 and the slit prior is 18.0 km/s (its DAR share is below 0.5 km/s).
+Table: J1745−1640 (CCF + template fit; feature windows; R 2602; BT-Settl; `sky_source` and `telluric_source` = the Science spec1d; `input.raw_header_dir` = the raw headers). The benchmark is 26.2 ± 2.3 km/s, and z = |RV − 26.2|/√(2.3² + σ²). σ_total = σ_stat ⊕ sys_template ⊕ sys_wavezp ⊕ sys_star_sky (the floor is 0). In every mode zp_star_sky = −23.7 ± 4.3 km/s, zp_dar_s = −0.052 ± 0.016 and the slit prior is 18.0 km/s (its DAR share is below 0.5 km/s). Recomputed with rvfitter 2.2.x (2026-11-20); sys_template is the one-Teff-grid-step term and the window-mode comparison is reported separately. Earlier versions gave RVs up to 1.1 km/s higher.
 
 | Mode | Applied | Adopted RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_template | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|---|
-| none (default) | none | 37.73 | 5.03 (2.08) | 22.21 (0.52) | 8.3 | 7.0 | 9.7 | 18.0 (slit prior ⊕ DAR) |
-| sky-if-needed | sky | 16.26 | 3.50 (2.37) | 21.09 (0.47) | 2.7 | 8.7 | 5.6 | 18.0 (slit prior ⊕ DAR) |
-| auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 41.18 | 3.34 (3.70) | 11.75 (1.25) | 2.7 | 8.8 | 5.6 | 4.3 (measured) |
-| auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.62 | 3.38 (2.55) | 14.05 (0.73) | 2.4 | 8.0 | 5.6 | 9.5 (measured) |
+| none (default) | none | 36.63 | 3.77 (2.36) | 21.55 (0.48) | 9.3 | 0.7 | 11.1 | 18.1 (slit prior ⊕ DAR) |
+| sky-if-needed | sky | 15.24 | 2.59 (3.17) | 19.29 (0.56) | 4.8 | 1.4 | 6.1 | 18.0 (slit prior ⊕ DAR) |
+| auto (opt-in), PA known | sky + star (a = −23.7, s = −0.052) | 40.60 | 2.49 (4.25) | 8.27 (1.68) | 4.3 | 1.4 | 6.1 | 4.7 (measured) |
+| auto (opt-in), PA unknown | sky + star (a = −23.9, s = +0.20 ± 0.44) | 36.02 | 2.38 (2.97) | 11.78 (0.82) | 3.5 | 1.6 | 6.1 | 9.6 (measured) |
 
 The per-region sky windows lower `sys_wavezp` from 9.7 to 5.6 km/s and τ_line stays small (2.4–2.7 km/s), whilst `sky-if-needed` moves from 18.95 to 16.26 km/s.
 With the PA known, the DAR barely changes the constant, and `auto` lands 15.0 km/s above the benchmark (z = 1.25 with the total error, 3.7 with the statistical error alone), much as before (42.86 km/s).
@@ -193,9 +193,9 @@ Table: J1745−1640 line centring (Voigt; R 2602; same inputs as above), with th
 | Mode | shape_correction | RV [km/s] | σ_stat (z) | σ_total (z) | τ_line | sys_wavezp | sys_star_sky |
 |---|---|---|---|---|---|---|---|
 | none | off (default) | 34.99 | 5.55 (1.46) | 22.83 (0.38) | 11.0 | 12.7 | 18.1 |
-| none | on | 36.60 | 6.26 (1.56) | 23.01 (0.45) | 12.8 | 12.7 | 18.1 |
-| sky-if-needed | off (default) | 13.55 | 3.62 (2.95) | 19.42 (0.65) | 6.4 | 6.2 | 18.0 |
-| sky-if-needed | on | 15.54 | 4.45 (2.13) | 19.59 (0.54) | 8.4 | 6.2 | 18.0 |
+| none | on | 36.63 | 6.30 (1.56) | 23.01 (pending) | 12.9 | 12.7 | 18.1 |
+| sky-if-needed | off (default) | 13.60 | 3.64 (2.92) | 19.43 (0.64) | 6.5 | 6.2 | 18.0 |
+| sky-if-needed | on | 15.44 | 4.40 (2.17) | 19.59 (pending) | 8.4 | 6.2 | 18.0 |
 
 The shape correction moves the method by +1.6 to +2.0 km/s and increases τ_line, so on this spectrum the profile bias is not what separates line centring from the template methods.
 
