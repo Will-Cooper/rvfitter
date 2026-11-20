@@ -405,7 +405,7 @@ The windows for `ccf`, `template_fit` and `forward_mcmc` below R 4500 (the edge 
 From R 4500 up the full spans are always used.
 We recommend `features` because the synthetic grids reproduce the molecular bands (TiO, VO, CrH, FeH, H2O) of late-M and L dwarfs poorly, which shifts the template RVs band by band; the atomic lines and bandheads are modelled well.
 Use `full` for warmer stars (above ~3650 K), which have no catalogue features at their Teff (see [Stars](#stars-fgk-and-m-dwarfs)).
-The other mode is always run as a check, and its difference enters the template spread, `sys_template`.
+The other mode is always run as a check: its RV difference is the `template_window_delta_kms` column (full − features), with a WARNING when it exceeds 3 × `rv_total_err`, but it does not enter `sys_template` (see [methods.md](methods.md#what-rvfitter-does)).
 
 <a id="combine"></a>
 ## Combine
