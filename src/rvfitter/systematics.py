@@ -27,7 +27,7 @@ from .methods.guidance import TEMPLATE_COLUMNS, grid_names
 from .numerics import rms
 from .types import Region, Spectrum
 
-__all__ = ['template_spread_details', 'wavelength_zero_point']
+__all__ = ['shape_template_spread', 'template_spread_details', 'wavelength_zero_point']
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,28 @@ def template_spread_details(spectrum: Spectrum, regions: dict[str, list[Region]]
              out['sd_templates'], best.label if best is not None else '-', len(out['templates']), out['sd_grids'],
              out['delta_modes'])
     return out
+
+
+def shape_template_spread(measurements: Sequence) -> float:
+    """
+    The template systematic [km/s] of shape-corrected line centring: the RMS, over the shape template's ±1 Teff-step
+    neighbours, of the inverse-variance weighted mean change of the lines' shape offsets from the nominal template's.
+    A template shifts every line coherently, so this is the method-level analogue of `template_spread_details`'
+    one-step term (no template_fit RV exists to vary). NaN without neighbours or usable lines.
+    """
+    ms = [m for m in measurements if m.diagnostics.get('shape_offsets') and np.isfinite(m.rv_err) and m.rv_err > 0]
+    if not ms:
+        return np.nan
+    nominal = ms[0].diagnostics['shape_template']
+    alts = [t for t in ms[0].diagnostics['shape_offsets'] if t != nominal]
+    shifts = []
+    for t in alts:
+        d = np.array([m.diagnostics['shape_offsets'][t] - m.diagnostics['shape_offsets'][nominal] for m in ms])
+        w = np.array([m.rv_err ** -2. for m in ms])
+        ok = np.isfinite(d)
+        if ok.any():
+            shifts.append(float(np.sum(w[ok] * d[ok]) / np.sum(w[ok])))
+    return float(np.sqrt(np.mean(np.square(shifts)))) if shifts else np.nan
 
 
 def wavelength_zero_point(spectrum: Spectrum, *, wave: np.ndarray | Sequence[float] | None = None) -> float:

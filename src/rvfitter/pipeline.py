@@ -347,6 +347,9 @@ def measure_object(spectra: Sequence[Spectrum], cfg: Any, executor: Executor | N
             if any(np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS for x in r.measurements)}
     if used <= {'linecentre'} and not sysd.get('linecentre_shape_correction'):
         sysd['template_spread'] = 0.  # model-free line centring alone: no template term (absent, not unknown)
+    elif used <= {'linecentre'}:  # its templates calibrate the line shapes only: no template_fit to vary
+        sysd['template_spread'] = systematics.shape_template_spread(
+            [x for x in results['linecentre'].measurements if np.isfinite(x.rv) and not x.flag & EXCLUDE_FLAGS])
     else:
         spread = systematics.template_spread_details(corrected[0], sels[0], cfg, executor=executor,
                                                      rng=rng.spawn(1)[0])

@@ -245,6 +245,25 @@ def test_failed_template_method_leaves_no_template_term(fakes, monkeypatch):
     assert all(r.systematics['template_spread'] == 0. for r in res)
 
 
+def test_shape_corrected_linecentre_alone_has_a_finite_template_term(fakes, monkeypatch):
+    """Shape-corrected line centring alone has no template_fit regions (sys_template was NaN): its term is the
+    weighted mean shift of the lines' shape offsets for each ±1 Teff-step template, RMS over the steps"""
+    offs = [{'nom': 1., 'lo': 3., 'hi': 0.}, {'nom': 2., 'lo': 4., 'hi': 1.}]  # shifts +2 and −1 on both lines
+
+    def lc(spectrum, regs, cfg, *, executor, rng):
+        ms = [Measurement('linecentre', f'l{i}', 10., 1., 0, dict(shape_correction=True, shape_template='nom',
+                                                                   shape_offsets=o)) for i, o in enumerate(offs)]
+        return MethodResult('linecentre', 10., 1., 2, ms)
+
+    monkeypatch.setattr(pipeline, 'REGISTRY', {'linecentre': lc})
+    monkeypatch.setattr(systematics, 'template_spread_details', lambda *a, **k: pytest.fail('no template_fit run'))
+    cfg = config.loads(config.dumps(CFG))
+    cfg.methods.enabled = ['linecentre']
+    res = pipeline.run(cfg, INPUTS[:1], n_procs=1, failures=[])
+    assert res[0].systematics['template_spread'] == pytest.approx(np.sqrt((4. + 1.) / 2.))
+    assert np.isfinite(results.to_table(res).loc[0, 'rv_total_err'])
+
+
 @pytest.mark.parametrize('enabled, expected', [(['ccf', 'template_fit'], 1), (['ccf', 'forward_mcmc'], 8)])
 def test_automatic_n_procs(fakes, monkeypatch, enabled, expected):
     """Automatic n_procs: serial for the default methods (a pool costs more than it saves), cpu_count - 1 for MCMC"""
