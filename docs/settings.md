@@ -280,7 +280,7 @@ Free these only when the spectrum's band shapes clearly depend on them (e.g. T d
 ### `templates.teff_prior`
 
 The expected Teff, in K (e.g. from the spectral type); default unset.
-It chooses the features (each catalogue feature has a Teff range in which it is useful; e.g. Rb I 1300–2400 K, TiO 1900–3500 K) and centres the template search.
+It chooses the features (each catalogue feature has a Teff range in which it is useful; e.g. Rb I 1000–2400 K, TiO 1900–3500 K) and centres the template search.
 If the prior drops every feature a method needs (e.g. `linecentre` at 3300 K, above every optical alkali line's range), that method fails with an error naming the prior and the dropped features with their Teff ranges.
 We recommend always setting it, e.g. ~2100 K for an L1.
 Without it, every feature in the catalogue is considered and the whole grid is searched, which is slower and can admit features that are absent or blended at the target's Teff.
@@ -810,8 +810,8 @@ Line centring uses the atomic lines; the template methods use windows around the
 
 | Band | Atomic lines (line centring and feature windows) | Well-modelled bandheads | Poorly modelled bands |
 |---|---|---|---|
-| Optical (6500–10 000 Å) | Hα 6565 (1500–3500, R 1000); Li I 6710 (1500–3000, R 2000); K I 7667, 7701 (1200–3000, R 1000); Rb I 7802, 7949 (1300–2400, R 1500); Na I 8185, 8197 (1300–3200, R 1000); Cs I 8523, 8946 (1200–2300, R 1500) | – | TiO 7054, 7591, 8434 (1900–3500); VO 7334, 7851 (1700–3000); CrH 8613 (1300–2600); FeH 8694, 9899 (1300–3200) |
-| J (1.1–1.35 µm) | Na I 11385, 11407 (1500–3200, R 1500); K I 11693, 11776, 12436, 12526 (1000–3650, R 1000); Fe I 11886, 11887, 11976 (1800–3500, R 4000); Al I 13127, 13154 (1800–3200, R 3000) | – | – |
+| Optical (6500–10 000 Å) | Hα 6565 (1500–3500, R 1000); Li I 6710 (1500–3000, R 2000); K I 7667, 7701 (1200–3650, R 1000); Rb I 7802, 7949 (1000–2400, R 1500); Na I 8185, 8197 (1300–3650, R 1000); Cs I 8523, 8946 (1000–2300, R 1500) | – | TiO 7054, 7591, 8434 (1900–3500); VO 7334, 7851 (1700–3000); CrH 8613 (1300–2600); FeH 8694, 9899 (1300–3200) |
+| J (1.1–1.35 µm) | Na I 11385, 11407 (1500–3650, R 1500); K I 11693, 11776, 12436, 12526 (1000–3650, R 1000); Fe I 11886, 11887, 11976 (1800–3500, R 4000); Al I 13127, 13154 (1800–3200, R 3000) | – | – |
 | H (1.4–1.8 µm) | – | – | H2O 1.4 µm (500–3000); CH4 1.6 µm (400–1500) |
 | K (1.9–2.4 µm) | – | CO 22935, 23227, 23535 (1200–3500, R 1000) | H2O 1.9 µm (500–3000); CH4 2.2 µm (400–1500) |
 | L and M (2.9–5 µm) | – | – | – |

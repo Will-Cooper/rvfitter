@@ -338,13 +338,13 @@ def test_prior_refusal_names_the_prior_and_features():
     spec = _synth((7400., 9000.))
     assert prior_refusal(spec, teff=None, method='linecentre') is None
     assert prior_refusal(spec, teff=1800., method='linecentre') is None  # the prior leaves lines
-    assert prior_refusal(_synth((9950., 10050.)), teff=3300., method='linecentre') is None  # no lines at all
-    why = prior_refusal(spec, teff=3300., method='linecentre')
-    assert 'Teff prior 3300 K' in why and 'Na I 8197 (1300-3200 K)' in why
+    assert prior_refusal(_synth((9950., 10050.)), teff=3800., method='linecentre') is None  # no lines at all
+    why = prior_refusal(spec, teff=3800., method='linecentre')
+    assert 'Teff prior 3800 K' in why and 'Na I 8197 (1300-3650 K)' in why
     cfg = config.Config()
-    cfg.templates.teff_prior = 3300.
+    cfg.templates.teff_prior = 3800.
     failures = []
-    sel = select(spec, teff=3300., methods=['linecentre'])
+    sel = select(spec, teff=3800., methods=['linecentre'])
     pipeline._run_methods(spec, sel, ['linecentre'], cfg, None, {'linecentre': np.random.default_rng(1)}, 'x',
                           None, failures)
     assert failures == [('x linecentre', f'ValueError: {why}')]
