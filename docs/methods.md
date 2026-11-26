@@ -37,8 +37,12 @@ We compare each method with the benchmark through the difference divided by the 
 z = |RV − 26.2| / √(2.3² + σ_RV²).
 Agreement is good for z ≤ 1 and acceptable for z ≤ 2; anything above 2 is investigated and explained individually.
 Because a large quoted error would make z small trivially, error honesty is checked separately: the injection–recovery tests require calibrated uncertainties (pull distribution width 0.8–1.2).
-When `rvfitter inject` adds tellurics (`--tellurics`), we inject away from RV 0 too (e.g. `--rv -30 0 30`).
-This is because at RV 0 the stellar and telluric lines sit at the same wavelengths, so a method pulled towards the telluric frame still recovers the truth and the pulling is hidden; `inject` warns when every injected RV is 0.
+`rvfitter inject` injects at −30, 0 and +30 km/s by default and summarises each RV on its own.
+This is because unmodelled telluric lines inside a stellar window distort the line profiles by an amount that depends on where the shifted stellar lines fall on the fixed telluric lines, so the bias changes with RV, and can change sign, and a bias pooled over RVs, or measured at RV 0 alone, hides it; `inject --tellurics` warns when every injected RV is 0.
+The main case is the Na I 8185/8197 doublet, which sits in the weak H2O 8200 band (catalogue depth 0.08, so left unmasked: masking it would remove the only usable feature of late-M dwarfs at R ~2600).
+Noise-free injections of BT-Settl templates (R 2602, 7500–9900 Å, airmass 1.2, no telluric correction) gave biases of −1.3, −0.3 and +1.1 km/s (template fit), −2.7, −1.4 and −0.2 km/s (cross-correlation) and −3.6, −2.2 and −1.0 km/s (line centring) at −30, 0 and +30 km/s for 2800 K, all from that window; without tellurics the template methods were unbiased (≤ 0.03 km/s), and the Rb I and Cs I windows, clear of telluric lines, were unbiased with them.
+The negative sign comes from the H2O line at 8181 Å (10 per cent deep), on the blue flank of Na I 8185: a blueshift moves the stellar line onto it, adding absorption on its blue side, whilst a redshift moves Na I 8197 towards the shallower 8201 Å line on its red flank.
+Region selection therefore names, in the region reason and a warning, any unmasked telluric band a region overlaps; for such spectra we recommend a telluric correction (`input.telluric_corrected`).
 We do not tune any method towards this number: the criterion is checked, not fitted.
 
 On this criterion, the original Cooper et al. (2024) values sit at:
