@@ -94,6 +94,24 @@ def test_telluric_masking_and_strictness():
         select(spec, methods=['ccf'], options=SelectOptions(telluric='bogus'))
 
 
+def test_unmasked_telluric_overlap_is_reported(caplog):
+    """The Na I doublet sits in the weak H2O 8200 band, left unmasked: named in the reason and logged (a WARNING
+    for uncorrected input, INFO when telluric-corrected); Rb I 7802 is clear of every band"""
+    spec = _synth((7400., 9000.))
+    with caplog.at_level(logging.INFO, logger='rvfitter.regions'):
+        res = select(spec, teff=1800., methods=['linecentre', 'template_fit'])
+    lines = {r.name: r for r in res['linecentre']}
+    assert 'H2O 8200' in lines['Na I 8185'].reason and 'telluric band' not in lines['Rb I 7802'].reason
+    assert any('H2O 8200' in r.reason for r in res['template_fit'])
+    hits = [r for r in caplog.records if 'unmasked telluric band' in r.getMessage()]
+    assert hits and all(r.levelno == logging.WARNING for r in hits)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger='rvfitter.regions'):
+        select(spec, teff=1800., methods=['linecentre'], options=SelectOptions(telluric_corrected=True))
+    hits = [r for r in caplog.records if 'unmasked telluric band' in r.getMessage()]
+    assert hits and all(r.levelno == logging.INFO for r in hits)
+
+
 def test_continuum_windows_are_feature_free():
     spec = _synth((7400., 9000.))
     for r in select(spec, teff=1800., methods=['linecentre'])['linecentre']:
@@ -155,7 +173,7 @@ def test_overrides_on_top_of_auto():
     assert new['K I 7701'].centre == pytest.approx(7701.0835)
     assert new['Rb I 7949'].reason != 'user override'  # untouched auto regions stay
     assert new['mine'].continuum  # feature-free continuum is built for line overrides
-    assert len(res['ccf']) == len(auto['ccf']) + 1 and res['ccf'][-1].reason == 'user override'
+    assert len(res['ccf']) == len(auto['ccf']) + 1 and res['ccf'][-1].reason.startswith('user override')
     # removing something not selected only warns
     select(spec, methods=['linecentre'], overrides={'linecentre': [{'name': 'nothing', 'remove': True}]})
 

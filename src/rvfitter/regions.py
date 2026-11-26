@@ -323,6 +323,30 @@ def _tellurics(ctx: _Context, feats: Sequence[Feature], strict: float | None = N
     return out
 
 
+def _note_tellurics(ctx: _Context, feats: Sequence[Feature], masks, method: str, region: Region) -> Region:
+    """
+    `region`, with the catalogue telluric bands it overlaps but that are not masked (too weak for the threshold)
+    named in its reason and logged: their lines stay in the fit, fixed in the observatory frame, and distort the
+    stellar profiles by an amount that changes as the stellar lines shift across them, so the RV bias depends on
+    the RV (e.g. H2O 8200 under the Na I doublet). A WARNING for uncorrected input, INFO for telluric-corrected.
+    """
+    masked = {m[2] for m in masks}
+    hits = [f for f in feats if f.kind == 'telluric' and f.name not in masked
+            and f.wmax > region.wmin and f.wmin < region.wmax]
+    if not hits:
+        return region
+    bands = ', '.join(f'{f.name} (depth ~{1. - (1. - min(f.depth, 0.999)) ** ctx.airmass:.2f} at airmass '
+                      f'{ctx.airmass:.2f})' for f in hits)
+    corrected = ctx.opts.telluric_corrected
+    log.log(logging.INFO if corrected else logging.WARNING,
+            '%s region %s lies in the unmasked telluric band(s) %s%s', method, region.name, bands,
+            ': correction residuals remain in the fit' if corrected else
+            ': its telluric lines stay in the fit and bias the RV by an amount that changes with the RV (for the '
+            'Na I doublet in H2O 8200 at R ~2600, airmass 1.2: up to ~1-4 km/s at +-30 km/s, by method); '
+            'telluric-correct the spectrum and set input.telluric_corrected')
+    return dataclasses.replace(region, reason=f'{region.reason}; in unmasked telluric band(s) {bands}')
+
+
 def _overlaps(a: float, b: float, intervals: Iterable[tuple[float, float, str]]) -> str | None:
     for lo, hi, name in intervals:
         if b > lo and a < hi:
@@ -727,6 +751,9 @@ def select(spectrum: Spectrum, *, teff: float | None = None, methods: Iterable[s
             regs = _apply_overrides(regs, overrides[method], method, ctx,
                                     line_masks if method in LINE_METHODS else span_masks)
             how = 'auto + overrides'
+        if method not in TELLURIC_METHODS:
+            regs = [_note_tellurics(ctx, feats, line_masks if method in LINE_METHODS else span_masks, method, r)
+                    for r in regs]
         result[method] = regs
         if not regs:
             log.warning('%s: no usable regions (%s)', method, dict(drops) or 'none available in the coverage')
