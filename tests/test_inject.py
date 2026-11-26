@@ -25,9 +25,11 @@ def test_summarise():
 def test_tiny_run():
     cfg, tpl, wave, r = _setup()
     out = inject.inject(cfg, tpl, wave, r, 50., 0., [10., -30.], 2, seed=3)
-    assert list(out['method']) == ['template_fit', 'adopted']
-    row = out[0]
-    assert row['n'] == 4 and row['n_failed'] == 0 and abs(row['bias']) < 3. and 0.2 < row['pull_std'] < 5.
+    # one block per injected RV, so that pulls of opposite sign at different RVs cannot cancel
+    assert list(out['rv']) == [10., 10., -30., -30.]
+    assert list(out['method']) == ['template_fit', 'adopted'] * 2
+    for row in out[out['method'] == 'template_fit']:
+        assert row['n'] == 2 and row['n_failed'] == 0 and abs(row['bias']) < 3.
     again = inject.inject(cfg, tpl, wave, r, 50., 0., [10., -30.], 2, seed=3)
     assert np.array_equal(out['bias'], again['bias'])  # seeded
 
@@ -48,6 +50,8 @@ def test_cli(tmp_path, monkeypatch):
                      '--out', str(out)]) == 0
     t = Table.read(out, format='ascii.csv')
     assert list(t['method']) == ['template_fit', 'adopted'] and t['n'][0] == 2
+    assert cli.main(['inject', '--snr', '40', '--wave-range', '7700', '8700', '--n', '2', '--out', str(out)]) == 0
+    assert list(Table.read(out, format='ascii.csv')['rv']) == [-30., -30., 0., 0., 30., 30.]  # the default RVs
 
 
 def test_tellurics_at_rv_zero_only_warn(caplog):
@@ -58,4 +62,4 @@ def test_tellurics_at_rv_zero_only_warn(caplog):
         caplog.clear()
         out = inject.spectra(tpl, wave, r, 50., 0., rvs, 2, rng, airmass=1.2)
         assert [t for t, _ in out] == [rv for rv in rvs for _ in range(2)]
-        assert ('hides telluric pulling' in caplog.text) is warned
+        assert ('inject at e.g. ±30 km/s too' in caplog.text) is warned

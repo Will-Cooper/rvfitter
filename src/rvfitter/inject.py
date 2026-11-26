@@ -5,12 +5,14 @@ The template (as for ``forecast``: the configured grid at templates.teff_prior/l
 broadened to R and vsini, shifted to each --rv (relativistic, pixel-integrated), optionally multiplied by the
 telluric transmission (at rest: observer frame), and given photon noise σ_i = √(A_i A_med)/SNR on the pixels of a
 spectrum or a ln λ grid. Each of --n seeds per RV is measured by `pipeline.measure_object` with the user's config
-(barycentric correction skipped; wavelength correction "none": the injected wavelengths are exact). Per method
-(and the adopted RV), the table gives the bias (mean RV − truth), bias/scatter, and the pull (RV − truth)/σ mean and
-width; a calibrated method has |bias| < 0.2 scatter and pull width 0.8–1.2.
+(barycentric correction skipped; wavelength correction "none": the injected wavelengths are exact). Per injected RV
+and method (and the adopted RV), the table gives the bias (mean RV − truth), bias/scatter, and the pull
+(RV − truth)/σ mean and width; a calibrated method has |bias| < 0.2 scatter and pull width 0.8–1.2.
 
-With --tellurics, inject away from RV 0 too (e.g. --rv -30 0 30): at RV 0 the stellar lines sit on the telluric
-lines (both at rest), so a method pulled towards the telluric frame recovers the truth and the pulling is hidden.
+The RVs default to −30, 0 and +30 km/s, each summarised on its own. Unmodelled telluric lines inside a stellar
+window (with --tellurics; e.g. H2O 8200 under the Na I doublet) distort the line profiles by an amount that
+depends on where the shifted stellar lines fall on the fixed telluric lines, so the bias changes with RV (and even
+sign), and a bias pooled over RVs, or measured at RV 0 alone, can hide it.
 """
 import argparse
 import copy
@@ -39,8 +41,8 @@ def spectra(template: Spectrum, wave: np.ndarray, resolution: float, snr: float,
         kw = {} if pwv is None else {'pwv': pwv}
         trans = telluric.transmission(wave, airmass, resolution=resolution, **kw)
         if all(rv == 0. for rv in rvs):
-            log.warning('injecting with tellurics at RV 0 only: the stellar and telluric lines align, which hides '
-                        'telluric pulling; inject at e.g. ±30 km/s too (--rv -30 0 30)')
+            log.warning('injecting with tellurics at RV 0 only: the telluric bias depends on where the stellar '
+                        'lines fall on the telluric lines; inject at e.g. ±30 km/s too (--rv -30 0 30)')
     out = []
     for rv in rvs:
         clean = tpl.at(wave, rv) * trans
@@ -73,7 +75,7 @@ def summarise(truth: np.ndarray, rv: np.ndarray, err: np.ndarray) -> dict:
 def inject(cfg, template: Spectrum, wave: np.ndarray, resolution: float, snr: float, vsini: float,
            rvs: Sequence[float], n: int, seed: int, *, methods: Sequence[str] | None = None,
            airmass: float | None = None, pwv: float | None = None) -> Table:
-    """Run the injections and return the per-method summary table (one row per method, then 'adopted')"""
+    """Run the injections and return the summary table: per injected RV, one row per method, then 'adopted'"""
     cfg = copy.deepcopy(cfg)
     cfg.calibration.wavelength_correction = 'none'
     # synthetic spectra have no observation: the reduction-specific (possibly header-backed) calibration settings
@@ -98,11 +100,13 @@ def inject(cfg, template: Spectrum, wave: np.ndarray, resolution: float, snr: fl
         log.info('injection %d/%d (%s): %s', k + 1, len(trials), spec.meta['object'],
                  ', '.join(f'{m} {res.methods[m].rv:.2f} ± {res.methods[m].rv_err:.2f}' for m in names))
     rows = []
-    for m, vals in got.items():
-        a = np.array(vals, float).reshape(-1, 3)
-        rows.append(dict(method=m, **summarise(a[:, 0], a[:, 1], a[:, 2])))
+    for rv in dict.fromkeys(map(float, rvs)):  # per RV: a pull that changes sign with RV cancels in a pooled bias
+        for m, vals in got.items():
+            a = np.array(vals, float).reshape(-1, 3)
+            a = a[a[:, 0] == rv]
+            rows.append(dict(rv=rv, method=m, **summarise(a[:, 0], a[:, 1], a[:, 2])))
     out = Table(rows=rows)
-    for c in ('bias', 'scatter', 'mean_err'):
+    for c in ('rv', 'bias', 'scatter', 'mean_err'):
         out[c].unit = 'km/s'
     out.meta.update(resolution=resolution, snr=snr, vsini=vsini, rvs=list(map(float, rvs)), n=n, seed=seed,
                     template=template.source, tellurics=airmass is not None)
@@ -113,9 +117,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='rvfitter inject', description='Injection-recovery of the configured methods '
                                 'on a degraded grid template: bias and pull width per method.')
     forecast.add_arguments(p)
-    p.add_argument('--rv', type=float, nargs='+', default=[0.],
-                   help='injected RVs [km/s] (default 0; with --tellurics add e.g. -30 30: at RV 0 the stellar and '
-                   'telluric lines align and telluric pulling is hidden)')
+    p.add_argument('--rv', type=float, nargs='+', default=[-30., 0., 30.],
+                   help='injected RVs [km/s], each summarised on its own (default -30 0 30: a bias that depends on '
+                   'where the stellar lines fall on the telluric lines or in their windows shows only away from 0)')
     p.add_argument('--n', type=int, default=20, help='noise realisations per RV (default 20)')
     p.add_argument('--seed', type=int, help='random seed (default: the config\'s)')
     p.add_argument('--methods', help='comma-separated methods (default: the config\'s)')
@@ -133,11 +137,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                  airmass=args.airmass if args.tellurics else None, pwv=args.pwv)
     log.info('Injection-recovery at R %.0f, SNR %.0f, vsini %.0f km/s, RVs %s, %d seeds each:', resolution, args.snr,
              args.vsini, ', '.join(f'{v:g}' for v in args.rv), args.n)
-    log.info('%-14s %4s %6s %9s %8s %9s %9s %9s %9s', 'method', 'n', 'failed', 'bias', 'bias/sd', 'pull mean',
-             'pull sd', 'scatter', 'mean err')
+    log.info('%7s %-14s %4s %6s %9s %8s %9s %9s %9s %9s', 'rv', 'method', 'n', 'failed', 'bias', 'bias/sd',
+             'pull mean', 'pull sd', 'scatter', 'mean err')
     for r in out:
-        log.info('%-14s %4d %6d %9.3f %8.3f %9.3f %9.3f %9.3f %9.3f', r['method'], r['n'], r['n_failed'], r['bias'],
-                 r['bias_sigma'], r['pull_mean'], r['pull_std'], r['scatter'], r['mean_err'])
+        log.info('%7g %-14s %4d %6d %9.3f %8.3f %9.3f %9.3f %9.3f %9.3f', r['rv'], r['method'], r['n'], r['n_failed'],
+                 r['bias'], r['bias_sigma'], r['pull_mean'], r['pull_std'], r['scatter'], r['mean_err'])
     out.write(args.out, format='ascii.csv', overwrite=True)
     log.info('Wrote %s', args.out)
     return 0
